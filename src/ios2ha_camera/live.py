@@ -94,7 +94,12 @@ async def _stream(request):
         while True:
             frame = await queue.get()
             await resp.write(_part(frame))
-    except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
+    except (ConnectionError, asyncio.CancelledError):
+        # ConnectionError, not just its Reset/Aborted subclasses: aiohttp raises
+        # a bare ConnectionError("Connection lost") when a viewer goes away
+        # mid-write, and Home Assistant's camera does exactly that every time it
+        # grabs a thumbnail. A client leaving is normal and must not put a
+        # traceback in an unattended service's log.
         pass
     finally:
         app[CLIENTS].discard(queue)
