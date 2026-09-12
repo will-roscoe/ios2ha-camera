@@ -15,7 +15,7 @@ CONTROLS = {
 
 # Discovery publishes one number entity per channel, so the per-channel names
 # are controls too, writing into a single tuple field.
-_BLACK_LEVEL_CHANNELS = {"black_level_0": 0, "black_level_1": 1, "black_level_2": 2}
+BLACK_LEVEL_CHANNELS = {"black_level_0": 0, "black_level_1": 1, "black_level_2": 2}
 
 # Environment variable -> field. Values arrive as strings and are coerced to the
 # type of the field's default in from_env.
@@ -78,7 +78,7 @@ class Settings:
 
     def apply_control(self, name, value):
         """Apply a Home Assistant control write. Returns whether the name was known."""
-        channel = _BLACK_LEVEL_CHANNELS.get(name)
+        channel = BLACK_LEVEL_CHANNELS.get(name)
         if channel is not None:
             current = self.black_level_override or (0.0, 0.0, 0.0)
             updated = list(current)

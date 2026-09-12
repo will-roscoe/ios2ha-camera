@@ -368,6 +368,74 @@ def test_publish_controls_republishes_the_last_still_and_measurements():
     assert "subject_level" in mq.published
 
 
+def test_reconnect_republish_survives_concurrent_state_writes():
+    """publish_controls runs on the MQTT network thread while capture and
+    health threads are still writing. Handing it the live dict raises
+    "changed size during iteration" into a caller that only logs, silently
+    losing the republish that spec 7 requires on reconnect."""
+    class YieldingMqtt(FakeMqtt):
+        def publish_state(self, d):
+            for _k, _v in d.items():      # iterate like the real client, yielding the GIL
+                time.sleep(0)
+            super().publish_state(d)
+
+    sup = _sup(mqtt=YieldingMqtt())
+    sup.publish_state({f"seed_{i}": i for i in range(200)})
+    errors = []
+    done = threading.Event()
+
+    def writer():
+        # Bounded: every new key changes the dict's size, which is what trips
+        # the iteration, but an unbounded writer makes each republish slower
+        # than the last.
+        try:
+            for i in range(3000):
+                sup.publish_state({f"late_{i}": i})
+                time.sleep(0)
+        except Exception as e:           # noqa: BLE001 - the point of the test
+            errors.append(e)
+        finally:
+            done.set()
+
+    t = threading.Thread(target=writer, daemon=True)
+    t.start()
+    try:
+        while not done.is_set():
+            sup.publish_controls()
+    except Exception as e:               # noqa: BLE001
+        errors.append(e)
+    finally:
+        t.join(timeout=10)
+    assert errors == [], errors
+
+
+def test_a_capture_pipeline_error_is_reported_over_mqtt(monkeypatch):
+    """A render or archive failure must not leave every measurement stale
+    while the stream still reports healthy."""
+    from ios2ha_camera import render
+
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 4
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 8)
+    mq = FakeMqtt()
+    sup = _sup(s, buf, mq)
+    monkeypatch.setattr(render, "to_jpeg", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad pixels")))
+    ev = sup.produce_still(now_fps=12.0)   # must not raise
+    assert "ValueError" in ev["error"] and "bad pixels" in ev["error"]
+    assert mq.events[-1] is ev
+
+
+def test_black_level_echo_reports_the_stored_value_not_the_raw_payload():
+    s = Settings()
+    sup = _sup(s)
+    sup.handle_control("black_level_1", "0.46")
+    assert s.black_level_override == (0.0, 0.46, 0.0)
+    assert sup.mqtt.published["black_level_1"] == 0.46
+    assert isinstance(sup.mqtt.published["black_level_1"], float)
+
+
 def test_estimate_fps_from_arrival_times():
     buf = RingBuffer(5_000_000)
     now = time.time()

@@ -25,7 +25,7 @@ import numpy as np
 
 from . import measure, render, stack
 from .phone import PhoneUnavailable
-from .settings import CONTROLS
+from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +75,10 @@ class Supervisor:
         self.capture_requested = threading.Event()
         self.last_stack = None
         self._previous_depth = None
+        # Written from the capture, health, device and MQTT network threads, and
+        # read whole on reconnect, so every access goes through the lock.
         self._last_state = {}
+        self._state_lock = threading.Lock()
         self._last_jpeg = None
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
@@ -86,7 +89,8 @@ class Supervisor:
         """Publish and remember, so a reconnect can replay the current values."""
         if not d:
             return
-        self._last_state.update(d)
+        with self._state_lock:
+            self._last_state.update(d)
         self.mqtt.publish_state(d)
 
     def _event(self, d):
@@ -103,10 +107,15 @@ class Supervisor:
         d = {n: getattr(self.s, n) for n in sorted(CONTROLS) if n != "black_level_override"}
         if self.s.black_level_override is not None:
             d.update({f"black_level_{i}": v for i, v in enumerate(self.s.black_level_override)})
-        self.mqtt.publish_state(d)
-        self._last_state.update(d)
-        if self._last_state:
-            self.mqtt.publish_state(self._last_state)
+        self.publish_state(d)
+        # A snapshot, never the live dict: this runs on the MQTT network thread
+        # while the capture and health threads are still writing, and iterating
+        # the dict itself would raise "changed size during iteration" straight
+        # into a caller that only logs it -- silently losing the republish.
+        with self._state_lock:
+            snapshot = dict(self._last_state)
+        if snapshot:
+            self.mqtt.publish_state(snapshot)
         if self._last_jpeg is not None:
             self.mqtt.publish_still(self._last_jpeg)
 
@@ -116,6 +125,20 @@ class Supervisor:
         return [f for f in frames if now - f.ts <= max_age]
 
     def produce_still(self, now_fps, now=None):
+        """Make, publish and archive one still. Reports failure over MQTT.
+
+        A stacking, render or archive error would otherwise leave every
+        measurement stale while the stream itself still reported healthy, which
+        is the silent failure this service exists to end.
+        """
+        try:
+            return self._produce_still(now_fps, now)
+        except Exception as e:
+            log.exception("capture failed")
+            return self._event({"ts": time.time() if now is None else now,
+                                "error": f"{type(e).__name__}: {e}"})
+
+    def _produce_still(self, now_fps, now=None):
         now = time.time() if now is None else now
         t0 = time.monotonic()
 
@@ -213,7 +236,12 @@ class Supervisor:
             elif name == "autofocus":
                 self._submit(name, lambda: self._autofocus(bool(value)))
             elif self.s.apply_control(name, value):
-                self.publish_state({name: getattr(self.s, name, value)})
+                # Echo what was stored, not what arrived: the black-level
+                # channels live inside a tuple and are coerced on the way in.
+                channel = BLACK_LEVEL_CHANNELS.get(name)
+                stored = (self.s.black_level_override[channel] if channel is not None
+                          else getattr(self.s, name, value))
+                self.publish_state({name: stored})
             else:
                 log.warning("ignoring unknown control %r", name)
         except Exception:

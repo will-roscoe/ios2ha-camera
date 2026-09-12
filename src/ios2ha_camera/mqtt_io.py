@@ -13,7 +13,15 @@ def _e(prefix, comp, obj, cfg):
     base = {
         "availability_topic": f"{prefix}/available",
         "device": {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera"},
-        "unique_id": f"ios2ha_{obj}",
+        # Component in the unique_id because a button and a camera can share an
+        # object name (screenshot) and only differ by domain.
+        "unique_id": f"ios2ha_{comp}_{obj}",
+        # Pin the entity_id. Home Assistant otherwise derives it from the device
+        # and entity display names -- "iPhone Camera" + "Camera" would give
+        # camera.iphone_camera_camera -- so a rename would silently break every
+        # automation and dashboard pointing at it. The object_id in the
+        # discovery topic explicitly does not affect entity_id; this key does.
+        "default_entity_id": f"{comp}.ios2ha_camera_{obj}",
     }
     base.update(cfg)
     return topic, base
@@ -100,19 +108,21 @@ class MqttIO:
             log.exception("on_connected callback failed")
 
     def _on_message(self, c, u, msg):
-        name = msg.topic.rsplit("/", 1)[-1]
-        raw = msg.payload.decode()
+        # Everything, including the decode, is inside the guard: paho re-raises
+        # callback exceptions out of the network loop by default
+        # (suppress_exceptions is False), so one non-UTF-8 payload on set/#
+        # would take the connection down and leave the supervisor deaf to every
+        # later control.
         try:
-            value = json.loads(raw)
-        except ValueError:
-            value = raw
-        # paho re-raises callback exceptions out of the network loop by default
-        # (suppress_exceptions is False), which would take the connection down
-        # and leave the supervisor deaf to every later control.
-        try:
+            name = msg.topic.rsplit("/", 1)[-1]
+            raw = msg.payload.decode(errors="replace")
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                value = raw
             self.on_control(name, value)
         except Exception:
-            log.exception("control %r from %s failed", name, msg.topic)
+            log.exception("control message on %s failed", msg.topic)
 
     def connect(self):
         # Asynchronous so a broker that is down at startup does not abort the
