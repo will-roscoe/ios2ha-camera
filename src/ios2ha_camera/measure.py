@@ -24,13 +24,12 @@ def luminance_percentiles(mean, black, pcts=(0.5, 1, 10, 50, 90, 99, 99.5)):
 
 
 def required_depth(subject, target, k):
-    """Compute required frame depth for gain law N = k * (target/subject)^2.
+    """Compute required frame depth for gain law N = ceil(k * G**2).
 
-    Returns minimum depth before clamping.
+    Where G = max(target / subject, 1). Returns minimum depth before clamping.
+    The caller's clamp applies the floor to 1.
     """
-    if subject >= target:
-        return 1
-    gain = target / max(subject, 1e-6)
+    gain = max(target / max(subject, 1e-6), 1.0)
     return int(math.ceil(k * gain * gain))
 
 
