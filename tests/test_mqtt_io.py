@@ -49,6 +49,97 @@ def test_discovery_covers_camera_and_controls():
         assert any(c in cfg.get("command_topic", "") for cfg in payloads.values())
 
 
+def test_every_sensor_says_what_its_reading_means():
+    """A bare number is not a measurement. Without a unit, a device class and a
+    state class, Home Assistant cannot graph it or keep statistics for it."""
+    payloads = dict(discovery_payloads(Settings()))
+    sensors = {t.split("/")[3]: cfg for t, cfg in payloads.items()
+               if t.startswith("homeassistant/sensor/")}
+    assert sensors, "no sensors found"
+    # Luminance figures are relative 0-255 after black level, not lux, so they
+    # carry no unit by design; everything else that is a quantity needs one.
+    unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
+                          "focus_sharpness", "stream_state", "motion"}
+    unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}
+    unitless_by_design |= {f"wb_gain_{c}" for c in "rgb"}
+    unitless_by_design |= {f"black_level_applied_{c}" for c in "rgb"}
+    for obj, cfg in sensors.items():
+        assert cfg["name"] != obj, f"{obj} still has a raw snake_case name"
+        if obj not in unitless_by_design:
+            assert cfg.get("unit_of_measurement"), f"{obj} has no unit"
+        if obj != "stream_state":
+            assert cfg.get("state_class") == "measurement", f"{obj} has no state_class"
+
+
+def test_the_readings_with_a_real_physical_type_declare_it():
+    payloads = dict(discovery_payloads(Settings()))
+    sensors = {t.split("/")[3]: cfg for t, cfg in payloads.items()
+               if t.startswith("homeassistant/sensor/")}
+    assert sensors["battery_temperature"]["device_class"] == "temperature"
+    assert sensors["battery_temperature"]["unit_of_measurement"] == "°C"
+    assert sensors["battery"]["device_class"] == "battery"
+    assert sensors["battery"]["unit_of_measurement"] == "%"
+    assert sensors["archive_free_gb"]["device_class"] == "data_size"
+    assert sensors["last_frame_age"]["device_class"] == "duration"
+    assert sensors["stream_state"]["device_class"] == "enum"
+    assert set(sensors["stream_state"]["options"]) == {"streaming", "streaming_off", "unreachable"}
+    binaries = {t.split("/")[3]: cfg for t, cfg in payloads.items()
+                if t.startswith("homeassistant/binary_sensor/")}
+    assert binaries["camera_online"]["device_class"] == "connectivity"
+    assert binaries["charging"]["device_class"] == "battery_charging"
+
+
+def test_the_still_camera_is_the_devices_main_feature():
+    """A null name inherits the device name, so it reads "iPhone Camera"
+    rather than "iPhone Camera Camera"."""
+    payloads = dict(discovery_payloads(Settings()))
+    still = [cfg for t, cfg in payloads.items() if t.endswith("/camera/ios2ha/still/config")][0]
+    assert "name" in still and still["name"] is None
+
+
+def test_tuning_knobs_are_marked_as_configuration():
+    payloads = dict(discovery_payloads(Settings()))
+    for topic, cfg in payloads.items():
+        component = topic.split("/")[1]
+        if component in ("number", "select", "switch"):
+            assert cfg.get("entity_category") == "config", topic
+
+
+def test_every_entity_of_every_type_has_a_readable_name():
+    """Applies to controls as much as sensors: a raw snake_case object id is
+    not a name anyone should have to read in a dashboard."""
+    payloads = dict(discovery_payloads(Settings()))
+    for topic, cfg in payloads.items():
+        obj = topic.split("/")[3]
+        assert "name" in cfg, topic
+        if cfg["name"] is None:
+            # Only the main feature may inherit the device name.
+            assert topic.endswith("/camera/ios2ha/still/config"), topic
+            continue
+        assert cfg["name"] != obj, f"{topic} has a raw object id as its name"
+        assert cfg["name"][0].isupper(), f"{topic} name is not sentence case: {cfg['name']!r}"
+
+
+def test_controls_declare_their_units_and_physical_types():
+    payloads = dict(discovery_payloads(Settings()))
+    numbers = {t.split("/")[3]: cfg for t, cfg in payloads.items()
+               if t.startswith("homeassistant/number/")}
+    # Anything measured in seconds says so, and says it is a duration.
+    for obj in ("interval_s", "window_max_s", "ramp_tau_s"):
+        assert numbers[obj]["unit_of_measurement"] == "s", obj
+        assert numbers[obj]["device_class"] == "duration", obj
+    assert numbers["subject_percentile"]["unit_of_measurement"] == "%"
+    assert numbers["fixed_depth"]["unit_of_measurement"] == "frames"
+    for obj, cfg in numbers.items():
+        assert {"min", "max", "step"} <= set(cfg), f"{obj} has no range"
+        assert cfg["min"] < cfg["max"], obj
+    buttons = {t.split("/")[3]: cfg for t, cfg in payloads.items()
+               if t.startswith("homeassistant/button/")}
+    assert buttons["relaunch_app"]["device_class"] == "restart"
+    # The one button that belongs on a dashboard is not filed away.
+    assert "entity_category" not in buttons["capture_now"]
+
+
 def test_entity_ids_are_pinned_not_derived_from_display_names():
     """Automations and dashboards name these entities. Left to Home Assistant,
     the id comes from the device and entity display names, so renaming either

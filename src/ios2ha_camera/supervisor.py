@@ -195,7 +195,8 @@ class Supervisor:
             "lum_mean": round(float(measure.luminance(mean, bl_probe).mean()), 2),
             **{f"lum_p{int(p)}": round(pct[p], 2) for p in (1, 10, 50, 90, 99)},
             "dynamic_range": round(raw[99.5] / max(raw[0.5], 1.0), 1),
-            "highlight_clip": round(float((stacked.max(axis=2) >= 250).mean()), 4),
+            # Per cent, to match the sensor's declared unit.
+            "highlight_clip": round(float((stacked.max(axis=2) >= 250).mean()) * 100, 2),
             "noise": noise,
             "snr": snr,
             "motion": (round(measure.motion_level(probe[-2], probe[-1]), 3)

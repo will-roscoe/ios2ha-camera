@@ -27,6 +27,119 @@ def _e(prefix, comp, obj, cfg):
     return topic, base
 
 
+# Sensor metadata. Without a unit, a device class and a state class, Home
+# Assistant cannot say what a reading means, cannot graph it sensibly and keeps
+# no long-term statistics for it -- "battery_temperature = 35.39" of what?
+# `category="diagnostic"` keeps the thirty-odd measurements out of the main card
+# while leaving them fully usable in automations and dashboards.
+# Luminance figures are relative 0-255 after black-level subtraction, not lux,
+# so they deliberately carry no unit; see the design's section 4.3.
+_SENSORS = [
+    dict(obj="stream_state", name="Stream state", device_class="enum",
+         options=["streaming", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
+    dict(obj="subject_level", name="Subject level", state_class="measurement", precision=1,
+         icon="mdi:brightness-4"),
+    dict(obj="depth_used", name="Depth used", unit="frames", state_class="measurement",
+         icon="mdi:layers-triple"),
+    dict(obj="motion", name="Motion level", state_class="measurement", precision=2,
+         icon="mdi:motion-sensor"),
+    dict(obj="frame_rate", name="Frame rate", unit="fps", state_class="measurement",
+         precision=1, category="diagnostic", icon="mdi:speedometer"),
+    dict(obj="last_frame_age", name="Last frame age", unit="s", device_class="duration",
+         state_class="measurement", precision=1, category="diagnostic"),
+    dict(obj="depth_required", name="Depth required before clamping", unit="frames",
+         state_class="measurement", category="diagnostic", icon="mdi:layers-outline"),
+    dict(obj="capture_duration", name="Capture duration", unit="s", device_class="duration",
+         state_class="measurement", precision=1, category="diagnostic"),
+    dict(obj="colour_temperature", name="Colour temperature", unit="K",
+         state_class="measurement", category="diagnostic", icon="mdi:temperature-kelvin"),
+    dict(obj="effective_exposure_required", name="Effective exposure required", unit="s",
+         device_class="duration", state_class="measurement", precision=2,
+         category="diagnostic"),
+    dict(obj="effective_exposure_achieved", name="Effective exposure achieved", unit="s",
+         device_class="duration", state_class="measurement", precision=2,
+         category="diagnostic"),
+    dict(obj="lum_mean", name="Scene luminance mean", state_class="measurement", precision=1,
+         category="diagnostic", icon="mdi:brightness-6"),
+    dict(obj="dynamic_range", name="Dynamic range", state_class="measurement", precision=1,
+         category="diagnostic", icon="mdi:contrast-box"),
+    dict(obj="highlight_clip", name="Highlight clipping", unit="%", state_class="measurement",
+         precision=2, category="diagnostic", icon="mdi:brightness-percent"),
+    dict(obj="noise", name="Noise", state_class="measurement", precision=2,
+         category="diagnostic", icon="mdi:grain"),
+    dict(obj="snr", name="Signal to noise", state_class="measurement", precision=1,
+         category="diagnostic", icon="mdi:signal"),
+    dict(obj="focus_sharpness", name="Focus sharpness", state_class="measurement", precision=1,
+         category="diagnostic", icon="mdi:image-filter-center-focus"),
+    dict(obj="battery", name="Phone battery", unit="%", device_class="battery",
+         state_class="measurement", category="diagnostic"),
+    dict(obj="battery_temperature", name="Phone battery temperature", unit="°C",
+         device_class="temperature", state_class="measurement", precision=1,
+         category="diagnostic"),
+    dict(obj="archive_free_gb", name="Archive free space", unit="GB", device_class="data_size",
+         state_class="measurement", precision=1, category="diagnostic"),
+]
+_SENSORS += [
+    dict(obj=f"lum_p{p}", name=f"Scene luminance {p}th percentile", state_class="measurement",
+         precision=1, category="diagnostic", icon="mdi:brightness-6")
+    for p in (1, 10, 50, 90, 99)
+]
+_SENSORS += [
+    dict(obj=f"wb_gain_{c}", name=f"White balance gain {c.upper()}",
+         state_class="measurement", precision=3, category="diagnostic", icon="mdi:white-balance-auto")
+    for c in "rgb"
+]
+_SENSORS += [
+    dict(obj=f"black_level_applied_{c}", name=f"Black level applied {c.upper()}",
+         state_class="measurement", precision=2, category="diagnostic", icon="mdi:circle-opacity")
+    for c in "rgb"
+]
+
+# Tuning knobs. All configuration rather than measurement, and each carries its
+# unit so a person reading "600" knows it is seconds, plus a device class where
+# the value has a real physical type.
+_NUMBERS = [
+    dict(obj="interval_s", name="Capture interval", lo=30, hi=3600, step=1, unit="s",
+         device_class="duration", icon="mdi:timer-outline"),
+    dict(obj="fixed_depth", name="Fixed depth", lo=1, hi=1000, step=1, unit="frames",
+         icon="mdi:layers-triple"),
+    dict(obj="target_level", name="Target subject level", lo=1, hi=255, step=1,
+         icon="mdi:brightness-4"),
+    dict(obj="subject_percentile", name="Subject percentile", lo=1, hi=50, step=1, unit="%"),
+    dict(obj="clean_factor", name="Clean factor k", lo=1, hi=64, step=1, icon="mdi:grain"),
+    dict(obj="max_depth", name="Maximum depth", lo=1, hi=2000, step=1, unit="frames",
+         icon="mdi:layers-outline"),
+    dict(obj="window_max_s", name="Maximum capture window", lo=1, hi=120, step=1, unit="s",
+         device_class="duration", icon="mdi:timer-sand"),
+    dict(obj="ramp_tau_s", name="Ramp time constant", lo=0, hi=7200, step=10, unit="s",
+         device_class="duration", icon="mdi:chart-bell-curve"),
+    dict(obj="night_key", name="Night key", lo=0.01, hi=0.5, step=0.01, icon="mdi:weather-night"),
+    dict(obj="stretch_strength", name="Stretch strength", lo=1, hi=60, step=1,
+         icon="mdi:arrow-expand-vertical"),
+    dict(obj="chroma_radius", name="Chroma smoothing radius", lo=0, hi=12, step=0.5, unit="px",
+         icon="mdi:blur"),
+    dict(obj="denoise_strength", name="Denoise strength", lo=0, hi=20, step=0.5,
+         icon="mdi:blur-off"),
+    dict(obj="black_level_0", name="Black level override R", lo=0, hi=32, step=0.1,
+         icon="mdi:circle-opacity"),
+    dict(obj="black_level_1", name="Black level override G", lo=0, hi=32, step=0.1,
+         icon="mdi:circle-opacity"),
+    dict(obj="black_level_2", name="Black level override B", lo=0, hi=32, step=0.1,
+         icon="mdi:circle-opacity"),
+]
+
+
+def _sensor(p, spec):
+    cfg = {"name": spec["name"], "state_topic": f"{p}/state/{spec['obj']}"}
+    for key, ha_key in (("unit", "unit_of_measurement"), ("device_class", "device_class"),
+                        ("state_class", "state_class"), ("options", "options"),
+                        ("precision", "suggested_display_precision"),
+                        ("category", "entity_category"), ("icon", "icon")):
+        if key in spec:
+            cfg[ha_key] = spec[key]
+    return cfg
+
+
 def discovery_payloads(s):
     p = s.mqtt_prefix
 
@@ -37,49 +150,63 @@ def discovery_payloads(s):
         return f"{p}/set/{x}"
 
     out = []
-    out.append(_e(p, "camera", "still", {"name": "Camera", "topic": f"{p}/still"}))
-    # HA publishes a retained PNG here when the screenshot button is pressed;
+    # name null marks the still as the device's main feature, so it shows as
+    # "iPhone Camera" rather than "iPhone Camera Camera".
+    out.append(_e(p, "camera", "still", {"name": None, "topic": f"{p}/still",
+                                         "icon": "mdi:camera"}))
+    # A retained PNG is published here when the screenshot button is pressed;
     # a distinct entity so it doesn't collide with the still camera above.
-    out.append(_e(p, "camera", "screenshot", {"name": "Screenshot", "topic": f"{p}/screenshot"}))
-    numbers = {
-        "interval_s": (30, 3600, 1), "fixed_depth": (1, 1000, 1),
-        "target_level": (1, 255, 1), "subject_percentile": (1, 50, 1),
-        "clean_factor": (1, 64, 1), "max_depth": (1, 2000, 1),
-        "window_max_s": (1, 120, 1), "ramp_tau_s": (0, 7200, 10),
-        "night_key": (0.01, 0.5, 0.01), "stretch_strength": (1, 60, 1),
-        "chroma_radius": (0, 12, 0.5), "denoise_strength": (0, 20, 0.5),
-    }
-    for name, (lo, hi, step) in numbers.items():
-        out.append(_e(p, "number", name, {"name": name, "state_topic": st(name),
-                     "command_topic": cmd(name), "min": lo, "max": hi, "step": step}))
-    for c in range(3):
-        out.append(_e(p, "number", f"black_level_{c}", {"name": f"black level {c}",
-                     "state_topic": st(f"black_level_{c}"), "command_topic": cmd(f"black_level_{c}"),
-                     "min": 0, "max": 32, "step": 0.1}))
-    selects = {"stacking_mode": ["off", "fixed", "auto"],
-               "white_balance": ["as-shot", "grey-world", "brightest-patch"],
-               "render_intent": ["natural", "inspection"]}
-    for name, opts in selects.items():
-        out.append(_e(p, "select", name, {"name": name, "state_topic": st(name),
-                     "command_topic": cmd(name), "options": opts}))
-    for name in ("stacking_allowed", "autofocus"):
-        out.append(_e(p, "switch", name, {"name": name, "state_topic": st(name),
-                     "command_topic": cmd(name), "payload_on": "true", "payload_off": "false"}))
-    for name in ("capture_now", "screenshot", "relaunch_app"):
-        out.append(_e(p, "button", name, {"name": name, "command_topic": cmd(name)}))
-    sensors = ["stream_state", "frame_rate", "last_frame_age", "subject_level",
-               "depth_used", "depth_required", "capture_duration", "colour_temperature",
-               "effective_exposure_required", "effective_exposure_achieved",
-               "lum_mean", "lum_p1", "lum_p10", "lum_p50", "lum_p90", "lum_p99", "dynamic_range",
-               "highlight_clip", "noise", "snr", "motion", "focus_sharpness",
-               "wb_gain_r", "wb_gain_g", "wb_gain_b",
-               "black_level_applied_r", "black_level_applied_g", "black_level_applied_b",
-               "battery", "battery_temperature", "archive_free_gb"]
-    for name in sensors:
-        out.append(_e(p, "sensor", name, {"name": name, "state_topic": st(name)}))
-    for name, label in (("camera_online", "camera online"), ("charging", "charging")):
-        out.append(_e(p, "binary_sensor", name, {"name": label,
-                     "state_topic": st(name), "payload_on": "true", "payload_off": "false"}))
+    out.append(_e(p, "camera", "screenshot", {"name": "Screenshot", "topic": f"{p}/screenshot",
+                                              "icon": "mdi:cellphone-screenshot",
+                                              "entity_category": "diagnostic"}))
+    for spec in _NUMBERS:
+        name = spec["obj"]
+        cfg = {"name": spec["name"], "state_topic": st(name), "command_topic": cmd(name),
+               "min": spec["lo"], "max": spec["hi"], "step": spec["step"],
+               "entity_category": "config", "mode": "box"}
+        if "unit" in spec:
+            cfg["unit_of_measurement"] = spec["unit"]
+        for key in ("device_class", "icon"):
+            if key in spec:
+                cfg[key] = spec[key]
+        out.append(_e(p, "number", name, cfg))
+    selects = {"stacking_mode": (["off", "fixed", "auto"], "Stacking mode"),
+               "white_balance": (["as-shot", "grey-world", "brightest-patch"], "White balance"),
+               "render_intent": (["natural", "inspection"], "Render intent")}
+    for name, (opts, label) in selects.items():
+        out.append(_e(p, "select", name, {"name": label, "state_topic": st(name),
+                     "command_topic": cmd(name), "options": opts,
+                     "entity_category": "config"}))
+    for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
+                              ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong")):
+        out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
+                     "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
+                     "entity_category": "config", "icon": icon}))
+    # capture_now stays uncategorised: it is the one button that belongs on a
+    # dashboard rather than buried under configuration or diagnostics.
+    buttons = [
+        dict(obj="capture_now", name="Capture now", icon="mdi:camera-iris"),
+        dict(obj="screenshot", name="Phone screenshot", icon="mdi:cellphone-screenshot",
+             category="diagnostic"),
+        dict(obj="relaunch_app", name="Relaunch camera app", device_class="restart",
+             category="config"),
+    ]
+    for spec in buttons:
+        cfg = {"name": spec["name"], "command_topic": cmd(spec["obj"])}
+        if "icon" in spec:
+            cfg["icon"] = spec["icon"]
+        if "device_class" in spec:
+            cfg["device_class"] = spec["device_class"]
+        if "category" in spec:
+            cfg["entity_category"] = spec["category"]
+        out.append(_e(p, "button", spec["obj"], cfg))
+    for spec in _SENSORS:
+        out.append(_e(p, "sensor", spec["obj"], _sensor(p, spec)))
+    for name, label, device_class in (("camera_online", "Camera online", "connectivity"),
+                                      ("charging", "Phone charging", "battery_charging")):
+        out.append(_e(p, "binary_sensor", name, {"name": label, "state_topic": st(name),
+                     "payload_on": "true", "payload_off": "false",
+                     "device_class": device_class, "entity_category": "diagnostic"}))
     return out
 
 
@@ -98,7 +225,11 @@ class MqttIO:
     def _on_connect(self, c, u, flags, rc, props=None):
         c.subscribe(f"{self.s.mqtt_prefix}/set/#")
         for topic, cfg in discovery_payloads(self.s):
-            c.publish(topic, json.dumps({k: v for k, v in cfg.items() if v is not None}), retain=True)
+            # Published as built, with no None-stripping: `"name": null` is a
+            # meaningful value that marks an entity as its device's main
+            # feature, and is not the same as leaving the key out. The builders
+            # omit keys that do not apply.
+            c.publish(topic, json.dumps(cfg), retain=True)
         self.set_available(True)
         # Runs on every (re)connect, so the supervisor can republish state that a
         # broker restart dropped.
