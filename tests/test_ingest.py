@@ -190,6 +190,48 @@ def test_stop_returns_promptly_while_blocked_on_a_read():
     assert not ing._thread.is_alive()
 
 
+def test_stop_reports_whether_the_thread_actually_exited():
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        ing = _cam_ing(cam, buf, states); ing.start()
+        assert _wait_for(lambda: buf.latest() is not None)
+        assert ing.stop() is True
+    assert not ing._thread.is_alive()
+
+
+def test_restarting_never_leaves_two_threads_connected_to_the_phone():
+    """The phone must have exactly one client. A second ingest thread both
+    doubles the load and churns connections, which is what wedges the app."""
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        ing = _cam_ing(cam, buf, states)
+        ing.start()
+        first = ing._thread
+        assert _wait_for(lambda: buf.latest() is not None)
+        ing.start()                      # restart without an explicit stop
+        second = ing._thread
+        try:
+            assert second is not first
+            assert not first.is_alive(), "the previous ingest thread was left running"
+            assert _wait_for(lambda: second.is_alive())
+        finally:
+            ing.stop()
+    assert threading.active_count() < 20
+
+
+def test_connect_to_a_blackholed_address_is_bounded_by_connect_timeout():
+    """A phone asleep at the TCP level blocks in connect(), where there is no
+    socket for stop() to shut down, so that wait must be short by itself."""
+    buf = RingBuffer(5_000_000); states = []
+    # 192.0.2.0/24 is TEST-NET-1: routable-looking, never answers.
+    ing = _ing("192.0.2.1", 8080, buf, states, connect_timeout=0.3, read_timeout=30.0)
+    ing.start()
+    assert _wait_for(lambda: "unreachable" in states, timeout=5.0)
+    t0 = time.monotonic()
+    assert ing.stop() is True
+    assert time.monotonic() - t0 < 3.0
+
+
 def test_stopping_is_not_reported_as_a_failure():
     buf = RingBuffer(5_000_000); states = []
     with FakeCamera() as cam:

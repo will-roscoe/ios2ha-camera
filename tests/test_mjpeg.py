@@ -91,6 +91,28 @@ def test_media_endpoints_require_basic_auth():
         assert e.value.code == 401
 
 
+def _part_with_length(payload, declared):
+    return (b"--" + BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n"
+            + b"Content-Length: %d\r\n\r\n" % declared + payload + b"\r\n")
+
+
+def test_a_short_content_length_is_rejected_rather_than_truncating_a_frame():
+    """Slicing on a length that undershoots yields a frame with no EOI, which
+    would reach the stacker as a corrupt image."""
+    good = _jpeg(11)
+    data = _part_with_length(good, len(good) - 40) + _part(good)
+    frames = list(iter_multipart(_Stream(data), BOUNDARY))
+    assert frames == [good], "the lying part must be dropped and the next one still parsed"
+
+
+def test_a_long_content_length_does_not_swallow_the_next_frame():
+    """Overshooting eats the following boundary and loses a whole frame."""
+    a, b = _jpeg(12), _jpeg(13)
+    data = _part_with_length(a, len(a) + 60) + _part(b)
+    frames = list(iter_multipart(_Stream(data), BOUNDARY))
+    assert frames == [b]
+
+
 def test_streaming_off_answers_503():
     with FakeCamera() as cam:
         cam.set_mode("off")

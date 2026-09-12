@@ -33,7 +33,7 @@ class _HttpStatus(Exception):
 class Ingestor:
     def __init__(self, host, port, user, password, buffer, on_state=lambda s: None, *,
                  backoff_initial=1.0, backoff_max=30.0, read_timeout=10.0,
-                 healthy_after_s=10.0):
+                 healthy_after_s=10.0, connect_timeout=5.0):
         self.host, self.port = host, port
         self._auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
         self.buffer = buffer
@@ -43,6 +43,10 @@ class Ingestor:
         self.backoff_max = backoff_max
         self.read_timeout = read_timeout
         self.healthy_after_s = healthy_after_s
+        # Separate from read_timeout: a phone that is asleep at the TCP level
+        # blocks in connect(), where there is no socket yet for stop() to shut
+        # down, so that wait has to be short on its own account.
+        self.connect_timeout = connect_timeout
         self._stop = threading.Event()
         self._thread = None
         self._sock = None
@@ -56,11 +60,18 @@ class Ingestor:
             self.on_state(s)
 
     def start(self):
+        # Never leave two ingest threads running: the phone must have exactly
+        # one client, and a second one both doubles the load and churns
+        # connections, which is what wedges the app.
+        if self._thread is not None and self._thread.is_alive():
+            log.warning("start() called while still running; stopping the previous thread first")
+            self.stop()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="ingest", daemon=True)
         self._thread.start()
 
-    def stop(self):
+    def stop(self, timeout=None):
+        """Stop ingesting. Returns whether the thread actually exited."""
         self._stop.set()
         # A read blocked on a silent socket would hold the thread for up to
         # read_timeout; shutting the socket down unblocks it at once.
@@ -70,8 +81,17 @@ class Ingestor:
                     self._sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-        if self._thread:
-            self._thread.join(timeout=3)
+        if self._thread is None:
+            return True
+        # A thread blocked inside connect() has no socket to shut down, so the
+        # wait has to cover that timeout rather than an unrelated constant.
+        if timeout is None:
+            timeout = max(self.connect_timeout, self.read_timeout) + 2.0
+        self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            log.warning("ingest thread did not exit within %.1fs", timeout)
+            return False
+        return True
 
     def _run(self):
         backoff = self.backoff_initial
@@ -96,13 +116,14 @@ class Ingestor:
             backoff = min(backoff * 2, self.backoff_max)
 
     def _stream_once(self):
-        conn = http.client.HTTPConnection(self.host, self.port, timeout=self.read_timeout)
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=self.connect_timeout)
         try:
             conn.connect()
             # Captured here because getresponse() drops conn.sock for a
             # close-delimited response, and stop() needs it to unblock a read.
             with self._sock_lock:
                 self._sock = conn.sock
+            conn.sock.settimeout(self.read_timeout)
             if self._stop.is_set():
                 return
             conn.request("GET", "/mjpeg", headers={"Authorization": self._auth})

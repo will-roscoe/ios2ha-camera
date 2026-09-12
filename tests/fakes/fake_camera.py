@@ -15,7 +15,10 @@ import threading
 import numpy as np
 from PIL import Image
 
-CREDENTIALS = ("root", "william2004")
+# A placeholder, deliberately not the real device password: the constraint is
+# that secrets live in the deployment .env and never in committed files. The
+# fake serves and the tests consume the same constant, so the value is free.
+CREDENTIALS = ("root", "not-the-real-password")
 BOUNDARY = b"guardianeyeframe"
 
 

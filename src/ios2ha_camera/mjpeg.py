@@ -6,6 +6,10 @@ for a part that omits it: scanning is not safe in general, because a frame
 carrying an EXIF thumbnail contains a second SOI/EOI pair and would be cut short.
 """
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 class PartTooLarge(Exception):
     """Raised when the buffer grows past the cap without a part completing.
@@ -68,9 +72,22 @@ def iter_multipart(stream, boundary: bytes, chunk_size: int = 65536,
                 if not fill():
                     return
             payload = bytes(buf[body:end])
+            if not _is_whole_jpeg(payload):
+                # The declared length disagrees with the bytes that followed. A
+                # short one truncates the frame, a long one swallows the next
+                # part's boundary and loses a frame -- both silently, and a
+                # corrupt frame would go straight into the stack. Drop this part
+                # and resync on the next boundary rather than yield it.
+                log.warning("part declared %d bytes but is not a whole JPEG; resyncing", length)
+                del buf[:body]
+                continue
 
         del buf[:end]
         yield payload
+
+
+def _is_whole_jpeg(payload: bytes) -> bool:
+    return payload.startswith(b"\xff\xd8\xff") and payload.endswith(b"\xff\xd9")
 
 
 def _content_length(headers: bytes):

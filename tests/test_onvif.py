@@ -14,15 +14,21 @@ from ios2ha_camera import onvif
 from ios2ha_camera.onvif import OnvifClient, wsse_header
 
 
+# A placeholder, deliberately not the real device password: secrets belong in
+# the deployment .env, never in a committed file. The digest is recomputed from
+# this same constant, so the value itself is arbitrary.
+PASSWORD = "not-the-real-password"
+
+
 def test_wsse_digest_is_correct():
-    h = wsse_header("root", "william2004")
+    h = wsse_header("root", PASSWORD)
     assert "UsernameToken" in h and "root" in h
     # extract nonce, created, digest and recompute
     nonce_b64 = re.search(r"Nonce[^>]*>([^<]+)<", h).group(1)
     created = re.search(r"Created>([^<]+)<", h).group(1)
     digest = re.search(r'PasswordDigest">([^<]+)<', h).group(1)
     expect = base64.b64encode(hashlib.sha1(
-        base64.b64decode(nonce_b64) + created.encode() + b"william2004").digest()).decode()
+        base64.b64decode(nonce_b64) + created.encode() + PASSWORD.encode()).digest()).decode()
     assert digest == expect
 
 
