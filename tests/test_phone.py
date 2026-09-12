@@ -27,16 +27,19 @@ def test_battery_missing_fields_default_safely(monkeypatch):
 
 def test_is_running_true_when_bundle_process_present(monkeypatch):
     pm = PhoneManager("com.example.guardianeye")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "GuardianEye"}, {"name": "SpringBoard"}])
     assert pm.is_running() is True
 
 def test_is_running_false_when_absent(monkeypatch):
     pm = PhoneManager("com.example.guardianeye")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "SpringBoard"}])
     assert pm.is_running() is False
 
 def test_is_running_raises_when_no_device(monkeypatch):
     pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     def boom(): raise RuntimeError("no device")
     monkeypatch.setattr(pm, "_proclist", boom)
     with pytest.raises(PhoneUnavailable):
@@ -44,11 +47,13 @@ def test_is_running_raises_when_no_device(monkeypatch):
 
 def test_launch_true_when_pid_returned(monkeypatch):
     pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     monkeypatch.setattr(pm, "_launch", lambda: 4242)
     assert pm.launch() is True
 
 def test_launch_raises_when_no_device(monkeypatch):
     pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     def boom(): raise RuntimeError("no device")
     monkeypatch.setattr(pm, "_launch", boom)
     with pytest.raises(PhoneUnavailable):
@@ -56,16 +61,108 @@ def test_launch_raises_when_no_device(monkeypatch):
 
 def test_screenshot_returns_bytes(monkeypatch):
     pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
     monkeypatch.setattr(pm, "_take_screenshot", lambda: b"\x89PNG...")
     assert pm.screenshot() == b"\x89PNG..."
 
-def test_screenshot_raises_when_developer_image_not_mounted(monkeypatch):
-    """DDI mount does not survive a phone reboot -- must surface as PhoneUnavailable, not crash."""
+def test_screenshot_raises_when_take_screenshot_fails(monkeypatch):
+    """Even with the DDI mounted, a failing screenshot call must surface as
+    PhoneUnavailable, not crash."""
     pm = PhoneManager("com.example")
-    def boom(): raise RuntimeError("developer image not mounted")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    def boom(): raise RuntimeError("screenshotr didn't return ready state")
     monkeypatch.setattr(pm, "_take_screenshot", boom)
     with pytest.raises(PhoneUnavailable):
         pm.screenshot()
+
+def test_is_running_triggers_mount(monkeypatch):
+    pm = PhoneManager("com.example.guardianeye")
+    mounted = []
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: mounted.append(1))
+    monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "GuardianEye"}])
+    assert pm.is_running() is True
+    assert mounted == [1]
+
+def test_launch_triggers_mount(monkeypatch):
+    pm = PhoneManager("com.example")
+    mounted = []
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: mounted.append(1))
+    monkeypatch.setattr(pm, "_launch", lambda: 4242)
+    assert pm.launch() is True
+    assert mounted == [1]
+
+def test_screenshot_triggers_mount(monkeypatch):
+    pm = PhoneManager("com.example")
+    mounted = []
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: mounted.append(1))
+    monkeypatch.setattr(pm, "_take_screenshot", lambda: b"\x89PNG...")
+    assert pm.screenshot() == b"\x89PNG..."
+    assert mounted == [1]
+
+def test_battery_does_not_mount(monkeypatch):
+    """DiagnosticsService needs no DDI -- battery() must stay available (and cheap) on a
+    freshly rebooted, unmounted phone. Mounting here would be a regression."""
+    pm = PhoneManager("com.example")
+    def must_not_be_called():
+        raise AssertionError("battery() must not mount the DDI")
+    monkeypatch.setattr(pm, "_mount_ddi", must_not_be_called)
+    monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {"CurrentCapacity": 50, "Temperature": 3000, "IsCharging": False})
+    b = pm.battery()
+    assert b["level"] == 50
+
+def _async_return(value):
+    async def f():
+        return value
+    return f
+
+class _FakeLockdown:
+    def __init__(self):
+        self.closed = False
+    async def close(self):
+        self.closed = True
+
+def test_mount_ddi_treats_already_mounted_as_success(monkeypatch):
+    """A phone that has not rebooted since the last mount answers AlreadyMountedError --
+    that is the normal case, not a failure, and must not block is_running/launch/screenshot."""
+    from pymobiledevice3.services.mobile_image_mounter import AlreadyMountedError
+    pm = PhoneManager("com.example")
+    fake = _FakeLockdown()
+    monkeypatch.setattr(pm, "_lockdown", _async_return(fake))
+
+    async def already_mounted(lockdown):
+        raise AlreadyMountedError()
+    monkeypatch.setattr(pm, "_auto_mount", already_mounted)
+
+    pm._mount_ddi()  # must not raise
+    assert pm._ddi_mounted is True
+    assert fake.closed is True
+
+def test_mount_ddi_failure_surfaces_as_phone_unavailable_with_cause(monkeypatch):
+    pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_lockdown", _async_return(_FakeLockdown()))
+
+    async def refused(lockdown):
+        raise ConnectionRefusedError("mounter service refused")
+    monkeypatch.setattr(pm, "_auto_mount", refused)
+
+    with pytest.raises(PhoneUnavailable) as excinfo:
+        pm._call(pm._mount_ddi)
+    assert "ConnectionRefusedError" in str(excinfo.value)
+    assert pm._ddi_mounted is False  # a failure must not be remembered -- the next call retries
+
+def test_mount_ddi_skipped_once_already_mounted(monkeypatch):
+    """Lazy: do not re-mount on every call once the first attempt has succeeded."""
+    pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_lockdown", _async_return(_FakeLockdown()))
+    calls = []
+
+    async def record(lockdown):
+        calls.append(1)
+    monkeypatch.setattr(pm, "_auto_mount", record)
+
+    pm._mount_ddi()
+    pm._mount_ddi()
+    assert calls == [1]
 
 def test_battery_from_running_event_loop_raises_misuse_not_unavailable(monkeypatch):
     """Calling a blocking PhoneManager method from a coroutine already running on an

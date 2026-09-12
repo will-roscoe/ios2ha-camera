@@ -37,6 +37,29 @@ def test_from_env_leaves_unset_fields_at_default():
     assert s.archive_dir == Settings().archive_dir
 
 
+def test_apply_control_rejects_a_value_outside_a_selects_options():
+    import pytest
+
+    s = Settings()
+    for name, bad in [("white_balance", "sepia"), ("render_intent", "artistic"),
+                      ("stacking_mode", "maximum")]:
+        with pytest.raises(ValueError):
+            s.apply_control(name, bad)
+    assert s.white_balance == "as-shot"
+    assert s.render_intent == "natural"
+    assert s.stacking_mode == "auto"
+
+
+def test_apply_control_accepts_every_declared_option():
+    s = Settings()
+    for value in ("off", "fixed", "auto"):
+        assert s.apply_control("stacking_mode", value) is True
+    for value in ("as-shot", "grey-world", "brightest-patch"):
+        assert s.apply_control("white_balance", value) is True
+    for value in ("natural", "inspection"):
+        assert s.apply_control("render_intent", value) is True
+
+
 def test_apply_control_sets_one_black_level_channel():
     """Discovery publishes set/black_level_{0,1,2}; each must land in one channel."""
     s = Settings()

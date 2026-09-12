@@ -70,9 +70,10 @@ class FakeOnvif:
 
 
 class FakePhone:
-    def __init__(self, battery=None, error=None):
+    def __init__(self, battery=None, error=None, running=False):
         self._battery = battery or {"level": 88, "temperature": 27.5, "charging": True}
         self._error = error
+        self._running = running
         self.launched = 0
 
     def battery(self):
@@ -82,6 +83,9 @@ class FakePhone:
 
     def screenshot(self):
         return b"\x89PNG\r\n\x1a\n fake"
+
+    def is_running(self):
+        return self._running
 
     def launch(self):
         self.launched += 1
@@ -279,11 +283,33 @@ def test_screenshot_publishes_a_png():
     assert sup.mqtt.screenshots and sup.mqtt.screenshots[0].startswith(b"\x89PNG")
 
 
-def test_relaunch_app_calls_the_phone():
-    phone = FakePhone()
+def test_relaunch_app_calls_the_phone_and_reports_whether_it_was_running():
+    """This button is for a dead app; relaunching a live one loses the stream
+    it was already serving, so the event has to say which happened."""
+    phone = FakePhone(running=True)
     sup = _sup(phone=phone)
     sup.handle_control("relaunch_app", "PRESS")
     assert phone.launched == 1
+    assert sup.mqtt.events[-1]["was_running"] is True
+
+
+def test_a_value_outside_a_selects_options_is_rejected_and_corrected():
+    """Home Assistant's select constrains a person, but a script or
+    mosquitto_pub can publish anything, and silently falling back to a default
+    mid-render is the kind of quiet wrongness this project exists to avoid."""
+    s = Settings()
+    sup = _sup(s)
+    sup.handle_control("white_balance", "sepia")      # must not raise
+    assert s.white_balance == "as-shot"
+    assert sup.mqtt.published["white_balance"] == "as-shot"
+
+
+def test_a_valid_select_value_still_applies():
+    s = Settings()
+    sup = _sup(s)
+    sup.handle_control("white_balance", "grey-world")
+    assert s.white_balance == "grey-world"
+    assert sup.mqtt.published["white_balance"] == "grey-world"
 
 
 def test_unknown_control_is_ignored_quietly():

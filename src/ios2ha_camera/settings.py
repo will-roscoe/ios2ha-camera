@@ -34,6 +34,15 @@ _ENV_MAP = {
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# Controls with a fixed set of values. Home Assistant's select entity keeps a
+# person to these, but a typo from an automation or mosquitto_pub would
+# otherwise be accepted and then silently fall back to a default mid-render.
+_CHOICES = {
+    "stacking_mode": ("off", "fixed", "auto"),
+    "white_balance": ("as-shot", "grey-world", "brightest-patch"),
+    "render_intent": ("natural", "inspection"),
+}
+
 
 @dataclass
 class Settings:
@@ -87,6 +96,8 @@ class Settings:
             return True
         if name not in CONTROLS:
             return False
+        if name in _CHOICES and value not in _CHOICES[name]:
+            raise ValueError(f"{name} must be one of {_CHOICES[name]}, not {value!r}")
         if name == "black_level_override" and value is not None:
             value = tuple(float(v) for v in value)
         setattr(self, name, value)

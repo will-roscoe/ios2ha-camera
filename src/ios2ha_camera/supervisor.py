@@ -235,17 +235,31 @@ class Supervisor:
                 self._submit(name, self._relaunch)
             elif name == "autofocus":
                 self._submit(name, lambda: self._autofocus(bool(value)))
-            elif self.s.apply_control(name, value):
-                # Echo what was stored, not what arrived: the black-level
-                # channels live inside a tuple and are coerced on the way in.
-                channel = BLACK_LEVEL_CHANNELS.get(name)
-                stored = (self.s.black_level_override[channel] if channel is not None
-                          else getattr(self.s, name, value))
-                self.publish_state({name: stored})
             else:
-                log.warning("ignoring unknown control %r", name)
+                self._apply_setting(name, value)
         except Exception:
             log.exception("control %r failed", name)
+
+    def _apply_setting(self, name, value):
+        try:
+            known = self.s.apply_control(name, value)
+        except ValueError as e:
+            # A value outside a select's options, which only a script or a
+            # hand-published message can produce. Say so, and put the real
+            # value back so Home Assistant does not keep showing the rejected
+            # one as if it had taken effect.
+            log.warning("rejected control %s: %s", name, e)
+            self.publish_state({name: getattr(self.s, name, None)})
+            return
+        if not known:
+            log.warning("ignoring unknown control %r", name)
+            return
+        # Echo what was stored, not what arrived: the black-level channels live
+        # inside a tuple and are coerced on the way in.
+        channel = BLACK_LEVEL_CHANNELS.get(name)
+        stored = (self.s.black_level_override[channel] if channel is not None
+                  else getattr(self.s, name, value))
+        self.publish_state({name: stored})
 
     def _submit(self, name, fn):
         self._device_executor.submit(self._run_device_action, name, fn)
@@ -266,10 +280,14 @@ class Supervisor:
     def _relaunch(self):
         if self.phone is None:
             raise RuntimeError("phone management is not configured")
+        # Report whether it was already running: this button is for a dead app,
+        # and relaunching a live one loses the stream it was already serving.
+        was_running = self.phone.is_running()
         self.phone.launch()
         # Deliberately an event, not a state: relaunching leaves streaming off
         # until someone taps Start streaming in the app.
-        self._event({"ts": time.time(), "control": "relaunch_app", "result": "launched"})
+        self._event({"ts": time.time(), "control": "relaunch_app",
+                     "result": "launched", "was_running": was_running})
 
     def _autofocus(self, on):
         try:
