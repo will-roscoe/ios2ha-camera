@@ -1,0 +1,29 @@
+# Local-only working material (specs, plans, handoffs, session memory).
+# These are deliberately not tracked; see .claude/handoff/ for why.
+.claude/superpowers/
+.claude/handoff/
+.claude/spike-images/
+.claude/remember/
+.remember/
+.superpowers/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime output (stills, archives, logs) must never be committed
+archive/
+*.log
