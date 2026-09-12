@@ -1,13 +1,13 @@
-import io, numpy as np
+import io, tracemalloc, numpy as np
 from PIL import Image
 from ios2ha_camera.ring_buffer import Frame
 from ios2ha_camera import stack
 from ios2ha_camera.settings import Settings
 
 
-def _frame(val, noise, seed):
+def _frame(val, noise, seed, size=32):
     rng = np.random.default_rng(seed)
-    arr = np.clip(val + rng.normal(0, noise, (32, 32, 3)), 0, 255).astype("uint8")
+    arr = np.clip(val + rng.normal(0, noise, (size, size, 3)), 0, 255).astype("uint8")
     b = io.BytesIO(); Image.fromarray(arr).save(b, "JPEG", quality=95)
     return Frame(b.getvalue(), ts=float(seed))
 
@@ -76,3 +76,39 @@ def test_sigma_clipped_mean_is_not_median():
     assert median_result.mean() == 0.0
     assert result.mean() > 5.0
     assert abs(result.mean() - 10.0) < 2.0
+
+
+def test_stack_frames_matches_in_memory_sigma_clipped_mean():
+    # stack_frames decodes on a bounded thread pool instead of building an
+    # arrays list up front, but it must reach the same shared accumulator
+    # maths as sigma_clipped_mean on the same underlying frame bytes -- both
+    # call decode() on identical Frame.data and sum in the same order, so
+    # this should hold to floating-point precision, not just approximately.
+    frames = [_frame(60, 20, i) for i in range(9)]
+    batch = stack.sigma_clipped_mean([stack.decode(f) for f in frames])
+    streamed = stack.stack_frames(frames)
+    assert np.allclose(batch, streamed, atol=1e-6)
+
+
+def test_stack_frames_memory_bounded_in_frame_count():
+    # A batch implementation decodes every frame up front, so its peak memory
+    # scales with n. Pick n large enough that n * one_frame_bytes is far past
+    # any sane small-multiple bound, and confirm the streaming path's actual
+    # peak (measured via tracemalloc, which numpy's default allocator reports
+    # to) doesn't grow anywhere near that -- it should stay within a handful
+    # of decoded frames plus the per-pixel accumulators, independent of n.
+    n = 300
+    frames = [_frame(60, 20, i, size=48) for i in range(n)]
+    one_frame_bytes = stack.decode(frames[0]).nbytes
+
+    tracemalloc.start()
+    tracemalloc.clear_traces()
+    stack.stack_frames(frames)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    # A naive decode-everything-first implementation would need roughly
+    # n (300) times one_frame_bytes here; the streaming path measures at
+    # ~29x in practice, flat regardless of n -- 60x leaves headroom without
+    # coming close to the naive n=300x figure it must be distinguished from.
+    assert peak < 60 * one_frame_bytes

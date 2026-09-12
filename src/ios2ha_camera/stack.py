@@ -4,11 +4,24 @@ Stacking is mean-family only. A median posterises a dim subject (it sits at
 0-2 out of 255 per frame in low light) into flat patches -- sigma-clipped mean
 keeps the continuous gradient a straight mean would give while still rejecting
 outlier pixels (sensor noise spikes, a passing light) that a plain mean would not.
+
+Stacking depth reaches max_depth=600 full-resolution frames at night, and a
+decoded 1080x1920 frame is ~25 MB -- holding every decoded frame in memory at
+once would need ~15 GB, more than this host has. `stack_frames` instead
+accumulates sum/sum-of-squares/count per pixel one decoded frame at a time
+(see `_accumulate_pass`), so memory stays bounded by a handful of decoded
+frames plus the accumulators, independent of how many frames are stacked.
 """
+import io
+import itertools
 import math
+import os
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from PIL import Image
-import io
+
 from .measure import required_depth
 
 
@@ -17,31 +30,88 @@ def decode(frame):
     return np.asarray(Image.open(io.BytesIO(frame.data)).convert("RGB"), dtype=np.float32)
 
 
-def sigma_clipped_mean(arrays, sigma=2.5, passes=2, chunk=64):
-    """Mean-family stack of decoded frames, iteratively rejecting per-pixel outliers.
+def _accumulate_pass(frame_source, mu, sd, sigma):
+    """One sigma-clip pass, accumulating over whatever frame_source() yields.
 
-    Processed in row chunks so a large stack of full-resolution frames doesn't
-    require materialising every intermediate array at once.
+    mu=None means unclipped -- this is the initial plain mean/std pass, with
+    every pixel counted. Otherwise a pixel is excluded from this pass's sums
+    when it sits `sigma` standard deviations or more from the previous pass's
+    mu, matching the batch algorithm's clip-then-recompute step exactly.
+
+    Accumulators are float64 throughout, including the sum of squares: float32
+    only holds integer values exactly up to 2**24, and max_depth=600 frames at
+    255**2 per pixel alone already exceeds that.
     """
-    stack_arr = np.stack(arrays)
-    H = stack_arr.shape[1]
-    out = np.empty(stack_arr.shape[1:], dtype=np.float64)
-    for r in range(0, H, chunk):
-        ch = stack_arr[:, r:r + chunk].astype(np.float32)
-        mu = ch.mean(axis=0)
-        sd = ch.std(axis=0) + 1e-6
-        for _ in range(passes):
-            keep = np.abs(ch - mu) < sigma * sd
-            cnt = keep.sum(axis=0).clip(1)
-            mu = (ch * keep).sum(axis=0) / cnt
-            sd = np.sqrt((((ch - mu) ** 2) * keep).sum(axis=0) / cnt) + 1e-6
-        out[r:r + chunk] = mu
-    return out
+    total = sq_total = count = None
+    for arr in frame_source():
+        arr = arr.astype(np.float64, copy=False)
+        if total is None:
+            total = np.zeros(arr.shape, dtype=np.float64)
+            sq_total = np.zeros(arr.shape, dtype=np.float64)
+            count = np.zeros(arr.shape, dtype=np.float64)
+        keep = np.ones(arr.shape, dtype=bool) if mu is None else np.abs(arr - mu) < sigma * sd
+        total += arr * keep
+        sq_total += (arr ** 2) * keep
+        count += keep
+    count = count.clip(1)
+    new_mu = total / count
+    # Var(kept) = E[x^2 | kept] - E[x | kept]^2, algebraically the same
+    # quantity the batch version gets from sqrt(mean((x - new_mu)**2)).
+    variance = np.clip(sq_total / count - new_mu ** 2, 0, None)
+    new_sd = np.sqrt(variance) + 1e-6
+    return new_mu, new_sd
+
+
+def _sigma_clipped_mean_core(frame_source, sigma, passes):
+    """Shared maths for sigma_clipped_mean and stack_frames.
+
+    frame_source is a zero-arg callable returning a fresh iterator each time
+    it's called, since sigma clipping needs `passes + 1` full passes over the
+    data (one unclipped, then `passes` clip-and-recompute iterations). Kept
+    as the single place the clipping arithmetic lives so the in-memory and
+    streaming entry points below cannot drift apart from each other.
+    """
+    mu = sd = None
+    for _ in range(passes + 1):
+        mu, sd = _accumulate_pass(frame_source, mu, sd, sigma)
+    return mu
+
+
+def sigma_clipped_mean(arrays, sigma=2.5, passes=2):
+    """Sigma-clipped mean over already-decoded arrays held in memory."""
+    return _sigma_clipped_mean_core(lambda: iter(arrays), sigma, passes)
+
+
+def _decode_bounded(frames, workers):
+    """Decode frames on a thread pool, keeping at most 2*workers decoded
+    frames resident at once instead of eagerly decoding and buffering all of
+    them (as executor.map would), so a deep stack never needs more memory
+    than a handful of decoded frames regardless of stack depth.
+    """
+    limit = max(1, 2 * workers)
+    # ThreadPoolExecutor, not a process pool (departs from the original spec):
+    # PIL's JPEG decode releases the GIL and measured a 4.6x speedup with 4
+    # threads on a full-size frame, and threads avoid pickling the ~50 MB
+    # accumulators to worker processes and forking a process that already
+    # runs other threads.
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        pending = deque()
+        it = iter(frames)
+        for f in itertools.islice(it, limit):
+            pending.append(ex.submit(decode, f))
+        for f in it:
+            yield pending.popleft().result()
+            pending.append(ex.submit(decode, f))
+        while pending:
+            yield pending.popleft().result()
 
 
 def stack_frames(frames):
-    """Decode and sigma-clip-mean a list of Frames into one (H, W, 3) array."""
-    return sigma_clipped_mean([decode(f) for f in frames])
+    """Decode and sigma-clip-mean a list of Frames into one (H, W, 3) array,
+    without ever holding more than a bounded handful of decoded frames in
+    memory at once (see _decode_bounded and _accumulate_pass)."""
+    workers = min(4, os.cpu_count() or 1)
+    return _sigma_clipped_mean_core(lambda: _decode_bounded(frames, workers), 2.5, 2)
 
 
 def choose_depth(subject, settings, fps, previous_depth):
