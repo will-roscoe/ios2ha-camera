@@ -27,3 +27,4 @@ htmlcov/
 # Runtime output (stills, archives, logs) must never be committed
 archive/
 *.log
+.claude/deploy/
