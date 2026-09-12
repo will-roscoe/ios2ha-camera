@@ -282,7 +282,15 @@ class Supervisor:
             raise RuntimeError("phone management is not configured")
         # Report whether it was already running: this button is for a dead app,
         # and relaunching a live one loses the stream it was already serving.
-        was_running = self.phone.is_running()
+        # Best effort only, and never allowed to fail the launch: is_running
+        # goes over the DVT channel, which needs the developer image mounted,
+        # and that is least likely to work on exactly the reboot that killed
+        # the app -- the moment this button matters most.
+        try:
+            was_running = self.phone.is_running()
+        except Exception as e:
+            log.info("could not check whether the app was running: %s", e)
+            was_running = None
         self.phone.launch()
         # Deliberately an event, not a state: relaunching leaves streaming off
         # until someone taps Start streaming in the app.

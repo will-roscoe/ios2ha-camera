@@ -70,10 +70,11 @@ class FakeOnvif:
 
 
 class FakePhone:
-    def __init__(self, battery=None, error=None, running=False):
+    def __init__(self, battery=None, error=None, running=False, running_error=None):
         self._battery = battery or {"level": 88, "temperature": 27.5, "charging": True}
         self._error = error
         self._running = running
+        self._running_error = running_error
         self.launched = 0
 
     def battery(self):
@@ -85,6 +86,8 @@ class FakePhone:
         return b"\x89PNG\r\n\x1a\n fake"
 
     def is_running(self):
+        if self._running_error:
+            raise self._running_error
         return self._running
 
     def launch(self):
@@ -291,6 +294,18 @@ def test_relaunch_app_calls_the_phone_and_reports_whether_it_was_running():
     sup.handle_control("relaunch_app", "PRESS")
     assert phone.launched == 1
     assert sup.mqtt.events[-1]["was_running"] is True
+
+
+def test_relaunch_still_happens_when_the_running_check_fails():
+    """is_running goes over the DVT channel, which needs the developer image
+    mounted -- least likely to work on exactly the reboot that killed the app.
+    A diagnostic must never defeat the recovery it is describing."""
+    phone = FakePhone(running_error=PhoneUnavailable("developer image not mounted"))
+    sup = _sup(phone=phone)
+    sup.handle_control("relaunch_app", "PRESS")
+    assert phone.launched == 1, "the running check blocked the relaunch"
+    assert sup.mqtt.events[-1]["was_running"] is None
+    assert sup.mqtt.events[-1]["result"] == "launched"
 
 
 def test_a_value_outside_a_selects_options_is_rejected_and_corrected():
