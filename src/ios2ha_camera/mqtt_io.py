@@ -95,9 +95,14 @@ _SENSORS = [
          state_class="measurement", precision=1, category="diagnostic",
          icon="mdi:battery-heart-variant"),
 ]
+def _ordinal(n):
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 _SENSORS += [
-    dict(obj=f"lum_p{p}", name=f"Scene luminance {p}th percentile", state_class="measurement",
-         precision=1, category="diagnostic", icon="mdi:brightness-6")
+    dict(obj=f"lum_p{p}", name=f"Scene luminance {_ordinal(p)} percentile",
+         state_class="measurement", precision=1, category="diagnostic", icon="mdi:brightness-6")
     for p in (1, 10, 50, 90, 99)
 ]
 _SENSORS += [
