@@ -89,7 +89,7 @@ Five alerts are worth having, and all five exist:
 
 | Alert | Trigger | Why |
 |---|---|---|
-| Offline | `camera_online` off for 5 min | The original failure |
+| Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting |
 | Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging" |
 | Battery low | Below 40% | It will stop capturing when the phone dies |
 | Battery hot | Above 42 °C for 10 min | Charges and streams continuously |
