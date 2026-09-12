@@ -214,6 +214,12 @@ class Supervisor:
                  "path": path, "archived": path is not None}
         if path is None:
             event["archive_skipped"] = "low_disk"
+        # One line per still. Without it the log goes silent for ten minutes at
+        # a time and there is no way to see when the last good still was, which
+        # is the first thing anyone asks when the timelapse has a gap.
+        log.info("still: depth %d of %d, subject %.1f, %.1f s, %s",
+                 used, depth, subject, time.monotonic() - t0,
+                 f"archived {path}" if path else "NOT archived (low disk)")
         return self._event(event)
 
     # -- controls -----------------------------------------------------------
@@ -259,6 +265,7 @@ class Supervisor:
         channel = BLACK_LEVEL_CHANNELS.get(name)
         stored = (self.s.black_level_override[channel] if channel is not None
                   else getattr(self.s, name, value))
+        log.info("control %s = %r", name, stored)
         self.publish_state({name: stored})
 
     def _submit(self, name, fn):
