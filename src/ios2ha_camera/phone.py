@@ -130,10 +130,22 @@ class PhoneManager:
 
     def battery(self):
         d = self._call(self._diagnostics_battery) or {}
+        adapter = d.get("AdapterDetails") or {}
+        raw_max, design = d.get("AppleRawMaxCapacity"), d.get("DesignCapacity")
         return {
             "level": d.get("CurrentCapacity"),
             "temperature": (d.get("Temperature") or 0) / 100.0,
             "charging": bool(d.get("IsCharging")),
+            # Signed, and the figure IsCharging cannot give you: the phone
+            # reports charging while still losing ground on an underpowered
+            # port, so only the current says which way the battery is going.
+            "current_ma": d.get("InstantAmperage", d.get("Amperage")),
+            # What the port actually offers. A plain USB host port advertises
+            # 3 W, which is marginal for a phone capturing continuously.
+            "charger_watts": adapter.get("Watts"),
+            # Maximum against design capacity. An aged cell has higher internal
+            # resistance, so it runs hotter for the same work.
+            "health_pct": round(100 * raw_max / design, 1) if raw_max and design else None,
         }
 
     def _proclist(self):

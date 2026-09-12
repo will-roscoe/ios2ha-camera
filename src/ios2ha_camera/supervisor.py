@@ -353,7 +353,10 @@ class Supervisor:
             log.info("battery unavailable: %s", e)
             return {}
         return {"battery": b.get("level"), "battery_temperature": b.get("temperature"),
-                "charging": bool(b.get("charging"))}
+                "charging": bool(b.get("charging")),
+                "battery_current_ma": b.get("current_ma"),
+                "charger_watts": b.get("charger_watts"),
+                "battery_health_pct": b.get("health_pct")}
 
     # -- loops --------------------------------------------------------------
 

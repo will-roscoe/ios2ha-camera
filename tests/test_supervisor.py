@@ -71,7 +71,8 @@ class FakeOnvif:
 
 class FakePhone:
     def __init__(self, battery=None, error=None, running=False, running_error=None):
-        self._battery = battery or {"level": 88, "temperature": 27.5, "charging": True}
+        self._battery = battery or {"level": 88, "temperature": 27.5, "charging": True,
+                                    "current_ma": 322, "charger_watts": 3, "health_pct": 80.2}
         self._error = error
         self._running = running
         self._running_error = running_error
@@ -374,7 +375,20 @@ def test_phone_state_is_empty_when_the_cable_is_out():
 
 def test_phone_state_reports_battery_temperature_and_charging():
     sup = _sup(phone=FakePhone())
-    assert sup.phone_state() == {"battery": 88, "battery_temperature": 27.5, "charging": True}
+    assert sup.phone_state() == {
+        "battery": 88, "battery_temperature": 27.5, "charging": True,
+        "battery_current_ma": 322, "charger_watts": 3, "battery_health_pct": 80.2,
+    }
+
+
+def test_phone_state_reports_the_signed_current_not_just_charging():
+    """The phone reports charging while still losing ground on an underpowered
+    port, so only the sign of the current says which way it is going."""
+    draining = FakePhone(battery={"level": 71, "temperature": 38.9, "charging": True,
+                                  "current_ma": -450, "charger_watts": 3, "health_pct": 80.2})
+    state = _sup(phone=draining).phone_state()
+    assert state["charging"] is True
+    assert state["battery_current_ma"] == -450
 
 
 def test_a_misused_phone_call_is_not_disguised_as_an_unplugged_phone():

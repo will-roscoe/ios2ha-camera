@@ -216,3 +216,29 @@ def test_unavailable_errors_keep_the_cause_type():
         pm._call(boom)
     assert "ConnectionAbortedError" in str(excinfo.value)
     assert isinstance(excinfo.value.__cause__, ConnectionAbortedError)
+
+
+def test_battery_reports_power_figures_from_the_diagnostics(monkeypatch):
+    """The keys came from a real device dump; without the current and the
+    adapter wattage there is no way to see an underpowered port."""
+    pm = PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {
+        "CurrentCapacity": 71, "Temperature": 3739, "IsCharging": True,
+        "InstantAmperage": 322, "Amperage": 250,
+        "AdapterDetails": {"Description": "usb host", "Watts": 3, "Current": 500},
+        "AppleRawMaxCapacity": 2167, "DesignCapacity": 2701,
+    })
+    b = pm.battery()
+    assert b["level"] == 71
+    assert b["temperature"] == 37.39
+    assert b["charging"] is True
+    assert b["current_ma"] == 322          # InstantAmperage preferred over Amperage
+    assert b["charger_watts"] == 3
+    assert b["health_pct"] == 80.2         # 2167 / 2701
+
+
+def test_battery_tolerates_a_device_that_omits_the_power_fields(monkeypatch):
+    pm = PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {"CurrentCapacity": 50})
+    b = pm.battery()
+    assert b["level"] == 50 and b["charger_watts"] is None and b["health_pct"] is None

@@ -78,6 +78,18 @@ _SENSORS = [
          category="diagnostic"),
     dict(obj="archive_free_gb", name="Archive free space", unit="GB", device_class="data_size",
          state_class="measurement", precision=1, category="diagnostic"),
+    # Signed current is the one figure that says which way the battery is
+    # actually going: the phone reports charging while still losing ground on
+    # an underpowered port.
+    dict(obj="battery_current_ma", name="Phone battery current", unit="mA",
+         device_class="current", state_class="measurement", category="diagnostic"),
+    dict(obj="charger_watts", name="Phone charger power", unit="W", device_class="power",
+         state_class="measurement", category="diagnostic"),
+    # No battery device class here: that one means state of charge, and this is
+    # the cell's maximum against its design capacity.
+    dict(obj="battery_health_pct", name="Phone battery health", unit="%",
+         state_class="measurement", precision=1, category="diagnostic",
+         icon="mdi:battery-heart-variant"),
 ]
 _SENSORS += [
     dict(obj=f"lum_p{p}", name=f"Scene luminance {p}th percentile", state_class="measurement",
