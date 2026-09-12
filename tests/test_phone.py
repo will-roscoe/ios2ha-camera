@@ -1,5 +1,7 @@
+import asyncio
+
 from ios2ha_camera import phone
-from ios2ha_camera.phone import PhoneManager, PhoneUnavailable
+from ios2ha_camera.phone import PhoneManager, PhoneManagerMisuseError, PhoneUnavailable
 import pytest
 
 def test_battery_returns_dict_shape(monkeypatch):
@@ -64,6 +66,34 @@ def test_screenshot_raises_when_developer_image_not_mounted(monkeypatch):
     monkeypatch.setattr(pm, "_take_screenshot", boom)
     with pytest.raises(PhoneUnavailable):
         pm.screenshot()
+
+def test_battery_from_running_event_loop_raises_misuse_not_unavailable(monkeypatch):
+    """Calling a blocking PhoneManager method from a coroutine already running on an
+    event loop (the natural way to write a health tick in an aiohttp-based supervisor)
+    must fail loudly as a caller-side wiring mistake, not look like an unreachable phone."""
+    pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {"CurrentCapacity": 88, "Temperature": 3200, "IsCharging": True})
+
+    async def call_from_loop():
+        return pm.battery()
+
+    with pytest.raises(PhoneManagerMisuseError) as exc_info:
+        asyncio.run(call_from_loop())
+    assert not isinstance(exc_info.value, PhoneUnavailable)
+
+
+def test_battery_from_worker_thread_of_running_loop_works(monkeypatch):
+    """The documented escape hatch -- run_in_executor -- must work normally."""
+    pm = PhoneManager("com.example")
+    monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {"CurrentCapacity": 88, "Temperature": 3200, "IsCharging": True})
+
+    async def call_via_executor():
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, pm.battery)
+
+    b = asyncio.run(call_via_executor())
+    assert b["level"] == 88 and b["charging"] is True
+
 
 def test_run_bounds_every_call_with_a_finite_timeout(monkeypatch):
     """A call that never completes must not be able to hang the health tick forever."""

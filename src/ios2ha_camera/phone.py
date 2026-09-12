@@ -5,13 +5,22 @@ API is entirely asyncio-based and organised differently to the 4.x-era API these
 were first drafted against: there is no synchronous `create_using_usbmux()`, no
 `DvtSecureSocketProxyService`, and no synchronous service methods. Every private helper here
 opens its own event loop with `asyncio.run` for exactly one operation (connect, do the one
-thing, close) so PhoneManager's public methods stay plain synchronous calls for the
-supervisor's health tick, and so a lockdown/DTX connection never has to survive across loops.
+thing, close), so a lockdown/DTX connection never has to survive across loops.
 
-Every public method is safe to call with the cable unplugged or the phone locked: real
+Every PhoneManager public method is a BLOCKING call: it runs `asyncio.run` to completion on
+the calling thread. That is safe from a plain thread (a synchronous health-tick loop, a
+worker thread) but is an error when called from a coroutine already running on an event
+loop -- `asyncio.run` cannot nest. Calling from inside a running loop raises
+PhoneManagerMisuseError immediately, before any device I/O; from an aiohttp-based (or any
+other async) supervisor, call these methods via `loop.run_in_executor(None, phone.battery)`
+instead of awaiting them directly.
+
+Every public method is also safe to call with the cable unplugged or the phone locked: real
 pymobiledevice3 exceptions (no device, not paired, developer image not mounted, DTX channel
 refused) are caught broadly and re-raised as PhoneUnavailable, and every call is bounded by
-TIMEOUT_S so a stuck phone can never hang the health tick.
+TIMEOUT_S so a stuck phone can never hang the health tick. PhoneManagerMisuseError is a
+distinct, separate exception from PhoneUnavailable -- it is a caller-side wiring mistake, not
+a phone-side condition, and must never be mistaken for one.
 """
 
 import asyncio
@@ -23,9 +32,39 @@ class PhoneUnavailable(Exception):
     pass
 
 
+class PhoneManagerMisuseError(RuntimeError):
+    """A PhoneManager method was called from inside a running event loop.
+
+    Every public method blocks the calling thread (see module docstring). Call it from a
+    plain thread instead -- e.g. `await loop.run_in_executor(None, phone.battery)` from a
+    coroutine, not `phone.battery()` directly.
+    """
+
+
 class PhoneManager:
     def __init__(self, bundle_id):
         self.bundle_id = bundle_id
+
+    def _call(self, fn):
+        """Run fn(), guarding against the running-event-loop misuse case and converting any
+        other failure to PhoneUnavailable. The guard sits outside the try/except below on
+        purpose: PhoneManagerMisuseError must propagate as itself, never get relabelled as
+        PhoneUnavailable, so a caller-side wiring mistake fails loudly instead of looking
+        exactly like a permanently unreachable phone."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # no event loop running on this thread -- safe to block here
+        else:
+            raise PhoneManagerMisuseError(
+                "PhoneManager methods block the calling thread and must not be called from "
+                "inside a running event loop; call from a worker thread instead, e.g. "
+                "await loop.run_in_executor(None, phone_manager.battery)."
+            )
+        try:
+            return fn()
+        except Exception as e:
+            raise PhoneUnavailable(str(e))
 
     def _run(self, coro):
         return asyncio.run(asyncio.wait_for(coro, TIMEOUT_S))
@@ -48,10 +87,7 @@ class PhoneManager:
         return self._run(go())
 
     def battery(self):
-        try:
-            d = self._diagnostics_battery() or {}
-        except Exception as e:
-            raise PhoneUnavailable(str(e))
+        d = self._call(self._diagnostics_battery) or {}
         return {
             "level": d.get("CurrentCapacity"),
             "temperature": (d.get("Temperature") or 0) / 100.0,
@@ -73,10 +109,7 @@ class PhoneManager:
         return self._run(go())
 
     def is_running(self):
-        try:
-            procs = self._proclist()
-        except Exception as e:
-            raise PhoneUnavailable(str(e))
+        procs = self._call(self._proclist)
         needle = self.bundle_id.split(".")[-1].lower()
         return any(needle in p.get("name", "").lower() for p in procs)
 
@@ -95,10 +128,7 @@ class PhoneManager:
         return self._run(go())
 
     def launch(self):
-        try:
-            pid = self._launch()
-        except Exception as e:
-            raise PhoneUnavailable(str(e))
+        pid = self._call(self._launch)
         return bool(pid)
 
     def _take_screenshot(self):
@@ -112,7 +142,4 @@ class PhoneManager:
         return self._run(go())
 
     def screenshot(self):
-        try:
-            return self._take_screenshot()
-        except Exception as e:
-            raise PhoneUnavailable(str(e))
+        return self._call(self._take_screenshot)
