@@ -165,6 +165,12 @@ class MqttIO:
         try:
             info = self.c.publish(f"{self.s.mqtt_prefix}/available", "offline", qos=1, retain=True)
             info.wait_for_publish(timeout)
+        except (RuntimeError, ValueError) as e:
+            # Being disconnected at shutdown is ordinary: the broker may be down,
+            # or we may never have reached it. The last will covers that case, so
+            # this is a note rather than a fault, and does not deserve a
+            # traceback in the log of an unattended service.
+            log.info("offline availability not published: %s", e)
         except Exception:
             log.warning("could not publish offline availability", exc_info=True)
         self.c.disconnect()

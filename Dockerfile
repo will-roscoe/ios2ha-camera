@@ -9,9 +9,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Dependencies are installed from pyproject alone, against a stub package, so
+# the ~100-package layer is cached against pyproject.toml and a source change
+# does not reinstall opencv and numpy every time.
 COPY pyproject.toml ./
+RUN mkdir -p src/ios2ha_camera \
+    && touch src/ios2ha_camera/__init__.py \
+    && pip install --no-cache-dir . \
+    && rm -rf src
+
 COPY src ./src
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps --force-reinstall .
 
 # The dated still archive. Bind-mounted to the host, under /home, because the
 # host's root filesystem has almost no space left.

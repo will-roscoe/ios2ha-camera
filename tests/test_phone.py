@@ -105,3 +105,17 @@ def test_run_bounds_every_call_with_a_finite_timeout(monkeypatch):
 
     with pytest.raises(TimeoutError):
         pm._run(hang())
+
+
+def test_unavailable_errors_keep_the_cause_type():
+    """Several pymobiledevice3 failures carry no message, and a bare
+    "battery unavailable:" tells whoever is debugging nothing."""
+    pm = PhoneManager("com.example.app")
+
+    def boom():
+        raise ConnectionAbortedError()
+
+    with pytest.raises(PhoneUnavailable) as excinfo:
+        pm._call(boom)
+    assert "ConnectionAbortedError" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ConnectionAbortedError)

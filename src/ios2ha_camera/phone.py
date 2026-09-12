@@ -64,7 +64,13 @@ class PhoneManager:
         try:
             return fn()
         except Exception as e:
-            raise PhoneUnavailable(str(e))
+            # Keep the exception type: several pymobiledevice3 failures carry no
+            # message at all, and a log line reading "battery unavailable:" with
+            # nothing after the colon is no use when diagnosing unattended.
+            detail = str(e).strip()
+            raise PhoneUnavailable(
+                f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+            ) from e
 
     def _run(self, coro):
         return asyncio.run(asyncio.wait_for(coro, TIMEOUT_S))

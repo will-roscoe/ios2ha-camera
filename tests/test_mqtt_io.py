@@ -8,6 +8,13 @@ class _Msg:
         self.payload = payload
 
 
+def test_close_is_quiet_when_never_connected():
+    """Shutting down with the broker unreachable is ordinary; it must not raise
+    and must not put a traceback in the log."""
+    io = MqttIO(Settings())
+    io.close(timeout=0.1)
+
+
 def test_a_non_utf8_payload_never_escapes_the_message_callback():
     """paho re-raises callback exceptions by default, so one corrupt retained
     message on set/# would take the whole connection down."""
