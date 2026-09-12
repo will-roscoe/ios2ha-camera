@@ -15,6 +15,7 @@ from .phone import PhoneManager
 from .ring_buffer import RingBuffer
 from .settings import Settings
 from .supervisor import Supervisor
+from . import version
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,9 @@ def main():
     ing.start()
     for t in threads:
         t.start()
+    # Version first, and on its own line: "what is actually running" is the
+    # first question asked when an unattended service misbehaves.
+    log.info("ios2ha-camera %s, built %s", version.full(), version.BUILT)
     log.info("supervisor up: phone %s:%s, live view on :%s, interval %ss, archive %s",
              s.phone_host, s.phone_port, s.live_port, s.interval_s, s.archive_dir)
 

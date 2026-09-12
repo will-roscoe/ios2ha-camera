@@ -5,6 +5,8 @@ import logging
 
 import paho.mqtt.client as mqtt
 
+from . import version
+
 log = logging.getLogger(__name__)
 
 
@@ -12,7 +14,11 @@ def _e(prefix, comp, obj, cfg):
     topic = f"homeassistant/{comp}/ios2ha/{obj}/config"
     base = {
         "availability_topic": f"{prefix}/available",
-        "device": {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera"},
+        # sw_version puts the running version on the device page in Home
+        # Assistant, so "what is deployed?" is answerable without shell access.
+        "device": {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera",
+                   "manufacturer": "ios2ha-camera", "model": "iPhone supervisor",
+                   "sw_version": version.full()},
         # Component in the unique_id because a button and a camera can share an
         # object name (screenshot) and only differ by domain.
         "unique_id": f"ios2ha_{comp}_{obj}",

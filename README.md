@@ -63,7 +63,8 @@ To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**.
 |---|---|
 | **[ARCHITECTURE.md](ARCHITECTURE.md)** | Every module, what it does, and the decisions that are not obvious from the code — the threading model, the depth law, how stacking stays within memory |
 | **[CONFIGURATION.md](CONFIGURATION.md)** | Every control and every sensor, with units, defaults and which knob to reach for |
-| **[OPERATIONS.md](OPERATIONS.md)** | Deploying, updating, reading the logs, the alerts, and the device quirks that will otherwise cost you an evening |
+| **[OPERATIONS.md](OPERATIONS.md)** | Deploying, versioning, reading the logs, the alerts, and the device quirks that will otherwise cost you an evening |
+| **[CHANGELOG.md](CHANGELOG.md)** | Releases, and what a major, minor or patch version means for your automations |
 
 ## What it produces
 

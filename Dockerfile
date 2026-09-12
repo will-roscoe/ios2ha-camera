@@ -22,6 +22,15 @@ RUN mkdir -p src/ios2ha_camera \
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps --force-reinstall .
 
+# Provenance, baked in at build time. The deployment is an rsync of a working
+# tree, so a semantic version alone cannot say whether this is a clean release
+# or a release plus uncommitted edits; git describe --dirty can. deploy.sh
+# passes both. Last, so a code change does not invalidate the layers above.
+ARG GIT_DESCRIBE=unknown
+ARG BUILD_DATE=unknown
+ENV GIT_DESCRIBE=$GIT_DESCRIBE
+ENV BUILD_DATE=$BUILD_DATE
+
 # The dated still archive. Bind-mounted to the host, under /home, because the
 # host's root filesystem has almost no space left.
 VOLUME ["/data"]

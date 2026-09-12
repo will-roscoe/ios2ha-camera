@@ -8,26 +8,43 @@ you an evening.
 The container builds from a copy of this repository on the Docker host — the host cannot see the
 development machine's filesystem, so the build context has to live beside the compose file.
 
+**Always deploy with `deploy.sh`**, not by hand:
+
 ```bash
-# push a change out
-rsync -a --delete --exclude .git --exclude .claude --exclude .superpowers \
-      --exclude __pycache__ --exclude '*.egg-info' --exclude .pytest_cache \
-      ./ <host>:<stack>/src/ios2ha-camera/
-ssh <host> 'cd <stack>/mediastack && docker compose up -d --build ios2ha-camera'
+./deploy.sh            # sync, build, restart, and show the version line
+./deploy.sh version    # what is running right now
+./deploy.sh check      # is the deployed tree identical to this one?
 ```
+
+It exists because the deployment is an rsync of a working tree, so nothing else records what is
+actually running. The script bakes `git describe --always --dirty --tags` into the image, and warns
+before deploying a modified tree. Deploy by hand and the running version reads `unknown`.
+
+Host and paths default to this installation and can be overridden with `IOS2HA_HOST`,
+`IOS2HA_SRC` and `IOS2HA_STACK`.
 
 A source-only rebuild takes about 4 seconds: dependencies are installed from `pyproject.toml`
 against a stub package first, so the ~100-package layer is cached and a code change does not
-reinstall opencv and numpy.
+reinstall opencv and numpy. The provenance build args come last in the Dockerfile for the same
+reason.
 
-Worth checking after any deploy — that the running copy really is what you think it is:
+## Versioning
 
-```bash
-find src tests pyproject.toml Dockerfile -type f ! -name '*.pyc' ! -path '*egg-info*' \
-  | sort | xargs sha256sum | sha256sum
-```
-Run it both sides and compare. The local tree carries an `egg-info` directory from the editable
-install that never syncs, hence the exclusion.
+See [CHANGELOG.md](CHANGELOG.md) for what the numbers mean. In short, the Home Assistant entity and
+topic surface is the public interface: removing or renaming an entity id is a **major** change,
+adding entities is **minor**, anything else is a **patch**.
+
+To release:
+
+1. Bump `version` in `pyproject.toml` — the only copy; the package reads it back at runtime.
+2. Add the entry to `CHANGELOG.md`.
+3. Commit, then `git tag -a vX.Y.Z -m "..."`.
+4. `./deploy.sh` from the tagged commit, so the image reads `X.Y.Z (vX.Y.Z)` rather than a commit
+   distance.
+
+The running version shows in three places: the **first line of the container log**, the
+**`sw_version` on the device page** in Home Assistant, and `./deploy.sh version`. A build from a
+modified tree reads `-dirty`, deliberately.
 
 ### The compose service
 
