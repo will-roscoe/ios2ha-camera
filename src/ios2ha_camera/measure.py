@@ -8,6 +8,15 @@ def black_level(mean):
     return np.array([np.percentile(mean[..., c], 0.5) for c in range(3)], dtype=np.float64)
 
 
+def luminance(mean, black):
+    """Luminance above black level, as an (H, W) float array.
+
+    One definition shared by every luminance figure the service publishes, so
+    the mean, the percentiles and the subject level cannot drift apart.
+    """
+    return np.clip(mean - black, 0, None).mean(axis=2)
+
+
 def luminance_percentiles(mean, black, pcts=(0.5, 1, 10, 50, 90, 99, 99.5)):
     """Compute luminance percentiles above black level.
 
@@ -19,7 +28,7 @@ def luminance_percentiles(mean, black, pcts=(0.5, 1, 10, 50, 90, 99, 99.5)):
     Returns:
         dict mapping percentile value to luminance float
     """
-    lum = np.clip(mean - black, 0, None).mean(axis=2)
+    lum = luminance(mean, black)
     return {p: float(np.percentile(lum, p)) for p in pcts}
 
 

@@ -1,7 +1,11 @@
 """MQTT client, Home Assistant discovery payloads, and the publish/subscribe surface."""
 
 import json
+import logging
+
 import paho.mqtt.client as mqtt
+
+log = logging.getLogger(__name__)
 
 
 def _e(prefix, comp, obj, cfg):
@@ -72,9 +76,10 @@ def discovery_payloads(s):
 
 
 class MqttIO:
-    def __init__(self, settings, on_control=lambda n, v: None):
+    def __init__(self, settings, on_control=lambda n, v: None, on_connected=lambda: None):
         self.s = settings
         self.on_control = on_control
+        self.on_connected = on_connected
         self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if settings.mqtt_user:
             self.c.username_pw_set(settings.mqtt_user, settings.mqtt_password)
@@ -87,6 +92,12 @@ class MqttIO:
         for topic, cfg in discovery_payloads(self.s):
             c.publish(topic, json.dumps({k: v for k, v in cfg.items() if v is not None}), retain=True)
         self.set_available(True)
+        # Runs on every (re)connect, so the supervisor can republish state that a
+        # broker restart dropped.
+        try:
+            self.on_connected()
+        except Exception:
+            log.exception("on_connected callback failed")
 
     def _on_message(self, c, u, msg):
         name = msg.topic.rsplit("/", 1)[-1]
@@ -95,10 +106,19 @@ class MqttIO:
             value = json.loads(raw)
         except ValueError:
             value = raw
-        self.on_control(name, value)
+        # paho re-raises callback exceptions out of the network loop by default
+        # (suppress_exceptions is False), which would take the connection down
+        # and leave the supervisor deaf to every later control.
+        try:
+            self.on_control(name, value)
+        except Exception:
+            log.exception("control %r from %s failed", name, msg.topic)
 
     def connect(self):
-        self.c.connect(self.s.mqtt_host, self.s.mqtt_port, keepalive=30)
+        # Asynchronous so a broker that is down at startup does not abort the
+        # process; paho retries in the background once the loop is running,
+        # while capture and archiving carry on.
+        self.c.connect_async(self.s.mqtt_host, self.s.mqtt_port, keepalive=30)
 
     def loop_start(self):
         self.c.loop_start()
@@ -109,12 +129,33 @@ class MqttIO:
     def publish_still(self, jpeg):
         self.c.publish(f"{self.s.mqtt_prefix}/still", jpeg, retain=True)
 
-    def publish_state(self, d):
+    def publish_screenshot(self, png):
+        self.c.publish(f"{self.s.mqtt_prefix}/screenshot", png, retain=True)
+
+    def publish_state(self, d, retain=True):
+        # Retained by default so Home Assistant shows real values immediately
+        # after its own restart rather than "unknown" until the next interval.
         for k, v in d.items():
-            self.c.publish(f"{self.s.mqtt_prefix}/state/{k}", v if isinstance(v, (str, bytes)) else json.dumps(v))
+            self.c.publish(f"{self.s.mqtt_prefix}/state/{k}",
+                           v if isinstance(v, (str, bytes)) else json.dumps(v), retain=retain)
 
     def publish_event(self, d):
         self.c.publish(f"{self.s.mqtt_prefix}/event", json.dumps(d))
 
     def set_available(self, ok):
         self.c.publish(f"{self.s.mqtt_prefix}/available", "online" if ok else "offline", retain=True)
+
+    def close(self, timeout=2.0):
+        """Go offline deliberately, then disconnect.
+
+        A clean disconnect does not fire the last will, so availability has to
+        be published here, at QoS 1 and flushed, or Home Assistant would keep
+        showing the camera as online after a planned shutdown.
+        """
+        try:
+            info = self.c.publish(f"{self.s.mqtt_prefix}/available", "offline", qos=1, retain=True)
+            info.wait_for_publish(timeout)
+        except Exception:
+            log.warning("could not publish offline availability", exc_info=True)
+        self.c.disconnect()
+        self.c.loop_stop()

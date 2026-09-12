@@ -1,7 +1,7 @@
 import asyncio
 from aiohttp.test_utils import TestServer, TestClient
 from ios2ha_camera.ring_buffer import RingBuffer, Frame
-from ios2ha_camera.live import make_live_app, QUEUE_SIZE
+from ios2ha_camera.live import CLIENTS, make_live_app, QUEUE_SIZE
 
 
 def test_live_streams_latest_frame():
@@ -61,7 +61,7 @@ def test_slow_client_is_dropped_without_blocking_fast_client():
 
                 # The slow client's queue must be capped, not accumulating
                 # every frame it missed.
-                queues = list(app["clients"])
+                queues = list(app[CLIENTS])
                 assert len(queues) == 2
                 for q in queues:
                     assert q.qsize() <= QUEUE_SIZE

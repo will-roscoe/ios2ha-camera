@@ -19,6 +19,12 @@ client whose write is genuinely stalled can only stall its own request task
 import asyncio
 from aiohttp import web
 
+# Typed keys rather than plain strings: aiohttp warns on str keys, and an
+# unattended service wants a log with nothing routine in it.
+BUFFER = web.AppKey("buffer", object)
+CLIENTS = web.AppKey("clients", set)
+BROADCAST_TASK = web.AppKey("broadcast_task", asyncio.Task)
+
 BOUNDARY = "frame"
 FPS_CAP = 12
 FRAME_INTERVAL = 1.0 / FPS_CAP
@@ -55,14 +61,14 @@ async def _broadcast(app):
     Only ever touches the buffer's cheap latest() read and non-blocking queue
     ops, so a stalled client's full queue can never delay this loop.
     """
-    buffer = app["buffer"]
+    buffer = app[BUFFER]
     last_ts = None
     try:
         while True:
             frame = buffer.latest()
             if frame is not None and frame.ts != last_ts:
                 last_ts = frame.ts
-                for queue in list(app["clients"]):
+                for queue in list(app[CLIENTS]):
                     _offer(queue, frame)
             await asyncio.sleep(FRAME_INTERVAL)
     except asyncio.CancelledError:
@@ -78,10 +84,10 @@ async def _stream(request):
     await resp.prepare(request)
 
     queue = asyncio.Queue(maxsize=QUEUE_SIZE)
-    app["clients"].add(queue)
+    app[CLIENTS].add(queue)
     # Seed with whatever is already buffered so a viewer sees a frame
     # immediately instead of waiting for the next broadcast tick.
-    latest = app["buffer"].latest()
+    latest = app[BUFFER].latest()
     if latest is not None:
         _offer(queue, latest)
     try:
@@ -91,16 +97,16 @@ async def _stream(request):
     except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
         pass
     finally:
-        app["clients"].discard(queue)
+        app[CLIENTS].discard(queue)
     return resp
 
 
 async def _start_broadcast(app):
-    app["broadcast_task"] = asyncio.ensure_future(_broadcast(app))
+    app[BROADCAST_TASK] = asyncio.ensure_future(_broadcast(app))
 
 
 async def _stop_broadcast(app):
-    task = app.get("broadcast_task")
+    task = app.get(BROADCAST_TASK)
     if task is not None:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -108,8 +114,8 @@ async def _stop_broadcast(app):
 
 def make_live_app(buffer):
     app = web.Application()
-    app["buffer"] = buffer
-    app["clients"] = set()
+    app[BUFFER] = buffer
+    app[CLIENTS] = set()
     app.router.add_get("/live", _stream)
     app.on_startup.append(_start_broadcast)
     app.on_cleanup.append(_stop_broadcast)

@@ -74,11 +74,27 @@ def _tone_inspection(x, L, strength):
     return np.clip(lin, 0, 1) ** (1 / 2.2)
 
 
-def render(stacked, settings):
-    """Render a stacked (H, W, 3) float array to a display-ready uint8 RGB array."""
+def calibration(stacked, settings):
+    """The black level and white-balance gains render() will apply to `stacked`.
+
+    Exposed because the supervisor publishes both as Home Assistant sensors:
+    computing them here once, and handing the result back to render(), is what
+    keeps the published numbers identical to the applied ones.
+    """
     bl = np.asarray(settings.black_level_override) if settings.black_level_override else black_level(stacked)
+    gains = white_balance_gains(np.clip(stacked - bl, 0, None), settings.white_balance)
+    return bl, gains
+
+
+def render(stacked, settings, applied=None):
+    """Render a stacked (H, W, 3) float array to a display-ready uint8 RGB array.
+
+    `applied` is an optional (black_level, gains) pair from calibration(), for a
+    caller that also publishes those numbers and should not compute them twice.
+    """
+    bl, gains = applied if applied is not None else calibration(stacked, settings)
     x = np.clip(stacked - bl, 0, None)
-    x = x * white_balance_gains(x, settings.white_balance)
+    x = x * gains
     L = x.mean(axis=2)
     if settings.render_intent == "inspection":
         rgb = _tone_inspection(x, L, settings.stretch_strength)
