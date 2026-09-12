@@ -59,7 +59,8 @@ def main():
     # The event loop belongs to the live view alone. run_app returns on SIGTERM,
     # which is how the container stops us.
     try:
-        web.run_app(make_live_app(buf), host="0.0.0.0", port=s.live_port, print=None)
+        web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg),
+                    host="0.0.0.0", port=s.live_port, print=None)
     finally:
         log.info("shutting down")
         stop.set()

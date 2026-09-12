@@ -76,3 +76,41 @@ def test_slow_client_is_dropped_without_blocking_fast_client():
 async def _wait_until(cond, interval=0.01):
     while not cond():
         await asyncio.sleep(interval)
+
+
+def test_still_route_serves_the_stacked_still():
+    """The thumbnail should be the stacked image, not a single raw frame: at
+    night one frame is mostly noise."""
+    buf = RingBuffer(1_000_000)
+    buf.append(Frame(b"\xff\xd8\xffraw-frame\xff\xd9", ts=1.0))
+    stacked = b"\xff\xd8\xffstacked-still\xff\xd9"
+
+    async def run():
+        app = make_live_app(buf, latest_still=lambda: stacked)
+        async with TestClient(TestServer(app)) as client:
+            r = await client.get("/still.jpg")
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/jpeg"
+            assert await r.read() == stacked
+    asyncio.run(run())
+
+
+def test_still_route_falls_back_to_a_raw_frame_before_the_first_still():
+    buf = RingBuffer(1_000_000)
+    buf.append(Frame(b"\xff\xd8\xffraw-frame\xff\xd9", ts=1.0))
+
+    async def run():
+        app = make_live_app(buf, latest_still=lambda: None)
+        async with TestClient(TestServer(app)) as client:
+            r = await client.get("/still.jpg")
+            assert r.status == 200
+            assert await r.read() == b"\xff\xd8\xffraw-frame\xff\xd9"
+    asyncio.run(run())
+
+
+def test_still_route_says_so_when_there_is_nothing_at_all():
+    async def run():
+        app = make_live_app(RingBuffer(1000), latest_still=lambda: None)
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/still.jpg")).status == 503
+    asyncio.run(run())

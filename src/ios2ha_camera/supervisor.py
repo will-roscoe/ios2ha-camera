@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
@@ -82,6 +83,15 @@ class Supervisor:
         self._last_jpeg = None
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
+
+    @property
+    def last_still_jpeg(self):
+        """The most recent stacked still, or None before the first one.
+
+        Read by the live server's /still.jpg so a camera thumbnail shows the
+        stacked image rather than a single raw frame, without touching the phone.
+        """
+        return self._last_jpeg
 
     # -- publishing ---------------------------------------------------------
 
@@ -328,9 +338,13 @@ class Supervisor:
     def health_state(self, now=None):
         now = time.time() if now is None else now
         newest = self.buffer.newest_ts()
-        age = None if newest is None else round(now - newest, 1)
+        age = None if newest is None else now - newest
         d = {
-            "last_frame_age": age,
+            # A timestamp rather than an age: Home Assistant turns this into a
+            # relative time that keeps counting between health ticks, where a
+            # published age is stale the moment it lands.
+            "last_frame": (None if newest is None else
+                           datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()),
             "camera_online": (self.stream_state == "streaming"
                               and age is not None and age < self.fresh_s),
             "frame_rate": round(estimate_fps(self.buffer), 1),

@@ -344,12 +344,21 @@ def test_black_level_channel_control_applies_and_publishes():
 
 def test_health_state_is_offline_when_frames_are_stale():
     buf = RingBuffer(5_000_000)
-    _fill(buf, 3, now=time.time() - 300)
+    newest = time.time() - 300
+    _fill(buf, 3, now=newest)
     sup = _sup(buf=buf)
     sup.on_stream_state("streaming")
     h = sup.health_state()
     assert h["camera_online"] is False
-    assert h["last_frame_age"] > 250
+    # A timestamp, not an age: an age is only true at the moment it is
+    # published, and Home Assistant can render the relative time itself.
+    from datetime import datetime
+    assert datetime.fromisoformat(h["last_frame"]).timestamp() == pytest.approx(newest, abs=1)
+
+
+def test_health_state_reports_no_frame_time_before_any_frame():
+    sup = _sup()
+    assert sup.health_state()["last_frame"] is None
 
 
 def test_health_state_is_online_while_frames_are_arriving():

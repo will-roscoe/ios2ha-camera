@@ -45,8 +45,12 @@ _SENSORS = [
          icon="mdi:motion-sensor"),
     dict(obj="frame_rate", name="Frame rate", unit="fps", state_class="measurement",
          precision=1, category="diagnostic", icon="mdi:speedometer"),
-    dict(obj="last_frame_age", name="Last frame age", unit="s", device_class="duration",
-         state_class="measurement", precision=1, category="diagnostic"),
+    # The time of the last frame, not an age in seconds: an age is only true at
+    # the instant it is published and is wrong by up to a health tick
+    # afterwards, whereas Home Assistant renders a timestamp as a live relative
+    # age that stays correct on its own.
+    dict(obj="last_frame", name="Last frame", device_class="timestamp",
+         category="diagnostic", icon="mdi:clock-outline"),
     dict(obj="depth_required", name="Depth required before clamping", unit="frames",
          state_class="measurement", category="diagnostic", icon="mdi:layers-outline"),
     dict(obj="capture_duration", name="Capture duration", unit="s", device_class="duration",

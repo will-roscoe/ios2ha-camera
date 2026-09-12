@@ -58,8 +58,11 @@ def test_every_sensor_says_what_its_reading_means():
     assert sensors, "no sensors found"
     # Luminance figures are relative 0-255 after black level, not lux, so they
     # carry no unit by design; everything else that is a quantity needs one.
+    # last_frame is a timestamp: no unit, and a timestamp sensor must not carry
+    # a state_class either.
+    not_a_measurement = {"stream_state", "last_frame"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
-                          "focus_sharpness", "stream_state", "motion"}
+                          "focus_sharpness", "motion"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}
     unitless_by_design |= {f"wb_gain_{c}" for c in "rgb"}
     unitless_by_design |= {f"black_level_applied_{c}" for c in "rgb"}
@@ -67,7 +70,7 @@ def test_every_sensor_says_what_its_reading_means():
         assert cfg["name"] != obj, f"{obj} still has a raw snake_case name"
         if obj not in unitless_by_design:
             assert cfg.get("unit_of_measurement"), f"{obj} has no unit"
-        if obj != "stream_state":
+        if obj not in not_a_measurement:
             assert cfg.get("state_class") == "measurement", f"{obj} has no state_class"
 
 
@@ -80,7 +83,9 @@ def test_the_readings_with_a_real_physical_type_declare_it():
     assert sensors["battery"]["device_class"] == "battery"
     assert sensors["battery"]["unit_of_measurement"] == "%"
     assert sensors["archive_free_gb"]["device_class"] == "data_size"
-    assert sensors["last_frame_age"]["device_class"] == "duration"
+    assert sensors["last_frame"]["device_class"] == "timestamp"
+    assert "state_class" not in sensors["last_frame"], "a timestamp cannot be a measurement"
+    assert "last_frame_age" not in sensors, "replaced by the timestamp"
     assert sensors["stream_state"]["device_class"] == "enum"
     assert set(sensors["stream_state"]["options"]) == {"streaming", "streaming_off", "unreachable"}
     binaries = {t.split("/")[3]: cfg for t, cfg in payloads.items()
