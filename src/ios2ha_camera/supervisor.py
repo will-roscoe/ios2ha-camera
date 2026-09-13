@@ -284,6 +284,8 @@ class Supervisor:
                 self._submit(name, self._screenshot)
             elif name == "relaunch_app":
                 self._submit(name, self._relaunch)
+            elif name == "prepare_phone":
+                self._submit(name, self._prepare_phone)
             elif name == "autofocus":
                 self._submit(name, lambda: self._autofocus(bool(value)))
             else:
@@ -349,6 +351,12 @@ class Supervisor:
         self._event({"ts": time.time(), "control": "relaunch_app",
                      "result": "launched", "was_running": was_running})
 
+    def _prepare_phone(self):
+        if self.phone is None:
+            raise RuntimeError("phone management is not configured")
+        steps = self.phone.prepare(launch=True)
+        self._event({"ts": time.time(), "control": "prepare_phone", "steps": steps})
+
     def _autofocus(self, on):
         try:
             if self.onvif is not None and not self.onvif.set_autofocus("AUTO" if on else "MANUAL"):
@@ -389,6 +397,8 @@ class Supervisor:
             d["holders"] = ", ".join(self.upstream.holders()) or "none"
             d["duty_1h"] = self.upstream.duty_1h(now)
             d["tick_age"] = round(self.upstream.tick_age(now), 1)
+        if getattr(self, "live_fps", None) is not None:
+            d["live_fps"] = self.live_fps()
         # With an upstream, only while streaming: probe frames a minute apart
         # would publish 0.02. Without one, keep publishing it unconditionally
         # -- that's the old behaviour, and every existing caller still relies

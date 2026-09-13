@@ -86,3 +86,12 @@ def test_every_control_names_a_real_field():
 
     names = {f.name for f in Settings.__dataclass_fields__.values()}
     assert CONTROLS <= names
+
+
+def test_the_on_demand_controls_are_writable():
+    s = Settings()
+    assert s.on_demand is True and s.live_max_window_s == 3.0
+    assert s.apply_control("on_demand", False) is True
+    assert s.on_demand is False
+    assert s.apply_control("live_max_window_s", 5.0) is True
+    assert s.live_max_window_s == 5.0

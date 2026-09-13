@@ -161,6 +161,14 @@ def test_every_discovery_sensor_gets_a_value():
     sup.publish_state(sup.phone_state())
     sup.publish_controls()
 
+    # holders, live_fps, duty_1h and tick_age are only populated with an
+    # upstream and a live stacker wired in, as __main__ does; a second
+    # supervisor sharing the same mqtt fake stands in for that wiring so this
+    # test still covers every declared sensor.
+    up_sup = _sup(s, buf, mq, upstream=FakeUpstream(state="streaming"))
+    up_sup.live_fps = lambda: 12.3
+    up_sup.publish_state(up_sup.health_state())
+
     declared = set()
     for topic, _cfg in discovery_payloads(s):
         parts = topic.split("/")

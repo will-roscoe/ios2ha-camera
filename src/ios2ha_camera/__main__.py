@@ -46,6 +46,7 @@ def main():
     ing.on_state = up.on_ingest_state
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
     stacker = LiveStacker(buf, s)
+    sup.live_fps = stacker.fps
 
     stop = threading.Event()
     threads = [
