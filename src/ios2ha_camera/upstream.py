@@ -37,6 +37,8 @@ FRESH_S = 30.0                 # matches Supervisor.fresh_s: a live stream's fra
 PROBE_CONNECT_TIMEOUT_S = 5.0
 PROBE_READ_TIMEOUT_S = 10.0
 
+CAPTURE_OPEN_TIMEOUT_S = 20.0   # longer than one full connect-and-read attempt
+
 
 class ProbeStreamingOff(Exception):
     """The app answered 503: it is running but not streaming."""

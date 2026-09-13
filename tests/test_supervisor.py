@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from ios2ha_camera import stack
 from ios2ha_camera.mqtt_io import discovery_payloads
 from ios2ha_camera.phone import PhoneUnavailable
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
@@ -586,3 +587,74 @@ def test_estimate_fps_ignores_frames_from_before_the_session():
     _fill(buf, 5, now=time.time() - 600, step=60)     # probe frames, a minute apart
     _fill(buf, 10, now=time.time(), step=1 / 13)
     assert estimate_fps(buf, since=time.time() - 5) > 10
+
+
+class RecordingUpstream(FakeUpstream):
+    """Records the order of hold release against stacking."""
+    def __init__(self, buf, **kw):
+        super().__init__(**kw)
+        self.buf, self.events = buf, []
+        self.session_start = time.time()
+
+    def hold(self, reason, linger_s=0.0):
+        outer = self
+
+        class _H:
+            def __enter__(self_inner):
+                outer.events.append(f"hold:{reason}")
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                outer.events.append(f"release:{reason}")
+                return False
+        return _H()
+
+    def session_start_ts(self):
+        return self.session_start
+
+    def wait_for_frames(self, n, since_ts, timeout, poll=0.1):
+        return sum(1 for f in self.buf.recent(n) if f.ts >= since_ts)
+
+
+def test_capture_releases_the_hold_before_it_stacks(monkeypatch):
+    buf = RingBuffer(1 << 24)
+    up = RecordingUpstream(buf, state="streaming")
+    _fill(buf, 20, now=time.time())
+    sup = _sup(buf=buf, upstream=up)
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (up.events.append("stack"), real(frames))[1])
+    sup.produce_still(now_fps=12.0)
+    assert up.events == ["hold:capture", "release:capture", "stack"]
+
+
+def test_capture_releases_the_hold_when_stacking_setup_raises(monkeypatch):
+    buf = RingBuffer(1 << 24)
+    up = RecordingUpstream(buf, state="streaming")
+    _fill(buf, 20, now=time.time())
+    sup = _sup(buf=buf, upstream=up)
+    monkeypatch.setattr(stack, "decode", lambda f: (_ for _ in ()).throw(ValueError("truncated")))
+    ev = sup.produce_still(now_fps=12.0)
+    assert "error" in ev
+    assert up.events[-1] == "release:capture"
+
+
+def test_capture_ignores_frames_from_before_its_session():
+    buf = RingBuffer(1 << 24)
+    now = time.time()
+    _fill(buf, 4, now=now - 120, step=60)          # probe frames
+    up = RecordingUpstream(buf, state="streaming")
+    up.session_start = now - 1
+    _fill(buf, 20, now=now)
+    sup = _sup(buf=buf, upstream=up)
+    ev = sup.produce_still(now_fps=12.0, now=now)
+    assert ev["depth_used"] <= 20
+
+
+def test_capture_with_no_frames_publishes_the_reason():
+    buf = RingBuffer(1 << 20)
+    up = RecordingUpstream(buf, state="streaming_off")
+    up.session_start = time.time()
+    sup = _sup(buf=buf, upstream=up)
+    ev = sup.produce_still(now_fps=12.0)
+    assert ev["error"] == "no frames: streaming_off"

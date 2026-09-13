@@ -15,6 +15,7 @@ Threading matters here, so it is stated once:
   PhoneManager's calls block and raise if called from a running loop.
 """
 
+import contextlib
 import logging
 import threading
 import time
@@ -27,6 +28,7 @@ import numpy as np
 from . import measure, render, stack
 from .phone import PhoneUnavailable
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
+from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +143,7 @@ class Supervisor:
     def _fresh(self, frames, now, max_age):
         return [f for f in frames if now - f.ts <= max_age]
 
-    def produce_still(self, now_fps, now=None):
+    def produce_still(self, now_fps=None, now=None):
         """Make, publish and archive one still. Reports failure over MQTT.
 
         A stacking, render or archive error would otherwise leave every
@@ -155,31 +157,56 @@ class Supervisor:
             return self._event({"ts": time.time() if now is None else now,
                                 "error": f"{type(e).__name__}: {e}"})
 
-    def _produce_still(self, now_fps, now=None):
+    def _produce_still(self, now_fps=None, now=None):
         now = time.time() if now is None else now
         t0 = time.monotonic()
 
-        probe_frames = self._fresh(self.buffer.recent(self.probe_n), now, self.fresh_s)
-        if not probe_frames:
-            # Stacking whatever is left in the buffer would archive a picture of
-            # the past as if it were now.
-            return self._event({"ts": now, "error": "no fresh frames"})
-        probe = [stack.decode(f) for f in probe_frames]
-        mean = np.mean(probe, axis=0)
+        # The `with` block is load-bearing: produce_still() swallows every
+        # exception below, so a manual release would be skipped by a decode
+        # error and the phone would stay connected until the container
+        # restarted -- exactly the drain this feature exists to end.
+        with self.upstream.hold("capture") if self.upstream is not None else contextlib.nullcontext():
+            if self.upstream is not None:
+                floor = max(self.upstream.session_start_ts() or 0.0, now - self.s.window_max_s)
+                self.upstream.wait_for_frames(self.probe_n, floor, CAPTURE_OPEN_TIMEOUT_S)
+                probe_frames = [f for f in self.buffer.recent(self.probe_n) if f.ts >= floor]
+                if not probe_frames:
+                    return self._event({"ts": now, "error": f"no frames: {self.upstream.state(now)}"})
+            else:
+                probe_frames = self._fresh(self.buffer.recent(self.probe_n), now, self.fresh_s)
+                if not probe_frames:
+                    # Stacking whatever is left in the buffer would archive a picture of
+                    # the past as if it were now.
+                    return self._event({"ts": now, "error": "no fresh frames"})
+            probe = [stack.decode(f) for f in probe_frames]
+            mean = np.mean(probe, axis=0)
 
-        bl_probe = measure.black_level(mean)
-        pct = measure.luminance_percentiles(mean, bl_probe)
-        subject = measure.luminance_percentiles(
-            mean, bl_probe, (self.s.subject_percentile,))[self.s.subject_percentile]
+            bl_probe = measure.black_level(mean)
+            pct = measure.luminance_percentiles(mean, bl_probe)
+            subject = measure.luminance_percentiles(
+                mean, bl_probe, (self.s.subject_percentile,))[self.s.subject_percentile]
 
-        depth = stack.choose_depth(subject, self.s, now_fps, self._previous_depth)
-        self._previous_depth = depth
-        required = measure.required_depth(subject, self.s.target_level, self.s.clean_factor)
+            if now_fps is None:
+                if self.upstream is not None:
+                    # Measured from this session's frames, never the whole buffer: the
+                    # probe frames in there are a minute apart.
+                    now_fps = estimate_fps(self.buffer, since=floor)
+                else:
+                    now_fps = estimate_fps(self.buffer)
+            depth = stack.choose_depth(subject, self.s, now_fps, self._previous_depth)
+            self._previous_depth = depth
+            required = measure.required_depth(subject, self.s.target_level, self.s.clean_factor)
 
-        window = self._fresh(self.buffer.recent(depth), now, self.s.window_max_s)
-        if not window:
-            return self._event({"ts": now, "error": "no frames in window"})
-        used = len(window)
+            if self.upstream is not None:
+                self.upstream.wait_for_frames(depth, floor, self.s.window_max_s)
+                # A list, not a generator: stack_frames iterates its source three
+                # times (one unclipped pass, two clipping passes).
+                window = [f for f in self.buffer.recent(depth) if f.ts >= floor]
+            else:
+                window = self._fresh(self.buffer.recent(depth), now, self.s.window_max_s)
+            if not window:
+                return self._event({"ts": now, "error": "no frames in window"})
+            used = len(window)
 
         stacked = stack.stack_frames(window)
         self.last_stack = stacked
@@ -404,7 +431,7 @@ class Supervisor:
                 break
             self.capture_requested.clear()
             try:
-                self.produce_still(estimate_fps(self.buffer))
+                self.produce_still(None)
             except Exception:
                 log.exception("capture failed")
             if not manual:
