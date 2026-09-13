@@ -112,6 +112,13 @@ Two different things can be meant by "roll back", and they fix different problem
 - **Redeploy an older tag** with `./deploy.sh` from that tag's commit, if the fault is in the code
   itself rather than in the connection policy.
 
+**A downgrade from 1.2.0 needs your automations edited back**, not just the container rolled
+back. 1.2.0 renamed every `stream_state` value: `unreachable` split into `unavailable` and
+`backgrounded`, `idle` became `ready`, and `streaming` split into `capturing`, `in_use` and
+`streaming`. Anything matching those by name — the offline alert's template especially — was
+edited to the new names when you upgraded and will silently stop matching on the way back.
+The retained-value problem below applies too, in both directions.
+
 A downgrade to a version before 1.1.0 needs one extra step. `stream_state` gained a new option,
 `idle`, in 1.1.0; an older version's Home Assistant discovery payload does not list it, so a
 retained `idle` value left over from the newer version is not one of the older enum's valid options
@@ -141,7 +148,7 @@ did not hold enough frames inside the capture window, and the MQTT event carries
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
-true while `streaming` with a frame within 30 seconds, **or** while `idle` with a frame within 150
+true while active with a frame within 30 seconds, **or** while `ready` with a frame within 150
 seconds — idle is the normal state whenever nothing is capturing or watching, so it must not read as
 offline on its own. It is forced **false** whenever the upstream thread's own heartbeat
 (`sensor.ios2ha_camera_tick_age`) has gone more than 180 seconds without ticking, regardless of what
@@ -149,7 +156,7 @@ state it last reported — a wedged or dead thread must not leave every reading 
 last saw as healthy.
 
 **The idle probe.** While nothing holds the connection, it is probed every 60 seconds — connect, read
-one frame, close, for about 2–3 mA a minute — which is what keeps `idle` fed with a recent frame and
+one frame, close, for about 2–3 mA a minute — which is what keeps `ready` fed with a recent frame and
 lets a genuine outage still be noticed between captures. A failing probe backs off (60, 120, 240 s,
 capped at 300 s) rather than knocking on a wedged app every minute. If the app itself starts
 wedging or needs relaunching more often than it used to, the probe's own connect/disconnect cycle is
@@ -173,7 +180,7 @@ Six alerts are worth having:
 
 | Alert | Trigger | Why |
 |---|---|---|
-| Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting |
+| Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting. See below — the message should name what is actually wrong |
 | Cable down | `cable_state` is `usbmuxd_down` for 10 min | The socket mount is orphaned: battery, app control and **Prepare phone** are all dead, while the WiFi stream carries on as if nothing were wrong. Do **not** alert on `no_device`, which is just the cable being out |
 | Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging". Check `sensor.ios2ha_camera_holders` and `sensor.ios2ha_camera_duty_1h` first — a connection stuck open (a viewer that never left, or `on_demand` switched off) looks exactly like a weak charger on the battery current alone |
 | Battery low | Below 40% | It will stop capturing when the phone dies |
@@ -183,6 +190,40 @@ Six alerts are worth having:
 A caveat learned the hard way: Home Assistant will report a notification as delivered whether or not
 your phone ever receives it. If the companion app has lost its connection, `notify` still succeeds.
 Test the whole path occasionally rather than trusting that an alert exists.
+
+### Making the offline alert say what is wrong
+
+Before 1.2.0 the offline alert could only say "the camera is offline", because
+`stream_state` had one word for four unrelated situations. It now distinguishes them, and
+the message should too — the fix is different in every case, and three of the four do not
+need anyone to get up.
+
+```jinja
+{% set s = states('sensor.ios2ha_camera_stream_state') %}
+{% if s == 'streaming_off' %}
+  The app is running but not streaming. Open Guardian Eye and tap Start streaming —
+  nothing else can do this.
+{% elif s == 'backgrounded' %}
+  {% if is_state('binary_sensor.ios2ha_camera_app_running', 'off') %}
+  iOS has killed the app. Press Relaunch app, then tap Start streaming.
+  {% else %}
+  The app is backgrounded, so its socket is suspended. Foreground it to resume.
+  {% endif %}
+{% elif s == 'unavailable' %}
+  The phone is not answering at all. Check WiFi and that it is powered.
+{% elif is_state('binary_sensor.ios2ha_camera_reachable_over_cable', 'off') %}
+  The phone is streaming, but the cable is down: no battery readings and no app
+  control. See "When the cable stops working".
+{% else %}
+  Camera offline, state {{ s }}.
+{% endif %}
+```
+
+The `app_running` branch is the one worth having. A backgrounded app and one iOS has killed
+look identical over WiFi — both refuse the connection — and only the cable can tell them
+apart. One resumes by itself when foregrounded; the other needs relaunching. Note that
+`app_running` is **unknown**, not `off`, when the cable cannot answer, so
+`is_state(..., 'off')` correctly declines to claim the app is dead on no evidence.
 
 ### When the cable stops working
 
@@ -301,7 +342,7 @@ The battery current sensor is the one to watch. `charging` only means "connected
 **No stills, `stream_state` is `streaming_off`.** The app answered 503: streaming is off. Open
 Guardian Eye and tap Start streaming.
 
-**No stills, `stream_state` is `unreachable`.** The phone is not answering at all — check it is
+**No stills, `stream_state` is `unavailable`.** The phone is not answering at all — check it is
 awake, on the network, and that the app is running. The relaunch button can start the app but
 cannot start streaming.
 

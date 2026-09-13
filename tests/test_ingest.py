@@ -106,19 +106,25 @@ def test_reports_streaming_off_on_503():
     assert "streaming" not in states
 
 
-def test_reports_unreachable_when_connection_refused():
+def test_a_refused_connection_reports_backgrounded():
+    """ECONNREFUSED means the host answered and nothing is listening on that
+    port -- which on the phone is a backgrounded app, whose sockets iOS suspends
+    while leaving the process alive. A phone that is off the network cannot
+    refuse anything; it times out. Same classifier as the idle probe uses, so
+    both paths name this condition identically."""
     buf = RingBuffer(5_000_000); states = []
     ing = _ing("127.0.0.1", _closed_port(), buf, states); ing.start()
-    assert _wait_for(lambda: "unreachable" in states)
+    assert _wait_for(lambda: "backgrounded" in states)
+    assert "unavailable" not in states
     ing.stop()
 
 
-def test_reports_unreachable_when_connection_drops():
+def test_reports_unavailable_when_connection_drops():
     buf = RingBuffer(5_000_000); states = []
     with FakeCamera() as cam:
         cam.set_mode("drop")
         ing = _cam_ing(cam, buf, states); ing.start()
-        assert _wait_for(lambda: "unreachable" in states)
+        assert _wait_for(lambda: "unavailable" in states)
         ing.stop()
 
 
@@ -128,7 +134,7 @@ def test_wrong_password_is_not_reported_as_streaming():
         ing = _cam_ing(cam, buf, states, password="wrong"); ing.start()
         assert _wait_for(lambda: states)
         ing.stop()
-    assert states == ["unreachable"]
+    assert states == ["unavailable"]
     assert buf.latest() is None
 
 
@@ -170,11 +176,11 @@ def test_recovers_when_streaming_is_switched_back_on():
     assert states == ["streaming_off", "streaming"]
 
 
-def test_stalled_stream_is_detected_as_unreachable():
+def test_stalled_stream_is_detected_as_unavailable():
     buf = RingBuffer(5_000_000); states = []
     with _StallingServer() as srv:
         ing = _ing("127.0.0.1", srv.port, buf, states, read_timeout=0.3); ing.start()
-        assert _wait_for(lambda: "unreachable" in states, timeout=3.0)
+        assert _wait_for(lambda: "unavailable" in states, timeout=3.0)
         ing.stop()
 
 
@@ -227,7 +233,7 @@ def test_connect_to_a_blackholed_address_is_bounded_by_connect_timeout():
     # 192.0.2.0/24 is TEST-NET-1: routable-looking, never answers.
     ing = _ing("192.0.2.1", 8080, buf, states, connect_timeout=0.3, read_timeout=30.0)
     ing.start()
-    assert _wait_for(lambda: "unreachable" in states, timeout=5.0)
+    assert _wait_for(lambda: "unavailable" in states, timeout=5.0)
     t0 = time.monotonic()
     assert ing.stop() is True
     assert time.monotonic() - t0 < 3.0

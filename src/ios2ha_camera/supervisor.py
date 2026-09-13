@@ -30,6 +30,7 @@ import numpy as np
 from . import measure, render, stack
 from .phone import PhoneUnavailable
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
+from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
 log = logging.getLogger(__name__)
@@ -143,6 +144,11 @@ class Supervisor:
         self._cable_down_since = None
         self._last_cable_restart = None
         self._cable_state = "ok"
+        # None until the cable has been asked once, and published as unknown
+        # rather than guessed. Refreshed on the battery cadence rather than the
+        # health tick: it is a usbmux round trip, and asking every 30 s would
+        # spend the cable on a question whose answer changes rarely.
+        self._app_running = None
         self.s = settings
         self.buffer = buffer
         self.mqtt = mqtt
@@ -484,9 +490,11 @@ class Supervisor:
         if state is not None:
             d["stream_state"] = state
         if self.upstream is not None:
-            d["holders"] = ", ".join(self.upstream.holders()) or "none"
+            held = self.upstream.holders(now)
+            d["holders"] = ", ".join(held) or "none"
             d["duty_1h"] = self.upstream.duty_1h(now)
             d["tick_age"] = round(self.upstream.tick_age(now), 1)
+            d.update(self._boolean_state(state, held))
         if getattr(self, "live_fps", None) is not None:
             d["live_fps"] = self.live_fps()
         # With an upstream, only while streaming: probe frames a minute apart
@@ -495,7 +503,7 @@ class Supervisor:
         # on it since on-demand's idle state doesn't exist for them.
         if self.upstream is None:
             d["frame_rate"] = round(estimate_fps(self.buffer), 1)
-        elif state == "streaming":
+        elif state in ACTIVE_STATES:
             d["frame_rate"] = round(estimate_fps(
                 self.buffer, since=self.upstream.session_start_ts()), 1)
         return d
@@ -513,13 +521,49 @@ class Supervisor:
         except PhoneUnavailable as e:
             log.info("battery unavailable: %s", e)
             self._note_cable_failure(e)
+            # The cable is the only thing that can answer this, so with it gone
+            # the honest answer is "unknown", not "no".
+            self._app_running = None
             return {}
         self._note_cable_ok()
+        # Asked here rather than on the health tick because this is a usbmux
+        # round trip. It is the one signal that separates an app iOS has
+        # suspended from one it has killed: over WiFi both simply refuse.
+        try:
+            self._app_running = bool(self.phone.is_running())
+        except PhoneUnavailable as e:
+            log.info("app state unavailable: %s", e)
+            self._app_running = None
         return {"battery": b.get("level"), "battery_temperature": b.get("temperature"),
                 "charging": bool(b.get("charging")),
                 "battery_current_ma": b.get("current_ma"),
                 "charger_watts": b.get("charger_watts"),
                 "battery_health_pct": b.get("health_pct")}
+
+    def _boolean_state(self, state, held):
+        """The independent axes behind `stream_state`, as plain booleans.
+
+        `stream_state` says what the camera is doing in one value; these say which
+        part is broken, which is the question at 1am. They are not a decomposition
+        of it -- the cable and the WiFi fail separately, and the app can be alive
+        on a phone that is sending nothing.
+        """
+        # A refusal proves the phone's IP stack answered: something is listening
+        # on the network even though the app's port is not. A timeout does not.
+        reachable_wifi = state in ACTIVE_STATES + ("ready", "streaming_off", "backgrounded")
+        return {
+            "reachable_over_wifi": reachable_wifi,
+            "reachable_over_cable": self._cable_state == "ok",
+            # Only the cable can answer this. Over WiFi a suspended app and a
+            # killed one both simply refuse. None means "not asked yet", which is
+            # published as unknown rather than guessed at.
+            "app_running": self._app_running,
+            # Reachable and willing to send. False for streaming_off (the Start
+            # streaming button has not been tapped) and for backgrounded.
+            "app_streaming": state in ACTIVE_STATES + ("ready",),
+            "capturing_stills": any(h.startswith("capture") for h in held),
+            "being_viewed": any(h.startswith("viewer") for h in held),
+        }
 
     # -- cable self-heal ------------------------------------------------------
 
