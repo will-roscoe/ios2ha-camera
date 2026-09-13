@@ -29,7 +29,7 @@ TICK_WAIT_S = 0.5
 
 PROBE_INTERVAL_S = 60.0
 PROBE_BACKOFF_MAX_S = 300.0
-ONLINE_IDLE_S = 150.0          # two probe intervals plus the probe's read timeout
+ONLINE_IDLE_S = 150.0          # two probe intervals, plus 30 s of slack for a slow probe and the tick loop
 TICK_STALE_S = 180.0
 FRESH_S = 30.0                 # matches Supervisor.fresh_s: a live stream's frames are seconds old
 
