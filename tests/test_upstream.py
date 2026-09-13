@@ -1,3 +1,4 @@
+import threading
 import time
 import types
 from urllib.parse import urlparse
@@ -236,8 +237,37 @@ def test_a_raising_tick_does_not_kill_the_thread():
 
     up.tick = tick
     up.start()
-    assert _wait_for(lambda: boom[0] < 0)
-    up.stop()
+    try:
+        assert _wait_for(lambda: boom[0] < 0)
+    finally:
+        up.stop()
+
+
+def test_stop_does_not_touch_the_ingestor_while_the_thread_is_still_ticking():
+    """A tick can legitimately block for a while -- a probe waiting out its
+    connect/read timeout -- with self._open left True from before the block.
+    If join() times out with the thread still stuck there, stop() must not
+    also act on self.ing itself, or the calling thread and the still-running
+    upstream thread can both drive one connection at once, which is exactly
+    what this module exists to prevent."""
+    up, ing, _, _ = _up()
+    stuck = threading.Event()
+    released = threading.Event()
+
+    def tick(now=None):
+        up._open = True     # as a real tick would leave it mid-session
+        stuck.set()
+        released.wait()
+
+    up.tick = tick
+    up.start()
+    try:
+        assert _wait_for(lambda: stuck.is_set())
+        up.stop(timeout=0.2)
+        assert ing.calls == []      # must not touch ing while the thread is still stuck in a tick
+    finally:
+        released.set()
+        assert _wait_for(lambda: not up._thread.is_alive())
 
 
 def test_against_the_fake_camera_it_opens_lingers_and_probes():

@@ -279,6 +279,13 @@ class Upstream:
             self._wake.notify_all()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                # Still inside a tick, most likely a probe waiting out its timeout.
+                # Touching the ingestor now would put two threads on the one
+                # connection -- the thing that wedges the app -- so leave it to
+                # the thread, which is a daemon and dies with the process.
+                log.warning("upstream thread did not exit within %.1fs; leaving ingest to it", timeout)
+                return
         if self._open:
             self.ing.stop()
             self._open, self._opened_at = False, None
