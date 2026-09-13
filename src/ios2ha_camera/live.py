@@ -50,7 +50,12 @@ FPS_CAP = 12
 FRAME_INTERVAL = 1.0 / FPS_CAP
 QUEUE_SIZE = 2  # short: a client behind by more than this is dropped, not queued
 VIEWER_LINGER_S = 30.0  # keep the phone connection open this long after the last viewer leaves
-WRITE_TIMEOUT_S = 5.0   # a write stalled this long is a viewer that stopped reading
+# A write stalled this long is a viewer that stopped reading, and its hold is dropped.
+# 30 s rather than 5: at 5 s this also disconnected steady readers below roughly 1.2 Mbit/s
+# (measured on loopback), which a Home Assistant viewer on a slow link can be, because the
+# kernel only wakes a paused writer once much of the send buffer has drained. The cost of the
+# longer wait is that a genuinely stalled viewer holds the phone for this plus the linger.
+WRITE_TIMEOUT_S = 30.0
 
 
 def _offer(queue, frame):
