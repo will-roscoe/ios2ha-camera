@@ -30,12 +30,12 @@ class Hold:
     somebody else's hold.
     """
 
-    def __init__(self, upstream, reason, linger_s, hold_id):
+    def __init__(self, upstream, reason, linger_s):
         self._upstream, self.reason, self.linger_s = upstream, reason, linger_s
-        self._hold_id = hold_id
+        self._released = False
 
     def release(self):
-        self._upstream._release(self._hold_id, self.reason, self.linger_s)
+        self._upstream._release(self)
 
     def __enter__(self):
         return self
@@ -59,8 +59,6 @@ class Upstream:
         self._linger_until = {}
         self._open = False
         self._opened_at = None
-        self._hold_counter = 0
-        self._released_holds = set()
 
     # -- holds ---------------------------------------------------------------
 
@@ -68,16 +66,18 @@ class Upstream:
         with self._wake:
             self._counts[reason] = self._counts.get(reason, 0) + 1
             self._linger_until.pop(reason, None)
-            self._hold_counter += 1
-            hold_id = self._hold_counter
             self._wake.notify_all()
-        return Hold(self, reason, linger_s, hold_id)
+        return Hold(self, reason, linger_s)
 
-    def _release(self, hold_id, reason, linger_s):
+    def _release(self, hold):
         with self._wake:
-            if hold_id in self._released_holds:
+            # Two threads can reach release() for one hold (e.g. asyncio finally
+            # racing a cancellation), so the check-and-set must be atomic under
+            # the lock to avoid a double decrement that would cancel another hold.
+            if hold._released:
                 return
-            self._released_holds.add(hold_id)
+            hold._released = True
+            reason, linger_s = hold.reason, hold.linger_s
             left = self._counts.get(reason, 0) - 1
             if left > 0:
                 self._counts[reason] = left

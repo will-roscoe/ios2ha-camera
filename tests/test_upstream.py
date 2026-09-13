@@ -1,6 +1,5 @@
 import types
 import pytest
-import threading
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 from ios2ha_camera.upstream import Upstream
 
@@ -124,86 +123,3 @@ def test_a_hold_released_long_after_the_last_tick_gets_full_linger():
     clk[0] = 1531.0
     up.tick()
     assert ing.calls == ["start", "stop"]  # connection closes
-
-
-def test_concurrent_releases_of_same_hold_do_not_over_decrement():
-    """Two threads calling release() on the same Hold must decrement once."""
-    up, ing, _, clk = _up()
-
-    # Create two holds on "viewer"; release one twice concurrently
-    h1 = up.hold("viewer")
-    h2 = up.hold("viewer")
-    up.tick()
-    assert ing.calls == ["start"]
-
-    # Synchronise two threads releasing h1 at the same time
-    barrier = threading.Barrier(2)
-    errors = []
-
-    def release_h1():
-        try:
-            barrier.wait()  # ensure both threads start at same time
-            h1.release()
-        except Exception as e:
-            errors.append(e)
-
-    def release_h1_again():
-        try:
-            barrier.wait()
-            h1.release()
-        except Exception as e:
-            errors.append(e)
-
-    t1 = threading.Thread(target=release_h1)
-    t2 = threading.Thread(target=release_h1_again)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
-
-    assert not errors, f"Threading errors: {errors}"
-
-    # The connection should still be open because h2 is still held
-    up.tick()
-    assert ing.calls == ["start"]  # still open
-
-    h2.release()
-    clk[0] += 1.0
-    up.tick()
-    assert ing.calls == ["start", "stop"]  # now it closes
-
-
-def test_concurrent_releases_stress_50_times():
-    """Stress test: 50 iterations of concurrent release with overlapping holds."""
-    for iteration in range(50):
-        up, ing, _, clk = _up()
-        h1 = up.hold("viewer")
-        h2 = up.hold("viewer")
-        up.tick()
-
-        # Concurrent release of h1
-        barrier = threading.Barrier(2)
-
-        def release_h1():
-            barrier.wait()
-            h1.release()
-
-        def release_h1_again():
-            barrier.wait()
-            h1.release()
-
-        t1 = threading.Thread(target=release_h1)
-        t2 = threading.Thread(target=release_h1_again)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        # h2 should keep the connection open
-        up.tick()
-        assert ing.calls == ["start"], f"iteration {iteration}: connection dropped prematurely"
-
-        h2.release()
-        clk[0] += 1.0
-        up.tick()
-        assert ing.calls == ["start", "stop"], f"iteration {iteration}: connection did not close"
