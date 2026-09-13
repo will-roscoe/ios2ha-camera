@@ -1,0 +1,122 @@
+name: Auto Release
+
+# Reads the Conventional Commit messages since the last version tag, decides the
+# next SemVer, tags it, and publishes the Release.
+#
+# DELIBERATELY MANUAL FOR NOW. This repository has never run this bump logic, and a
+# release mistake is public and awkward to take back: you can delete a Release, but
+# not un-pull it from anyone who already fetched the tag. So the automatic
+# `push: branches: [main]` trigger is commented out below rather than enabled.
+#
+# Run it from the Actions tab, check that the tag it picks is the one you expected,
+# and once a few releases have gone out the way you wanted, uncomment the trigger.
+#
+# The `dry-run` input computes and prints the next version without tagging anything,
+# which is the safe way to see what a merge would have done.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Compute the next version and stop, without tagging
+        type: boolean
+        default: true
+  # push:
+  #   branches: [main]
+
+# Never run two auto-releases at once: they would race on tag creation.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Release gate: no tag is created unless lint, both Python versions and the image
+  # build all pass on the exact commit being tagged.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  compute:
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.decide.outputs.released }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Decide the next version
+        id: decide
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+
+          # versionsort.suffix=- makes pre-release tags (v1.2.0-rc.1) sort BEFORE
+          # their final release, matching SemVer precedence. Without it git puts
+          # suffixed tags after the release and we would pick a stale latest.
+          LATEST=$(git -c versionsort.suffix=- tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
+          echo "latest tag: ${LATEST:-<none>}"
+
+          RANGE="HEAD"
+          [ -n "$LATEST" ] && RANGE="${LATEST}..HEAD"
+
+          NEXT=$(git log -z --format=%B "$RANGE" \
+            | CURRENT_VERSION="$LATEST" python .github/scripts/compute_next_version.py)
+
+          if [ -z "$NEXT" ]; then
+            echo "No feat/fix/perf/breaking commits since ${LATEST:-the start} — no release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="v${NEXT}"
+          echo "next version: $TAG"
+          echo "### Next version: \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run — not tagging."
+            echo "_Dry run: nothing was tagged._" >> "$GITHUB_STEP_SUMMARY"
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists — skipping to avoid a duplicate release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # pyproject carries the version too, and the tag must not disagree with
+          # what the running container reports.
+          DECLARED=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$DECLARED" != "$NEXT" ]; then
+            echo "::error::pyproject.toml says $DECLARED but the commits imply $NEXT."
+            echo "::error::Bump pyproject.toml (and add a CHANGELOG entry) before releasing."
+            exit 1
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: compute
+    if: needs.compute.outputs.released == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.compute.outputs.tag }}

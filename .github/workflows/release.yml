@@ -1,0 +1,55 @@
+name: Release
+
+# Publishes a GitHub Release for a tag. Called by auto-release.yml, or run by hand
+# against a tag that already exists.
+#
+# Nothing is uploaded to a registry: deploy.sh builds the image on the target host
+# from a checkout, so the Release exists to carry notes and give the version a
+# browsable home, not to ship an artifact.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag to release, e.g. v1.1.2
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to release, e.g. v1.1.2
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      # CHANGELOG.md is written by hand here, in prose that explains why a change
+      # was made. Generating notes from commit subjects would be strictly worse, so
+      # the Release links to the changelog instead of restating it, and lets GitHub
+      # list the commits itself.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — nothing to do."
+            exit 0
+          fi
+          # --generate-notes works out the previous tag on its own, which is right
+          # even for the first release, where there is no previous tag to name.
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
