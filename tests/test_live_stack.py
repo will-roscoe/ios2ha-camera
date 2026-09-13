@@ -1,8 +1,9 @@
 import io
+import time
 import types
 import numpy as np
 from PIL import Image
-from ios2ha_camera.live_stack import SCALE, LiveStacker
+from ios2ha_camera.live_stack import SCALE, THREAD_JOIN_TIMEOUT_S, LiveStacker
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 
 
@@ -99,21 +100,55 @@ def test_the_tone_path_matches_render_within_the_measured_tolerance():
     assert np.percentile(mine, 99) - np.percentile(mine, 1) >= 50
 
 
+class _SlowBuffer:
+    """A buffer whose latest() blocks for a bit, standing in for real I/O so
+    the outgoing thread cannot notice a stop request until that call returns
+    -- the only way to prove from outside that attach() itself no longer
+    waits for it."""
+
+    def __init__(self, delay):
+        self._delay = delay
+
+    def latest(self):
+        time.sleep(self._delay)
+        return None
+
+
 def test_attach_after_a_quick_detach_does_not_leave_the_old_thread_running():
     """A detach() immediately followed by attach() -- plausible on a viewer
     reconnect -- used to start a second _run thread without checking whether
     the first had actually exited: both would then clear and poll the same
     Event and mutate self._acc/_t/_params/_out_times with no lock around
-    per-frame work. attach() now joins the outgoing thread (bounded) before
-    starting a new one, so by the time it returns the old thread is provably
-    gone -- no sleep needed here to find out."""
-    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    per-frame work.
+
+    attach() is called from an aiohttp handler and must never block (see
+    live.py's docstring), so the join of the outgoing thread moved out of
+    attach() and into the new thread itself -- one accumulator, one writer
+    still holds, because the new thread will not touch the accumulator until
+    that join returns, but attach()'s caller no longer pays for the wait.
+
+    Proven two ways: the old thread is still guaranteed gone soon after (a
+    bounded join, not a sleep, since the exact moment is not otherwise
+    observable), and the second attach() call itself is timed to show it did
+    not perform that wait synchronously -- with a plain blocking join it
+    could not return before the slow buffer's delay elapses.
+    """
+    delay = 0.3
+    st = LiveStacker(_SlowBuffer(delay), _settings())
     st.attach()
     first = st._thread
     try:
         st.detach()
+        started = time.monotonic()
         st.attach()
-        assert st._thread is not first
+        elapsed = time.monotonic() - started
+        second = st._thread
+        assert second is not first
+        # The old, blocking attach() had to wait out the slow buffer's delay
+        # (via the outgoing thread's own poll) before returning; the
+        # non-blocking one returns long before that delay has even elapsed.
+        assert elapsed < delay / 2
+        first.join(THREAD_JOIN_TIMEOUT_S)
         assert not first.is_alive()
     finally:
         st.detach()

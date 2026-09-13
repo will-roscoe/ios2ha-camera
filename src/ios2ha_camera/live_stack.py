@@ -67,22 +67,26 @@ class LiveStacker:
     # -- viewers -------------------------------------------------------------
 
     def attach(self):
+        # Called from an aiohttp handler: must only record state and start a
+        # thread, never block. The wait for a still-exiting predecessor moves
+        # into that new thread (_run_after) instead of happening here, so a
+        # viewer reconnect can never stall the event loop -- and with it every
+        # other viewer -- for up to THREAD_JOIN_TIMEOUT_S.
         with self._lock:
             self._viewers += 1
             if self._viewers == 1:
-                # One accumulator, one writer: a detach() immediately followed by
-                # attach() (a viewer reconnect within one POLL_S) must not start a
-                # second _run while the first is still exiting -- both would clear
-                # and check the same Event and mutate self._acc/_t/_params/
-                # _out_times with no lock around per-frame work.
-                if self._thread is not None and self._thread.is_alive():
-                    self._stop.set()
-                    self._thread.join(THREAD_JOIN_TIMEOUT_S)
-                    if self._thread.is_alive():
-                        log.warning("live stack thread did not exit within %.1fs of restart",
-                                    THREAD_JOIN_TIMEOUT_S)
-                self._stop.clear()
-                self._thread = threading.Thread(target=self._run, name="live-stack", daemon=True)
+                predecessor = self._thread
+                # A fresh Event per generation, not clear()-and-reuse: detach()
+                # reads self._stop under the same lock, so whichever Event it
+                # sees -- the outgoing one or this new one -- is the one that
+                # actually belongs to the thread it means to stop. Reusing one
+                # Event would let a detach() racing this attach() have its
+                # set() wiped out by a later clear() in _run_after.
+                stop = threading.Event()
+                self._stop = stop
+                self._thread = threading.Thread(
+                    target=self._run_after, args=(predecessor, stop),
+                    name="live-stack", daemon=True)
                 self._thread.start()
 
     def detach(self):
@@ -189,9 +193,25 @@ class LiveStacker:
 
     # -- thread --------------------------------------------------------------
 
-    def _run(self):
+    def _run_after(self, predecessor, stop):
+        """Wait out a still-exiting predecessor, then run this generation.
+
+        Runs in the new thread rather than in attach(): one accumulator, one
+        writer still holds, because this join guarantees the predecessor --
+        including its own tail that clears self._acc -- has fully finished
+        before this generation's _run touches it, but the waiting no longer
+        happens on attach()'s caller.
+        """
+        if predecessor is not None:
+            predecessor.join(THREAD_JOIN_TIMEOUT_S)
+            if predecessor.is_alive():
+                log.warning("live stack thread did not exit within %.1fs of restart",
+                            THREAD_JOIN_TIMEOUT_S)
+        self._run(stop)
+
+    def _run(self, stop):
         last_ts = None
-        while not self._stop.is_set():
+        while not stop.is_set():
             frame = self.buffer.latest()
             if frame is not None and frame.ts != last_ts:
                 last_ts = frame.ts

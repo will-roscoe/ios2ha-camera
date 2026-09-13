@@ -4,32 +4,47 @@ The previous version of this system connected Home Assistant's MJPEG proxy
 straight to the phone. One stalled client froze the phone's whole HTTP server
 behind it, stalls piled up until the phone's kernel ran out of mbufs, and it
 panicked -- ten days of timelapse lost before anyone noticed. This module
-never touches the phone: it only reads `RingBuffer.latest()`.
+never touches the phone directly: it only reads `RingBuffer.latest()` (and,
+for the stacked route, `LiveStacker.latest()`).
 
 To make sure that failure can't repeat here, each client gets its own short
-queue rather than a shared write loop. A single background task polls the
-ring buffer at a capped rate and fans the latest frame out to every
-registered queue using non-blocking puts; if a client's queue is already
-full (it hasn't drained fast enough), the oldest queued frame is dropped to
-make room for the new one. That fan-out never awaits a client's socket, so a
-client whose write is genuinely stalled can only stall its own request task
--- never the ring buffer read, the fan-out loop, or any other client.
+queue rather than a shared write loop. A single background task per source
+polls it at a capped rate and fans the latest frame out to every registered
+queue using non-blocking puts; if a client's queue is already full (it hasn't
+drained fast enough), the oldest queued frame is dropped to make room for the
+new one. That fan-out never awaits a client's socket, so a client whose write
+is genuinely stalled can only stall its own request task -- never a source
+read, a fan-out loop, or any other client.
+
+Home Assistant is not the only viewer any more: `/live/stacked` serves a
+noise-reduced feed from a `LiveStacker`, and both `/live` and `/live/stacked`
+now hold the phone connection open (via `Upstream.hold`) only for as long as
+they have a viewer attached -- that is what makes the connection on-demand.
+Holding and releasing a hold is non-blocking, and so is `LiveStacker.attach`/
+`detach`, which is why a plain `with` and plain calls around the streaming
+loop are safe here: nothing in this module may block the event loop, since
+that would freeze every other viewer along with it.
 """
 
 import asyncio
+from contextlib import nullcontext
 from aiohttp import web
 
 # Typed keys rather than plain strings: aiohttp warns on str keys, and an
 # unattended service wants a log with nothing routine in it.
 BUFFER = web.AppKey("buffer", object)
-CLIENTS = web.AppKey("clients", set)
-BROADCAST_TASK = web.AppKey("broadcast_task", asyncio.Task)
+CLIENTS = web.AppKey("clients", set)  # the raw /live route's clients; kept for callers that inspect it directly
+SOURCES = web.AppKey("sources", list)
+UPSTREAM = web.AppKey("upstream", object)
+STACKER = web.AppKey("stacker", object)
+BROADCAST_TASK = web.AppKey("broadcast_task", list)
 LATEST_STILL = web.AppKey("latest_still", object)
 
 BOUNDARY = "frame"
 FPS_CAP = 12
 FRAME_INTERVAL = 1.0 / FPS_CAP
 QUEUE_SIZE = 2  # short: a client behind by more than this is dropped, not queued
+VIEWER_LINGER_S = 30.0  # keep the phone connection open this long after the last viewer leaves
 
 
 def _offer(queue, frame):
@@ -56,55 +71,75 @@ def _part(frame):
     )
 
 
-async def _broadcast(app):
-    """Fan the latest frame out to every connected client at a capped rate.
+async def _broadcast(app, source, clients):
+    """Fan the latest frame from one source out to its clients at a capped rate.
 
-    Only ever touches the buffer's cheap latest() read and non-blocking queue
-    ops, so a stalled client's full queue can never delay this loop.
+    Only ever touches the source's cheap latest() read and non-blocking queue
+    ops, so a stalled client's full queue can never delay this loop -- for
+    either the raw buffer or the stacker.
     """
-    buffer = app[BUFFER]
     last_ts = None
     try:
         while True:
-            frame = buffer.latest()
+            frame = source()
             if frame is not None and frame.ts != last_ts:
                 last_ts = frame.ts
-                for queue in list(app[CLIENTS]):
+                for queue in list(clients):
                     _offer(queue, frame)
             await asyncio.sleep(FRAME_INTERVAL)
     except asyncio.CancelledError:
         pass
 
 
-async def _stream(request):
-    app = request.app
-    resp = web.StreamResponse(headers={
-        "Content-Type": "multipart/x-mixed-replace; boundary=%s" % BOUNDARY,
-        "Cache-Control": "no-cache",
-    })
-    await resp.prepare(request)
+def _stream_handler(clients, source, attach=None, detach=None):
+    """Build a streaming handler fed by one source (the raw buffer or the stacker).
 
-    queue = asyncio.Queue(maxsize=QUEUE_SIZE)
-    app[CLIENTS].add(queue)
-    # Seed with whatever is already buffered so a viewer sees a frame
-    # immediately instead of waiting for the next broadcast tick.
-    latest = app[BUFFER].latest()
-    if latest is not None:
-        _offer(queue, latest)
-    try:
-        while True:
-            frame = await queue.get()
-            await resp.write(_part(frame))
-    except (ConnectionError, asyncio.CancelledError):
-        # ConnectionError, not just its Reset/Aborted subclasses: aiohttp raises
-        # a bare ConnectionError("Connection lost") when a viewer goes away
-        # mid-write, and Home Assistant's camera does exactly that every time it
-        # grabs a thumbnail. A client leaving is normal and must not put a
-        # traceback in an unattended service's log.
-        pass
-    finally:
-        app[CLIENTS].discard(queue)
-    return resp
+    A connected viewer holds the upstream phone connection open for as long as
+    it stays connected, via `Upstream.hold` -- released (after `VIEWER_LINGER_S`,
+    so a quick reconnect doesn't re-trigger a probe) once it goes away. `attach`/
+    `detach`, when given, additionally start/stop the stacker's background
+    thread around the same lifetime; the raw route passes neither, since it
+    has nothing of its own to start.
+    """
+    async def handler(request):
+        app = request.app
+        upstream = app.get(UPSTREAM)
+        hold = upstream.hold("viewer", linger_s=VIEWER_LINGER_S) if upstream else nullcontext()
+        if attach is not None:
+            attach()
+        try:
+            with hold:
+                resp = web.StreamResponse(headers={
+                    "Content-Type": "multipart/x-mixed-replace; boundary=%s" % BOUNDARY,
+                    "Cache-Control": "no-cache",
+                })
+                await resp.prepare(request)
+
+                queue = asyncio.Queue(maxsize=QUEUE_SIZE)
+                clients.add(queue)
+                # Seed with whatever is already available so a viewer sees a
+                # frame immediately instead of waiting for the next broadcast tick.
+                latest = source()
+                if latest is not None:
+                    _offer(queue, latest)
+                try:
+                    while True:
+                        frame = await queue.get()
+                        await resp.write(_part(frame))
+                except (ConnectionError, asyncio.CancelledError):
+                    # ConnectionError, not just its Reset/Aborted subclasses: aiohttp raises
+                    # a bare ConnectionError("Connection lost") when a viewer goes away
+                    # mid-write, and Home Assistant's camera does exactly that every time it
+                    # grabs a thumbnail. A client leaving is normal and must not put a
+                    # traceback in an unattended service's log.
+                    pass
+                finally:
+                    clients.discard(queue)
+                return resp
+        finally:
+            if detach is not None:
+                detach()
+    return handler
 
 
 async def _still(request):
@@ -112,9 +147,10 @@ async def _still(request):
 
     This is what a viewer should see as the camera's thumbnail: the stacked,
     noise-reduced image rather than a single raw frame, which at night is
-    mostly noise. It is served from memory and never touches the phone, so a
-    dashboard refreshing its thumbnail costs the phone nothing -- which is also
-    what makes an on-demand upstream connection possible later.
+    mostly noise. It is served from memory and never touches the phone -- no
+    hold is taken here at all -- so a dashboard refreshing its thumbnail costs
+    the phone nothing, which is also what makes the on-demand upstream
+    connection possible for the streaming routes.
 
     Before the first still of the run, it falls back to the newest buffered
     frame so the thumbnail is never blank.
@@ -131,24 +167,46 @@ async def _still(request):
 
 
 async def _start_broadcast(app):
-    app[BROADCAST_TASK] = asyncio.ensure_future(_broadcast(app))
+    app[BROADCAST_TASK] = [asyncio.ensure_future(_broadcast(app, source, clients))
+                           for source, clients in app[SOURCES]]
 
 
 async def _stop_broadcast(app):
-    task = app.get(BROADCAST_TASK)
-    if task is not None:
+    tasks = app.get(BROADCAST_TASK) or []
+    for task in tasks:
         task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def make_live_app(buffer, latest_still=None):
+def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     """`latest_still` is a callable returning the most recent stacked still as
-    JPEG bytes, or None before the first one; it backs the /still.jpg route."""
+    JPEG bytes, or None before the first one; it backs the /still.jpg route.
+
+    `upstream`, if given, is held open (see `Upstream.hold`) for as long as any
+    viewer is connected to /live or /live/stacked -- this is what lets the
+    phone connection be opened on demand rather than for the life of the
+    process. `stacker`, if given, additionally serves /live/stacked from its
+    noise-reduced feed and has its background thread attached/detached to the
+    lifetime of that route's viewers.
+    """
     app = web.Application()
     app[BUFFER] = buffer
-    app[CLIENTS] = set()
     app[LATEST_STILL] = latest_still
-    app.router.add_get("/live", _stream)
+    app[UPSTREAM] = upstream
+    app[STACKER] = stacker
+    app[SOURCES] = []
+
+    raw_clients = set()
+    app[CLIENTS] = raw_clients
+    app[SOURCES].append((buffer.latest, raw_clients))
+    app.router.add_get("/live", _stream_handler(raw_clients, buffer.latest))
+
+    if stacker is not None:
+        stacked_clients = set()
+        app[SOURCES].append((stacker.latest, stacked_clients))
+        app.router.add_get("/live/stacked", _stream_handler(
+            stacked_clients, stacker.latest, attach=stacker.attach, detach=stacker.detach))
+
     app.router.add_get("/still.jpg", _still)
     app.on_startup.append(_start_broadcast)
     app.on_cleanup.append(_stop_broadcast)

@@ -9,6 +9,7 @@ from aiohttp import web
 from .archive import Archive
 from .ingest import Ingestor
 from .live import make_live_app
+from .live_stack import LiveStacker
 from .mqtt_io import MqttIO
 from .onvif import OnvifClient
 from .phone import PhoneManager
@@ -44,6 +45,7 @@ def main():
     up = Upstream(ing, buf, s, on_state=lambda st: sup.on_stream_state(st))
     ing.on_state = up.on_ingest_state
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
+    stacker = LiveStacker(buf, s)
 
     stop = threading.Event()
     threads = [
@@ -67,7 +69,8 @@ def main():
     # The event loop belongs to the live view alone. run_app returns on SIGTERM,
     # which is how the container stops us.
     try:
-        web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg),
+        web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg,
+                                  upstream=up, stacker=stacker),
                     host="0.0.0.0", port=s.live_port, print=None)
     finally:
         log.info("shutting down")
