@@ -10,6 +10,10 @@ def test_defaults_match_spec():
     assert s.max_depth >= 1
 
 
+def test_live_max_window_s_default():
+    assert Settings().live_max_window_s == 3.0
+
+
 def test_from_env_reads_connection():
     s = Settings.from_env({"PHONE_HOST": "192.168.1.11", "PHONE_PASSWORD": "x"})
     assert s.phone_host == "192.168.1.11"

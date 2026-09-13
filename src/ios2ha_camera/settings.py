@@ -75,6 +75,7 @@ class Settings:
     chroma_radius: float = 3.0
     denoise_strength: float = 3.0
     autofocus: bool = True
+    live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
 
     @classmethod
     def from_env(cls, env):
