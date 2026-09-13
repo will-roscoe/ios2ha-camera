@@ -15,6 +15,7 @@ from .phone import PhoneManager
 from .ring_buffer import RingBuffer
 from .settings import Settings
 from .supervisor import Supervisor
+from .upstream import Upstream
 from . import version
 
 log = logging.getLogger(__name__)
@@ -39,9 +40,10 @@ def main():
     mqtt = MqttIO(s,
                   on_control=lambda n, v: sup.handle_control(n, v),
                   on_connected=lambda: sup.publish_controls())
-    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone)
-    ing = Ingestor(s.phone_host, s.phone_port, s.phone_user, s.phone_password, buf,
-                   on_state=sup.on_stream_state)
+    ing = Ingestor(s.phone_host, s.phone_port, s.phone_user, s.phone_password, buf)
+    up = Upstream(ing, buf, s, on_state=lambda st: sup.on_stream_state(st))
+    ing.on_state = up.on_ingest_state
+    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
 
     stop = threading.Event()
     threads = [
@@ -51,7 +53,7 @@ def main():
 
     mqtt.connect()      # asynchronous: a broker that is down does not stop capture
     mqtt.loop_start()
-    ing.start()
+    up.start()
     for t in threads:
         t.start()
     # Version first, and on its own line: "what is actually running" is the
@@ -69,7 +71,12 @@ def main():
         log.info("shutting down")
         stop.set()
         sup.capture_requested.set()   # wake the capture loop out of its wait
-        ing.stop()
+        # Compose gives the container 20s to stop; the two threads below take up
+        # to 5s each and mqtt.close() up to 2s, so upstream gets 8s of that
+        # budget. A thread still alive after that is stuck in a probe, which
+        # stop() deliberately leaves alone rather than touching the ingestor
+        # from a second thread.
+        up.stop(timeout=8.0)
         sup.close()
         for t in threads:
             t.join(timeout=5)
