@@ -18,6 +18,39 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 1.1.2 — 2026-09-13
+
+The cable stopped working for two hours on 13 September and nothing noticed. usbmuxd had
+restarted at 17:10; the container bind-mounts its socket as a *file*, so the container kept
+holding the old, deleted inode and every battery reading and app check failed with
+`ConnectionFailedToUsbmuxdError` until the container was recreated by hand. usbmuxd exits
+whenever no device is attached, so every unplug can do this.
+
+Two fixes, because the good one needs root and cannot ship in the image.
+
+**On the host**, `scripts/install-usbmuxd-hook.sh` installs an `ExecStartPost` drop-in on
+`usbmuxd.service` that restarts the container as soon as usbmuxd comes back. This is the
+real fix and it acts in seconds. It is guarded: it runs through `systemd-run --no-block` so
+usbmuxd's own startup is never held up, it restarts only a container that is already
+running, it exits quietly when Docker is not up yet, and it rate-limits to one restart a
+minute because udev starts usbmuxd on every attach and a cable with a bad contact must not
+restart the container in a loop.
+
+**In the container**, a fallback for hosts without that hook: after usbmuxd has been
+unreachable for five minutes, the supervisor asks itself to exit and Docker's restart policy
+brings it back on a fresh socket. It is deliberately slow and heavily guarded, because a
+service that restarts itself on a wrong signal is worse than the fault it fixes. It never
+fires in the first ten minutes of a process (a cable already broken at boot would otherwise
+loop forever), never twice within an hour, and never for a phone that is merely unplugged —
+that raises `NoDeviceConnectedError`, which means usbmuxd is answering fine.
+
+**New entity:** `sensor.ios2ha_camera_cable_state`, with values `ok`, `no_device` and
+`usbmuxd_down`. This makes the fault alertable long before the restart is reached, and
+distinguishes a cable that is simply out from a daemon that has gone. Adding an entity is a
+minor change by the rule above; this is released as a patch because nothing that already
+worked behaves differently, and the entity exists to report a fault that previously had no
+signal at all.
+
 ## 1.1.1 — 2026-09-13
 
 `natural`'s tone curve was tuned for night and assumed its input was linear light, but the phone's
