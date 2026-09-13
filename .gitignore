@@ -1,9 +1,9 @@
-# Local-only working material (specs, plans, handoffs, session memory).
-# These are deliberately not tracked; see .claude/handoff/ for why.
-.claude/superpowers/
-.claude/handoff/
-.claude/spike-images/
-.claude/remember/
+# Local-only working material: specs, plans, handoffs, backlogs, session memory,
+# deployment scratch. None of it is tracked, so ignore the directory rather than
+# naming each subdirectory and having new ones show up as untracked. A repo-level
+# CLAUDE.md is the one thing here that would belong in version control.
+.claude/*
+!.claude/CLAUDE.md
 .remember/
 .superpowers/
 
