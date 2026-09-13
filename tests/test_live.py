@@ -119,17 +119,24 @@ def test_still_route_says_so_when_there_is_nothing_at_all():
 
 class FakeUpstream:
     """Stands in for Upstream: records hold()/release() without touching the
-    phone, so these tests can check a viewer's hold lifecycle in isolation."""
+    phone, so these tests can check a viewer's hold lifecycle in isolation.
+
+    hold() itself records the acquisition, matching Upstream.hold(), which
+    mutates its internal counts at call time rather than at __enter__ -- so
+    something that raises between hold() returning and the with block being
+    entered shows up here as a "hold" with no matching "release", not as
+    nothing at all.
+    """
 
     def __init__(self):
         self.events = []
 
     def hold(self, reason, linger_s=0.0):
+        self.events.append("hold")
         outer = self
 
         class _H:
             def __enter__(s):
-                outer.events.append("hold")
                 return s
 
             def __exit__(s, *exc):
@@ -191,4 +198,34 @@ def test_the_stacked_route_serves_the_stackers_frames():
             assert b"stacked" in chunk
             assert st.attached == 1
             resp.close()
+    asyncio.run(run())
+
+
+def test_a_stacker_that_fails_to_attach_still_releases_the_hold():
+    """Upstream.hold() takes effect at call time, before the with block is
+    even entered -- so if attach() raises before the hold is ever released,
+    there is no linger timeout to fall back on: release() was never reached
+    at all, and the phone connection leaks forever. attach() must run inside
+    the hold's with block, not before it, so a raise from it still unwinds
+    through __exit__ and releases the hold; detach() must then also not run,
+    since there was no successful attach() for it to undo."""
+    async def run():
+        buf = RingBuffer(1 << 20)
+
+        class FailingStacker:
+            def attach(self):
+                raise RuntimeError("boom")
+
+            def detach(self):
+                raise AssertionError("detach() must not run without a matching attach()")
+
+            def latest(self):
+                return None
+
+        up = FakeUpstream()
+        app = make_live_app(buf, upstream=up, stacker=FailingStacker())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/live/stacked")
+            assert resp.status == 500
+            assert up.events == ["hold", "release"]
     asyncio.run(run())

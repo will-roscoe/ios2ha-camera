@@ -105,10 +105,21 @@ def _stream_handler(clients, source, attach=None, detach=None):
         app = request.app
         upstream = app.get(UPSTREAM)
         hold = upstream.hold("viewer", linger_s=VIEWER_LINGER_S) if upstream else nullcontext()
-        if attach is not None:
-            attach()
+        attached = False
         try:
             with hold:
+                # Upstream.hold() has already taken effect by the time it
+                # returns above -- it mutates its counts at call time, not at
+                # __enter__ -- so attach() must run inside this block, not
+                # before it: if attach() raises (thread-start failure under
+                # exhaustion, say), unwinding through `with hold`'s __exit__
+                # is the only thing that still releases it. Calling it before
+                # entering `with hold` would leak the phone connection
+                # forever, with no linger timeout to fall back on since
+                # release() would never even be reached.
+                if attach is not None:
+                    attach()
+                    attached = True
                 resp = web.StreamResponse(headers={
                     "Content-Type": "multipart/x-mixed-replace; boundary=%s" % BOUNDARY,
                     "Cache-Control": "no-cache",
@@ -137,7 +148,11 @@ def _stream_handler(clients, source, attach=None, detach=None):
                     clients.discard(queue)
                 return resp
         finally:
-            if detach is not None:
+            # Guarded by attached, not just `detach is not None`: if attach()
+            # itself raised, there is no attach to undo, and calling detach()
+            # anyway would decrement another viewer's count instead of this
+            # (nonexistent) one.
+            if attached and detach is not None:
                 detach()
     return handler
 
