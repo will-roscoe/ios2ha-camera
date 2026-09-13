@@ -30,11 +30,12 @@ Three rules follow from that, and most of the design is downstream of them:
 
 ```
  iPhone (Guardian Eye, on the LAN)
-   │  one MJPEG connection      │  ONVIF SOAP        │  Lightning USB (management only)
-   ▼                            ▼                    ▼
+   │  one MJPEG connection, opened on demand │  ONVIF SOAP        │  Lightning USB (management only)
+   ▼                                         ▼                    ▼
  supervisor  (Docker container on the LAN host)
+   upstream ── decides when the phone is connected; holds it for a capture or a viewer
    ingest ─── ring buffer of compressed frames
-     ├── live re-serve        →  /live  and  /still.jpg
+     ├── live re-serve        →  /live, /live/stacked and /still.jpg
      ├── stacker              →  sigma-clipped mean, depth from measured light
      ├── render               →  black level, white balance, tone map
      ├── outputs              →  MQTT still + events + state, dated JPEG archive
@@ -44,12 +45,31 @@ Three rules follow from that, and most of the design is downstream of them:
  Home Assistant  — camera, 60-odd entities, timelapse automation, alerts
 ```
 
+## On demand
+
+The supervisor used to hold its one MJPEG connection to the phone open for the life of the
+process. That costs about 300 mA continuously, and on the 3 W USB port this installation runs
+from it flattened the phone in about six hours. The connection is now something anything needing
+frames *takes* and *gives back*: a capture holds it just long enough to fill its window, a live
+viewer holds it for as long as they watch (plus a 30 s linger, so a quick reconnect doesn't cause a
+reprobe), and while nothing holds it the phone is probed every 60 s — connect, read one frame,
+close — for about 2–3 mA a minute. Opening the connection costs little in latency either: the first
+frame arrives about 113 ms after connecting. `switch.ios2ha_camera_on_demand` turns this off and
+goes back to the old always-connected behaviour, if you ever need to compare the two.
+
+`/live/stacked` gets the same treatment: its noise-reduced feed only runs while someone is actually
+watching it, so the CPU cost of stacking a live feed is paid on demand too, not continuously.
+
+After a phone restart, `./deploy.sh phone` (or the **Prepare phone** button) puts the phone back
+into a state where it can stream — checking lockdown, Developer Mode and the developer disk image,
+and relaunching the app — short of the one thing that can't be automated: tapping Start streaming.
+
 ## Getting started
 
 ```bash
 python3 -m venv ~/.venvs/ios2ha-camera
 ~/.venvs/ios2ha-camera/bin/pip install -e '.[dev]'
-~/.venvs/ios2ha-camera/bin/pytest -q          # 157 tests, no hardware needed
+~/.venvs/ios2ha-camera/bin/pytest -q          # 222 tests, no hardware needed
 ```
 
 The whole test suite runs against a fake camera that serves real JPEGs over real sockets, so

@@ -28,6 +28,30 @@ against a stub package first, so the ~100-package layer is cached and a code cha
 reinstall opencv and numpy. The provenance build args come last in the Dockerfile for the same
 reason.
 
+### Preparing the phone after a restart
+
+```bash
+./deploy.sh phone                     # works even while the container is stopped
+./deploy.sh phone --fix-developer-mode  # also turns Developer Mode on. REBOOTS THE PHONE
+```
+
+This checks lockdown is reachable, whether Developer Mode is on, mounts the developer disk image,
+relaunches the camera app if it isn't running, and reads the battery — then waits up to five minutes
+for someone to open Guardian Eye and tap Start streaming, confirming with the same probe the
+supervisor itself uses that frames are actually arriving. Streaming cannot be started any other way:
+there is no ONVIF call or API for it.
+
+If the supervisor's container is already running, `deploy.sh phone` skips that wait automatically —
+the running service is already probing the app on its own schedule, and a second probe loop knocking
+on it every 5 s at the same time is exactly the connection churn that wedges it. It still does the
+setup steps and prints a reminder to watch `sensor.ios2ha_camera_stream_state` in Home Assistant
+instead.
+
+`--fix-developer-mode` is the only way this turns Developer Mode on, and only on request: doing so
+reboots the phone. The `button.ios2ha_camera_prepare_phone` entity runs the same setup steps over
+MQTT without a shell, but never that flag and never the wait — it reports what it found as an event
+and returns immediately.
+
 ## Versioning
 
 See [CHANGELOG.md](CHANGELOG.md) for what the numbers mean. In short, the Home Assistant entity and
@@ -52,15 +76,38 @@ Host networking, because the service must reach the phone, the broker and the US
 It mounts `/var/run/usbmuxd` and `/var/lib/lockdown` (read-only) for battery access, and a data
 directory for the archive.
 
-`stop_grace_period: 20s` matters. Shutdown can take about 14 seconds worst case — the ingest thread
-may be waiting out a connect to an unresponsive phone before the offline availability is published —
-and Compose's default 10 s would SIGKILL it mid-shutdown, leaving Home Assistant showing the camera
-as online after a planned restart.
+`stop_grace_period: 20s` matters. Worst case is about 17 seconds: up to 4 s for the event loop to
+finish or cancel a `/live` viewer's pending write, 5 s for the upstream connection to close, two 3 s
+thread joins, and up to 2 s to publish "offline" over MQTT — see [ARCHITECTURE.md](ARCHITECTURE.md)
+for the full arithmetic. Measured end to end with a viewer attached: 1.1–5.1 s in practice, well
+inside the budget. Before the on-demand connection, the same shutdown could take 122 s with a viewer
+attached — the ingest thread waiting out a connect to an unresponsive phone before the offline
+availability was ever published — which is longer than even this grace period, so the container was
+SIGKILLed mid-shutdown and Home Assistant kept showing the camera as online after a planned restart.
 
 ### The MQTT account
 
 The Mosquitto add-on has no local logins, so it authenticates **Home Assistant** users. Create a
 dedicated non-admin, local-only account rather than reusing an admin one.
+
+## Rolling back
+
+Two different things can be meant by "roll back", and they fix different problems:
+
+- **Turn `switch.ios2ha_camera_on_demand` off.** This is instant, needs no deploy, and restores the
+  previous always-connected behaviour — the phone connection is held open for the life of the
+  process again. Reach for this if the on-demand connect/disconnect cycle itself looks like the
+  problem (see "The idle probe" under Health and alerts, below).
+- **Redeploy an older tag** with `./deploy.sh` from that tag's commit, if the fault is in the code
+  itself rather than in the connection policy.
+
+A downgrade to a version before 1.1.0 needs one extra step. `stream_state` gained a new option,
+`idle`, in 1.1.0; an older version's Home Assistant discovery payload does not list it, so a
+retained `idle` value left over from the newer version is not one of the older enum's valid options
+and Home Assistant will show the sensor as unavailable until it changes. The older version's health
+tick republishes its own real state within 30 seconds regardless, which clears this on its own — but
+to fix it immediately, clear or republish the retained `ios2ha_camera/state/stream_state` topic by
+hand after the downgrade.
 
 ## Reading the logs
 
@@ -82,15 +129,41 @@ did not hold enough frames inside the capture window, and the MQTT event carries
 
 ## Health and alerts
 
-Availability is a last-will topic plus frame age. `camera_online` requires both `streaming` **and**
-a frame within 30 seconds, so a frozen app that holds the connection open still reads as offline.
+Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
+true while `streaming` with a frame within 30 seconds, **or** while `idle` with a frame within 150
+seconds — idle is the normal state whenever nothing is capturing or watching, so it must not read as
+offline on its own. It is forced **false** whenever the upstream thread's own heartbeat
+(`sensor.ios2ha_camera_tick_age`) has gone more than 180 seconds without ticking, regardless of what
+state it last reported — a wedged or dead thread must not leave every reading frozen at whatever it
+last saw as healthy.
+
+**The idle probe.** While nothing holds the connection, it is probed every 60 seconds — connect, read
+one frame, close, for about 2–3 mA a minute — which is what keeps `idle` fed with a recent frame and
+lets a genuine outage still be noticed between captures. A failing probe backs off (60, 120, 240 s,
+capped at 300 s) rather than knocking on a wedged app every minute. If the app itself starts
+wedging or needs relaunching more often than it used to, the probe's own connect/disconnect cycle is
+worth suspecting — turn `switch.ios2ha_camera_on_demand` off to fall back to one steady connection
+and see whether the problem goes away.
+
+**Expected duty cycle.** A night capture takes a hold for roughly 60–75 seconds of every 600 second
+interval — the time it takes to gather its frames, not the render, which happens after the hold is
+released. `sensor.ios2ha_camera_duty_1h` should sit around 10–12.5% with nothing else attached. A
+much higher reading for any length of time — with `sensor.ios2ha_camera_holders` showing `viewer` or
+`viewer (linger)` rather than settling back to `none` — means something is holding the phone
+connected well beyond what capturing needs.
+
+**A slow viewer.** A `/live` or `/live/stacked` client whose connection can't keep up with the JPEG
+stream — under roughly 1.2 Mbit/s, measured on loopback — is disconnected after 30 seconds of a
+stalled write, the same as one that genuinely went away. This exists so a stalled viewer cannot pin
+the phone connection open indefinitely; a shorter timeout was tried first and wrongly dropped real
+viewers on slow links.
 
 Five alerts are worth having, and all five exist:
 
 | Alert | Trigger | Why |
 |---|---|---|
 | Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting |
-| Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging" |
+| Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging". Check `sensor.ios2ha_camera_holders` and `sensor.ios2ha_camera_duty_1h` first — a connection stuck open (a viewer that never left, or `on_demand` switched off) looks exactly like a weak charger on the battery current alone |
 | Battery low | Below 40% | It will stop capturing when the phone dies |
 | Battery hot | Above 42 °C for 10 min | Charges and streams continuously |
 | Archive space low | Below 5 GB | Archiving stops at 2 GB |
@@ -132,6 +205,12 @@ marginal. Measured both ways:
 |---|---|---|
 | Streaming with a client attached | Falling, ~18%/hour | Rising to ~39 °C |
 | Camera app closed | Charging, +322 mA | Falling to ~33 °C |
+
+These figures are for a connection held open continuously, which the on-demand connection no longer
+does by default: a night capture only holds it for roughly 60–75 seconds of every 600, and the idle
+probe in between costs about 2–3 mA a minute rather than the ~300 mA of an open connection — see
+"Expected duty cycle" above. Turning `switch.ios2ha_camera_on_demand` off returns to the continuous
+figures in this table.
 
 So the camera app is the dominant load and the port cannot sustain it. iOS also throttles charging
 above roughly 35 °C (`AppleChargeRateLimitIndex`), which makes it self-reinforcing: hot, so charge
