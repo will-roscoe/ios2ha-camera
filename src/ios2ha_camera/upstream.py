@@ -30,15 +30,12 @@ class Hold:
     somebody else's hold.
     """
 
-    def __init__(self, upstream, reason, linger_s):
+    def __init__(self, upstream, reason, linger_s, hold_id):
         self._upstream, self.reason, self.linger_s = upstream, reason, linger_s
-        self._released = False
+        self._hold_id = hold_id
 
     def release(self):
-        if self._released:
-            return
-        self._released = True
-        self._upstream._release(self.reason, self.linger_s)
+        self._upstream._release(self._hold_id, self.reason, self.linger_s)
 
     def __enter__(self):
         return self
@@ -49,19 +46,21 @@ class Hold:
 
 
 class Upstream:
-    def __init__(self, ingestor, buffer, settings, on_state=lambda s: None, *, probe=None):
+    def __init__(self, ingestor, buffer, settings, on_state=lambda s: None, *, probe=None, clock=None):
         self.ing = ingestor
         self.buffer = buffer
         self.s = settings
         self.on_state = on_state
         self.probe = probe
+        self._clock = clock if clock is not None else time.time
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
         self._counts = {}
         self._linger_until = {}
         self._open = False
         self._opened_at = None
-        self._last_now = None
+        self._hold_counter = 0
+        self._released_holds = set()
 
     # -- holds ---------------------------------------------------------------
 
@@ -69,18 +68,23 @@ class Upstream:
         with self._wake:
             self._counts[reason] = self._counts.get(reason, 0) + 1
             self._linger_until.pop(reason, None)
+            self._hold_counter += 1
+            hold_id = self._hold_counter
             self._wake.notify_all()
-        return Hold(self, reason, linger_s)
+        return Hold(self, reason, linger_s, hold_id)
 
-    def _release(self, reason, linger_s):
+    def _release(self, hold_id, reason, linger_s):
         with self._wake:
+            if hold_id in self._released_holds:
+                return
+            self._released_holds.add(hold_id)
             left = self._counts.get(reason, 0) - 1
             if left > 0:
                 self._counts[reason] = left
             else:
                 self._counts.pop(reason, None)
                 if linger_s > 0:
-                    now = self._last_now if self._last_now is not None else time.time()
+                    now = self._clock()
                     self._linger_until[reason] = now + linger_s
             self._wake.notify_all()
 
@@ -107,8 +111,7 @@ class Upstream:
         return self._opened_at
 
     def tick(self, now=None):
-        now = time.time() if now is None else now
-        self._last_now = now
+        now = self._clock() if now is None else now
         want = self._wanted(now)
         if want and not self._open:
             self.ing.start()
