@@ -200,11 +200,14 @@ class Upstream:
         # Two threads reach here -- the tick thread and the ingest thread via
         # on_ingest_state -- so the decision to publish must be atomic, or the
         # same state change goes out twice, or out of order. The check-and-set
-        # is inside the lock; on_state() runs outside because it does MQTT I/O.
+        # is inside the lock; on_state() runs outside because it does MQTT I/O,
+        # and the log call is outside for the same reason (never log while
+        # holding a lock other threads block on).
         with self._wake:
             if state == self._published:
                 return
-            self._published = state
+            previous, self._published = self._published, state
+        log.info("stream_state %s -> %s", previous, state)
         self.on_state(state)
 
     def _run_probe(self, now):
@@ -276,11 +279,16 @@ class Upstream:
                 self._wake.wait(TICK_WAIT_S)
 
     def stop(self, timeout=15.0):
+        # timeout bounds this whole call, not just the thread join: a caller
+        # sizing shutdown against a fixed budget (see __main__.py) needs the
+        # synchronous self.ing.stop() below covered too, or a mid-session stop
+        # can run for join(timeout) plus Ingestor's own ~12s default on top.
+        deadline = time.monotonic() + timeout
         self._stop_event.set()
         with self._wake:
             self._wake.notify_all()
         if self._thread is not None:
-            self._thread.join(timeout=timeout)
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
             if self._thread.is_alive():
                 # Still inside a tick, most likely a probe waiting out its timeout.
                 # Touching the ingestor now would put two threads on the one
@@ -289,7 +297,7 @@ class Upstream:
                 log.warning("upstream thread did not exit within %.1fs; leaving ingest to it", timeout)
                 return
         if self._open:
-            self.ing.stop()
+            self.ing.stop(timeout=max(0.1, deadline - time.monotonic()))
             self._open, self._opened_at = False, None
 
     def wait_for_frames(self, n, since_ts, timeout, poll=0.1):

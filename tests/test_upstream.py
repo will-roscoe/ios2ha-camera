@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 import types
@@ -15,6 +16,7 @@ class FakeIngestor:
     def __init__(self):
         self.calls = []
         self.running = False
+        self.stop_timeouts = []       # every timeout stop() was called with, in order
 
     def start(self):
         self.calls.append("start")
@@ -22,6 +24,7 @@ class FakeIngestor:
 
     def stop(self, timeout=None):
         self.calls.append("stop")
+        self.stop_timeouts.append(timeout)
         self.running = False
         return True
 
@@ -198,6 +201,18 @@ def test_state_changes_are_published_once_each():
     assert seen == ["idle"]
 
 
+def test_state_changes_are_logged_exactly_once_each(caplog):
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+    up = Upstream(ing, buf, _settings(), probe=lambda: Frame(b"jpeg", 1000.0))
+    with caplog.at_level(logging.INFO, logger="ios2ha_camera.upstream"):
+        up.tick(now=1000.0)
+        assert [r.getMessage() for r in caplog.records if r.name == "ios2ha_camera.upstream"] == \
+            ["stream_state None -> idle"]
+        up.tick(now=1001.0)          # no state change: must not log again
+        assert [r.getMessage() for r in caplog.records if r.name == "ios2ha_camera.upstream"] == \
+            ["stream_state None -> idle"]
+
+
 def test_duty_1h_counts_only_time_with_the_connection_open():
     up, _, _, _ = _up()
     h = up.hold("capture")
@@ -268,6 +283,19 @@ def test_stop_does_not_touch_the_ingestor_while_the_thread_is_still_ticking():
     finally:
         released.set()
         assert _wait_for(lambda: not up._thread.is_alive())
+
+
+def test_stop_bounds_the_ingestors_own_stop_call_to_the_remaining_budget():
+    """stop(timeout) must cover the *whole* call, including the synchronous
+    self.ing.stop() that follows a successful thread join -- not just the
+    thread join itself. Otherwise a caller who asks for an 8s shutdown can
+    still block for 8s (join) + Ingestor's own ~12s default on top."""
+    up, ing, _, _ = _up()
+    up._open = True     # as tick() would leave it mid-session; no thread running
+    up.stop(timeout=3.0)
+    assert ing.stop_timeouts, "ing.stop() was never called"
+    assert ing.stop_timeouts[-1] is not None
+    assert ing.stop_timeouts[-1] <= 3.0
 
 
 def test_against_the_fake_camera_it_opens_lingers_and_probes():

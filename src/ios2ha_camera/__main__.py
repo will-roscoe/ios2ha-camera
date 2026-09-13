@@ -53,7 +53,6 @@ def main():
 
     mqtt.connect()      # asynchronous: a broker that is down does not stop capture
     mqtt.loop_start()
-    up.start()
     for t in threads:
         t.start()
     # Version first, and on its own line: "what is actually running" is the
@@ -61,6 +60,9 @@ def main():
     log.info("ios2ha-camera %s, built %s", version.full(), version.BUILT)
     log.info("supervisor up: phone %s:%s, live view on :%s, interval %ss, archive %s",
              s.phone_host, s.phone_port, s.live_port, s.interval_s, s.archive_dir)
+    # Started last, after the log lines above: its first tick can fire a probe
+    # immediately, which must not race ahead of them in the log.
+    up.start()
 
     # The event loop belongs to the live view alone. run_app returns on SIGTERM,
     # which is how the container stops us.
@@ -71,12 +73,12 @@ def main():
         log.info("shutting down")
         stop.set()
         sup.capture_requested.set()   # wake the capture loop out of its wait
-        # Compose gives the container 20s to stop; the two threads below take up
-        # to 5s each and mqtt.close() up to 2s, so upstream gets 8s of that
-        # budget. A thread still alive after that is stuck in a probe, which
-        # stop() deliberately leaves alone rather than touching the ingestor
-        # from a second thread.
-        up.stop(timeout=8.0)
+        # Compose gives the container 20s to stop: 5s here, two 5s thread joins
+        # below (10s), and up to 2s for mqtt.close() -- 17s total, leaving some
+        # margin under the 20s stop_grace_period. A thread still alive after 5s
+        # is stuck in a probe, which stop() deliberately leaves alone rather
+        # than touching the ingestor from a second thread.
+        up.stop(timeout=5.0)
         sup.close()
         for t in threads:
             t.join(timeout=5)
