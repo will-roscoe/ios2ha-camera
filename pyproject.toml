@@ -5,7 +5,23 @@ name = "ios2ha-camera"
 # CHANGELOG.md: the Home Assistant entity and topic surface is the public
 # interface, because that is what breaks other people's automations.
 version = "1.1.1"
+description = "Turns an old iPhone running a camera app into a Home Assistant camera"
+readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Will Roscoe" }]
+keywords = ["home-assistant", "mqtt", "camera", "iphone", "onvif", "frame-stacking"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Topic :: Multimedia :: Video :: Capture",
+]
+
 dependencies = [
     "numpy>=1.26",
     "pillow>=10.0",
@@ -16,6 +32,11 @@ dependencies = [
     # arcturus (11.12.4); the 4.x API differs enough to break phone.py.
     "pymobiledevice3>=11.0,<12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/will-roscoe/ios2ha-camera"
+Changelog = "https://github.com/will-roscoe/ios2ha-camera/blob/main/CHANGELOG.md"
+Issues = "https://github.com/will-roscoe/ios2ha-camera/issues"
 
 [project.optional-dependencies]
 dev = [

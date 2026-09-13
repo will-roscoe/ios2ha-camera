@@ -7,6 +7,10 @@ Both the script and these tests were taken from the protonfs project, which uses
 same commit convention and the same `+:<spec>` override. They are kept here so the
 release logic is covered by this repository's own CI rather than trusted because it
 works somewhere else.
+
+protonfs is distributed under PolyForm Noncommercial and this project under
+Apache-2.0. That is not a conflict: both files are the sole work of the same author,
+who is relicensing his own code here.
 """
 
 from __future__ import annotations

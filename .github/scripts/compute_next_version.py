@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Compute the next SemVer release from Conventional Commit messages.
 
-Used by ``.github/workflows/auto-release.yml`` to auto-bump + auto-tag on merge to
-``main`` (issue #31). Given the current version tag and the commit messages since
-that tag, it decides whether a release is warranted and what the next version is.
+Used by ``.github/workflows/auto-release.yml``. Given the current version tag on
+stdin's environment and the commit messages since that tag on stdin, it decides
+whether a release is warranted and what the next version would be. It only computes
+and prints; tagging is the workflow's job.
+
+Taken from the protonfs project, which uses the same convention and the same
+``+:<spec>`` override, and relicensed here by its author (protonfs is PolyForm
+Noncommercial, this project is Apache-2.0; both files are that author's sole work).
+Covered by ``tests/test_versioning.py``, which came with it.
 
 Bump policy (Conventional Commits, semantic-release-style defaults):
 
