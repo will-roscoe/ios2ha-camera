@@ -1,0 +1,70 @@
+name: Docs
+
+# Builds the Sphinx documentation on every push and pull request, and publishes it
+# to GitHub Pages from main.
+#
+# NOTE ON PRIVATE REPOSITORIES: publishing Pages from a private repository needs a
+# paid GitHub plan. The `build` job runs regardless and uploads the rendered site as
+# an artifact, so the docs are still checked and still downloadable while this
+# repository stays private. The `deploy` job is the only part that needs Pages
+# enabled in Settings, and it is skipped everywhere except main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Installed, not just the docs extra: conf.py reads the version from the
+      # installed package metadata, and autodoc imports the modules.
+      - name: Install
+        run: pip install -e ".[docs]"
+
+      # -W makes warnings fatal so broken references cannot accumulate. The one
+      # known-noisy class (relative links between the root Markdown files) is
+      # suppressed in conf.py with its reason.
+      - name: Build
+        run: sphinx-build -W --keep-going -b html docs docs/_build/html
+
+      - name: Upload rendered site
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/_build/html
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

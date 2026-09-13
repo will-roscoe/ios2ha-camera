@@ -6,6 +6,7 @@ import threading
 
 from aiohttp import web
 
+from . import version
 from .archive import Archive
 from .ingest import Ingestor
 from .live import make_live_app
@@ -17,7 +18,6 @@ from .ring_buffer import RingBuffer
 from .settings import Settings
 from .supervisor import Supervisor
 from .upstream import Upstream
-from . import version
 
 log = logging.getLogger(__name__)
 

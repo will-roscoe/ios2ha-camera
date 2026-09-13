@@ -1,5 +1,8 @@
-import time, os
+import os
+import time
+
 from ios2ha_camera.archive import Archive
+
 
 def test_writes_dated_path(tmp_path):
     a = Archive(str(tmp_path))

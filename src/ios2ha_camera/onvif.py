@@ -23,7 +23,7 @@ TIMEOUT_S = 10  # finite and short: a hung call must never stall the capture loo
 
 def wsse_header(user, password):
     nonce = os.urandom(16)
-    created = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     digest = base64.b64encode(hashlib.sha1(nonce + created.encode() + password.encode()).digest()).decode()
     return (
         '<s:Header><wsse:Security s:mustUnderstand="1" '

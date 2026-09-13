@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+
 from ios2ha_camera import render
 from ios2ha_camera.settings import Settings
 

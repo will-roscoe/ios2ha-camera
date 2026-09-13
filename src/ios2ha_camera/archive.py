@@ -1,4 +1,7 @@
-import os, time, shutil
+import os
+import shutil
+import time
+
 
 class Archive:
     def __init__(self, root):

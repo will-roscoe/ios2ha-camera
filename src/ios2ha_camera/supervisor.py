@@ -20,7 +20,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import cv2
 import numpy as np
@@ -165,7 +165,9 @@ class Supervisor:
         # exception below, so a manual release would be skipped by a decode
         # error and the phone would stay connected until the container
         # restarted -- exactly the drain this feature exists to end.
-        with self.upstream.hold("capture") if self.upstream is not None else contextlib.nullcontext():
+        hold = (self.upstream.hold("capture") if self.upstream is not None
+                else contextlib.nullcontext())
+        with hold:
             if self.upstream is not None:
                 # The hold only wakes the upstream thread, so a session it opens
                 # starts after `now` and has no start yet; its frames clear a
@@ -176,7 +178,8 @@ class Supervisor:
                 self.upstream.wait_for_frames(self.probe_n, floor, CAPTURE_OPEN_TIMEOUT_S)
                 probe_frames = [f for f in self.buffer.recent(self.probe_n) if f.ts >= floor]
                 if not probe_frames:
-                    return self._event({"ts": now, "error": f"no frames: {self.upstream.state(now)}"})
+                    return self._event(
+                        {"ts": now, "error": f"no frames: {self.upstream.state(now)}"})
             else:
                 probe_frames = self._fresh(self.buffer.recent(self.probe_n), now, self.fresh_s)
                 if not probe_frames:
@@ -259,8 +262,10 @@ class Supervisor:
             "effective_exposure_required": round(required / max(now_fps, 1e-6), 2),
             "effective_exposure_achieved": round(used / max(now_fps, 1e-6), 2),
             "archive_free_gb": round(free / 2**30, 1),
-            **{f"wb_gain_{c}": round(float(g), 3) for c, g in zip("rgb", gains)},
-            **{f"black_level_applied_{c}": round(float(b), 3) for c, b in zip("rgb", black)},
+            **{f"wb_gain_{c}": round(float(g), 3)
+               for c, g in zip("rgb", gains, strict=True)},
+            **{f"black_level_applied_{c}": round(float(b), 3)
+               for c, b in zip("rgb", black, strict=True)},
         })
 
         event = {"ts": now, "depth_used": used, "depth_requested": depth,
@@ -395,7 +400,7 @@ class Supervisor:
             # relative time that keeps counting between health ticks, where a
             # published age is stale the moment it lands.
             "last_frame": (None if newest is None else
-                           datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()),
+                           datetime.fromtimestamp(newest, tz=UTC).isoformat()),
             "camera_online": (self.upstream.camera_online(now) if self.upstream else
                               (self.stream_state == "streaming"
                                and newest is not None and now - newest < self.fresh_s)),

@@ -1,7 +1,11 @@
-import io, tracemalloc, numpy as np
+import io
+import tracemalloc
+
+import numpy as np
 from PIL import Image
-from ios2ha_camera.ring_buffer import Frame
+
 from ios2ha_camera import stack
+from ios2ha_camera.ring_buffer import Frame
 from ios2ha_camera.settings import Settings
 
 

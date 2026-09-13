@@ -3,9 +3,10 @@ import threading
 import time
 from urllib.parse import urlparse
 
+from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
+
 from ios2ha_camera.ingest import Ingestor
 from ios2ha_camera.ring_buffer import RingBuffer
-from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
 
 # Short timings so the suite stays fast; production defaults are seconds.
 FAST = {"backoff_initial": 0.05, "backoff_max": 0.2, "read_timeout": 2.0, "healthy_after_s": 10.0}

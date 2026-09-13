@@ -5,10 +5,17 @@ import types
 from urllib.parse import urlparse
 
 import pytest
+from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
+
 from ios2ha_camera.ingest import Ingestor
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
-from ios2ha_camera.upstream import Upstream, ONLINE_IDLE_S, PROBE_INTERVAL_S, ProbeStreamingOff, TICK_STALE_S
-from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
+from ios2ha_camera.upstream import (
+    ONLINE_IDLE_S,
+    PROBE_INTERVAL_S,
+    TICK_STALE_S,
+    ProbeStreamingOff,
+    Upstream,
+)
 
 
 class FakeIngestor:

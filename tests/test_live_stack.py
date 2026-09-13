@@ -2,10 +2,12 @@ import io
 import threading
 import time
 import types
+
 import cv2
 import numpy as np
 import pytest
 from PIL import Image
+
 from ios2ha_camera import live_stack
 from ios2ha_camera.live_stack import REFRESH_S, SCALE, THREAD_JOIN_TIMEOUT_S, LiveStacker
 from ios2ha_camera.ring_buffer import Frame, RingBuffer

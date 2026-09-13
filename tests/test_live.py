@@ -1,8 +1,10 @@
 import asyncio
 import time
-from aiohttp.test_utils import TestServer, TestClient
-from ios2ha_camera.ring_buffer import RingBuffer, Frame
-from ios2ha_camera.live import CLIENTS, make_live_app, QUEUE_SIZE
+
+from aiohttp.test_utils import TestClient, TestServer
+
+from ios2ha_camera.live import CLIENTS, QUEUE_SIZE, make_live_app
+from ios2ha_camera.ring_buffer import Frame, RingBuffer
 
 
 def test_live_streams_latest_frame():

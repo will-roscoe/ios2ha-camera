@@ -150,8 +150,8 @@ class PhoneManager:
 
     def _proclist(self):
         async def go():
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
             from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
             lockdown = await self._lockdown()
             try:
                 async with DvtProvider(lockdown) as provider:
@@ -262,7 +262,8 @@ class PhoneManager:
         # First, because every later step goes over lockdown: with the cable out
         # or the pairing lost, that is the one fact that explains the rest.
         run("lockdown", lambda: (self._call(self._check_lockdown), "reachable")[1])
-        run("developer_mode", lambda: "on" if self.developer_mode() else "OFF (run with --fix-developer-mode)")
+        run("developer_mode",
+            lambda: "on" if self.developer_mode() else "OFF (run with --fix-developer-mode)")
         run("developer_image", lambda: (self.mount_ddi(), "mounted")[1])
 
         def app():
