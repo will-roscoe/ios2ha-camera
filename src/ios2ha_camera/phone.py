@@ -200,3 +200,64 @@ class PhoneManager:
     def screenshot(self):
         self._call(self._mount_ddi)
         return self._call(self._take_screenshot)
+
+    def mount_ddi(self):
+        """Public form of the lazy developer-image mount, for the setup helper."""
+        self._call(self._mount_ddi)
+
+    def _developer_mode(self):
+        async def go():
+            lockdown = await self._lockdown()
+            try:
+                return await lockdown.get_developer_mode_status()
+            finally:
+                await lockdown.close()
+        return self._run(go())
+
+    def developer_mode(self):
+        return bool(self._call(self._developer_mode))
+
+    def _enable_developer_mode(self):
+        async def go():
+            from pymobiledevice3.services.amfi import AmfiService
+            lockdown = await self._lockdown()
+            try:
+                return await AmfiService(lockdown).enable_developer_mode()
+            finally:
+                await lockdown.close()
+        return self._run(go(), timeout=DDI_TIMEOUT_S)
+
+    def enable_developer_mode(self):
+        """Turn Developer Mode on. REBOOTS THE PHONE, and raises if a passcode
+        is set, so nothing calls this without a person asking for it."""
+        return self._call(self._enable_developer_mode)
+
+    def prepare(self, launch=True):
+        """Bring the phone back to a state where it can stream, and say what it found.
+
+        Every step runs even if an earlier one failed: "the developer image is
+        missing" and "the app is not running" are separate facts, and the person
+        reading this wants both. The one thing that cannot be automated is the
+        Start streaming tap in the app.
+        """
+        steps = []
+
+        def run(name, fn):
+            try:
+                steps.append({"step": name, "ok": True, "detail": fn()})
+            except Exception as e:
+                steps.append({"step": name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
+
+        run("developer_mode", lambda: "on" if self.developer_mode() else "OFF (run with --fix-developer-mode)")
+        run("developer_image", lambda: (self.mount_ddi(), "mounted")[1])
+
+        def app():
+            if self.is_running():
+                return "already running"
+            if not launch:
+                return "not running"
+            self.launch()
+            return "launched; tap Start streaming"
+        run("app", app)
+        run("battery", lambda: self.battery())
+        return steps

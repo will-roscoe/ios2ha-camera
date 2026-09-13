@@ -242,3 +242,29 @@ def test_battery_tolerates_a_device_that_omits_the_power_fields(monkeypatch):
     monkeypatch.setattr(pm, "_diagnostics_battery", lambda: {"CurrentCapacity": 50})
     b = pm.battery()
     assert b["level"] == 50 and b["charger_watts"] is None and b["health_pct"] is None
+
+
+def test_prepare_reports_every_step_even_when_one_fails(monkeypatch):
+    pm = PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "developer_mode", lambda: True)
+    monkeypatch.setattr(pm, "mount_ddi", lambda: None)
+    monkeypatch.setattr(pm, "is_running", lambda: (_ for _ in ()).throw(PhoneUnavailable("no DDI")))
+    monkeypatch.setattr(pm, "launch", lambda: True)
+    monkeypatch.setattr(pm, "battery", lambda: {"level": 48})
+    steps = pm.prepare(launch=True)
+    names = [s["step"] for s in steps]
+    assert names == ["developer_mode", "developer_image", "app", "battery"]
+    assert steps[2]["ok"] is False
+    assert steps[3]["ok"] is True            # a failed step does not abort the rest
+
+
+def test_prepare_never_enables_developer_mode(monkeypatch):
+    pm = PhoneManager("com.example.app")
+    called = []
+    monkeypatch.setattr(pm, "developer_mode", lambda: False)
+    monkeypatch.setattr(pm, "enable_developer_mode", lambda: called.append("enabled"))
+    monkeypatch.setattr(pm, "mount_ddi", lambda: None)
+    monkeypatch.setattr(pm, "is_running", lambda: True)
+    monkeypatch.setattr(pm, "battery", lambda: {"level": 48})
+    pm.prepare(launch=True)
+    assert called == []                       # enabling reboots the phone: never automatic

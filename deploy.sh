@@ -10,6 +10,7 @@
 #   ./deploy.sh            sync, build, restart, verify
 #   ./deploy.sh check      compare the deployed tree against this one
 #   ./deploy.sh version    what is running right now
+#   ./deploy.sh phone      prepare the phone after it restarts (works while stopped)
 set -euo pipefail
 
 HOST="${IOS2HA_HOST:-arcturus.lan0}"
@@ -64,6 +65,11 @@ deploy)
      docker logs --since 120s $SERVICE 2>&1 | head -3"
   ;;
 
+phone)
+  ssh -t -o BatchMode=yes "$HOST" \
+    "cd $STACK && docker compose run --rm --no-deps $SERVICE python -m ios2ha_camera.phone_setup ${2:-}"
+  ;;
+
 *)
-  echo "usage: $0 [deploy|check|version]" >&2; exit 2 ;;
+  echo "usage: $0 [deploy|check|version|phone]" >&2; exit 2 ;;
 esac
