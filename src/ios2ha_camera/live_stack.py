@@ -37,6 +37,7 @@ SUBSAMPLE = 4           # 1/16 of the pixels for parameter estimation
 JPEG_QUALITY = 85
 POLL_S = 0.02
 GAMMA = 1 / 2.2
+THREAD_JOIN_TIMEOUT_S = 1.0   # bound on waiting for an outgoing _run to exit on restart
 
 
 def _decode_scaled(data):
@@ -69,6 +70,17 @@ class LiveStacker:
         with self._lock:
             self._viewers += 1
             if self._viewers == 1:
+                # One accumulator, one writer: a detach() immediately followed by
+                # attach() (a viewer reconnect within one POLL_S) must not start a
+                # second _run while the first is still exiting -- both would clear
+                # and check the same Event and mutate self._acc/_t/_params/
+                # _out_times with no lock around per-frame work.
+                if self._thread is not None and self._thread.is_alive():
+                    self._stop.set()
+                    self._thread.join(THREAD_JOIN_TIMEOUT_S)
+                    if self._thread.is_alive():
+                        log.warning("live stack thread did not exit within %.1fs of restart",
+                                    THREAD_JOIN_TIMEOUT_S)
                 self._stop.clear()
                 self._thread = threading.Thread(target=self._run, name="live-stack", daemon=True)
                 self._thread.start()
@@ -82,9 +94,12 @@ class LiveStacker:
     def latest(self):
         return self._latest
 
+    def _prune_out_times(self, now):
+        self._out_times = [t for t in self._out_times if now - t <= 5.0]
+
     def fps(self):
         now = time.time()
-        self._out_times = [t for t in self._out_times if now - t <= 5.0]
+        self._prune_out_times(now)
         return round(len(self._out_times) / 5.0, 1)
 
     def accumulated(self):
@@ -114,6 +129,9 @@ class LiveStacker:
             self._params_at = now
         jpeg = render.to_jpeg(self.tone(img), quality=JPEG_QUALITY)
         self._out_times.append(now)
+        # Pruned here, not just inside fps(): the bound on _out_times' size must
+        # not depend on fps() being called at some other cadence.
+        self._prune_out_times(now)
         self._latest = Frame(jpeg, now)
         return jpeg
 
@@ -156,7 +174,11 @@ class LiveStacker:
         # max(lw, ...): a perfectly flat frame (only seen in tests) has lw == 0,
         # and render._tone_natural guards the same division the same way.
         Ld = Ls * (1 + Ls / np.float32(max(lw, 1e-6) ** 2)) / (1 + Ls)
-        x *= (Ld / np.maximum(L, np.float32(1e-6)))[..., None]
+        # Matches render._scale_to_luminance exactly: below the 1e-6 floor the
+        # scale is forced to 0, not just divided by the floor -- otherwise a
+        # near-zero L gives a large, meaningless scale instead of black.
+        scale = np.where(L > 1e-6, Ld / np.maximum(L, np.float32(1e-6)), np.float32(0.0))
+        x *= scale.astype(np.float32)[..., None]
         # Clip before the gamma: a fractional power of a negative number is NaN.
         np.clip(x, 0, 1, out=x)
         rgb = cv2.pow(x, GAMMA)

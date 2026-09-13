@@ -97,3 +97,23 @@ def test_the_tone_path_matches_render_within_the_measured_tolerance():
     # tone curve ran correctly; require actual spread in the output so this
     # test cannot pass vacuously.
     assert np.percentile(mine, 99) - np.percentile(mine, 1) >= 50
+
+
+def test_attach_after_a_quick_detach_does_not_leave_the_old_thread_running():
+    """A detach() immediately followed by attach() -- plausible on a viewer
+    reconnect -- used to start a second _run thread without checking whether
+    the first had actually exited: both would then clear and poll the same
+    Event and mutate self._acc/_t/_params/_out_times with no lock around
+    per-frame work. attach() now joins the outgoing thread (bounded) before
+    starting a new one, so by the time it returns the old thread is provably
+    gone -- no sleep needed here to find out."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    st.attach()
+    first = st._thread
+    try:
+        st.detach()
+        st.attach()
+        assert st._thread is not first
+        assert not first.is_alive()
+    finally:
+        st.detach()
