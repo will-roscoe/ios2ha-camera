@@ -153,30 +153,40 @@ class Upstream:
 
     def on_ingest_state(self, state):
         """`Ingestor`'s callback. Frames prove health; a failure names itself."""
-        self._failure = None if state == "streaming" else state
+        with self._wake:
+            self._failure = None if state == "streaming" else state
         self._publish()
 
     def _publish(self, now=None):
         state = self.state(now)
-        if state != self._published:
+        # Two threads reach here -- the tick thread and the ingest thread via
+        # on_ingest_state -- so the decision to publish must be atomic, or the
+        # same state change goes out twice, or out of order. The check-and-set
+        # is inside the lock; on_state() runs outside because it does MQTT I/O.
+        with self._wake:
+            if state == self._published:
+                return
             self._published = state
-            self.on_state(state)
+        self.on_state(state)
 
     def _run_probe(self, now):
         try:
             frame = self.probe()
         except ProbeStreamingOff:
-            self._failure = "streaming_off"
-            self._probe_failures += 1
+            with self._wake:
+                self._failure = "streaming_off"
+                self._probe_failures += 1
         except Exception as e:
             log.info("probe failed: %s: %s", type(e).__name__, e)
-            self._failure = "unreachable"
-            self._probe_failures += 1
+            with self._wake:
+                self._failure = "unreachable"
+                self._probe_failures += 1
         else:
             if frame is not None:
                 self.buffer.append(frame)
-            self._failure = None
-            self._probe_failures = 0
+            with self._wake:
+                self._failure = None
+                self._probe_failures = 0
         # Back off after repeated failures rather than knocking on a wedged app
         # every minute for as long as it stays broken.
         delay = min(PROBE_INTERVAL_S * (2 ** (self._probe_failures - 1)), PROBE_BACKOFF_MAX_S)
