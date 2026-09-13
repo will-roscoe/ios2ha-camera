@@ -169,11 +169,12 @@ stalled write, the same as one that genuinely went away. This exists so a stalle
 the phone connection open indefinitely; a shorter timeout was tried first and wrongly dropped real
 viewers on slow links.
 
-Five alerts are worth having, and all five exist:
+Six alerts are worth having:
 
 | Alert | Trigger | Why |
 |---|---|---|
 | Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting |
+| Cable down | `cable_state` is `usbmuxd_down` for 10 min | The socket mount is orphaned: battery, app control and **Prepare phone** are all dead, while the WiFi stream carries on as if nothing were wrong. Do **not** alert on `no_device`, which is just the cable being out |
 | Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging". Check `sensor.ios2ha_camera_holders` and `sensor.ios2ha_camera_duty_1h` first — a connection stuck open (a viewer that never left, or `on_demand` switched off) looks exactly like a weak charger on the battery current alone |
 | Battery low | Below 40% | It will stop capturing when the phone dies |
 | Battery hot | Above 42 °C for 10 min | Charges and streams continuously |
@@ -182,6 +183,62 @@ Five alerts are worth having, and all five exist:
 A caveat learned the hard way: Home Assistant will report a notification as delivered whether or not
 your phone ever receives it. If the companion app has lost its connection, `notify` still succeeds.
 Test the whole path occasionally rather than trusting that an alert exists.
+
+### When the cable stops working
+
+The container reaches the phone two ways: over WiFi for frames, and over the Lightning cable via
+`usbmuxd` for battery readings and app control. Compose bind-mounts usbmuxd's socket as a **file**:
+
+```yaml
+- /var/run/usbmuxd:/var/run/usbmuxd
+```
+
+`usbmuxd` runs with `--systemd`, which implies `--enable-exit`: it exits whenever no device is
+attached, and creates a **new socket, with a new inode**, when udev starts it again. The container is
+still holding the old, deleted inode, so from then on every cable operation fails with
+`ConnectionFailedToUsbmuxdError` — permanently, until the container is recreated. Nothing about the
+WiFi stream changes, so stills keep being produced and the fault is invisible unless you are watching
+the battery figures. On 13 September this cost two hours.
+
+There are two defences, and the first is much better than the second.
+
+**On the host, run this once.** It is the real fix and it acts within seconds:
+
+```bash
+sudo ./scripts/install-usbmuxd-hook.sh
+```
+
+It adds an `ExecStartPost` drop-in to `usbmuxd.service` that restarts the container as soon as
+usbmuxd comes back. It is guarded so it cannot make things worse: it runs via `systemd-run
+--no-block`, so usbmuxd's own startup is never delayed by a container restart; it uses
+`ExecStartPost=-`, so a failure can never stop usbmuxd itself; it only restarts a container that is
+already running, so one you stopped deliberately stays stopped; it exits quietly when Docker is not
+up yet, which is normal during boot; and it rate-limits to one restart a minute, because udev starts
+usbmuxd on **every** attach and a cable with a bad contact would otherwise restart the container
+continuously. `sudo ./scripts/install-usbmuxd-hook.sh --uninstall` reverses it, and re-running it is
+harmless.
+
+Check it is working with `journalctl -t ios2ha-camera-reattach`.
+
+**In the container, as a fallback** for hosts without that hook, the supervisor restarts itself once
+usbmuxd has been unreachable for five minutes, and Docker's `unless-stopped` policy brings it back on
+a fresh socket. It is deliberately slow, and it will not fire in the first ten minutes of a process
+(a cable already broken at boot would otherwise loop forever), nor twice within an hour, nor for a
+phone that is merely unplugged. Recognise it in the log by:
+
+```
+restarting: usbmuxd has been unreachable long enough that the socket mount is presumed orphaned.
+```
+
+Seeing that line means the host hook is not installed, or did not work.
+
+**The manual fix**, if you are looking at a broken cable right now:
+
+```bash
+docker compose up -d --force-recreate ios2ha-camera
+```
+
+A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
 ## What the phone will and will not do
 

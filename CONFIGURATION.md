@@ -144,6 +144,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 |---|---|---|
 | `binary_sensor.ios2ha_camera_camera_online` | | Streaming with a frame within 30 s, **or** idle with a frame within 150 s; forced off whenever the upstream thread's own heartbeat is more than 180 s stale, regardless of state |
 | `sensor.ios2ha_camera_stream_state` | | `streaming`, `idle` (on demand, connected to nobody, still answering the health probe), `streaming_off` (app answered 503), `unreachable` |
+| `sensor.ios2ha_camera_cable_state` | | The USB side, independent of the WiFi stream above. `ok`; `no_device` (usbmuxd is answering, the cable is out — ordinary); `usbmuxd_down` (the daemon is unreachable and the socket mount is presumed orphaned — a fault, and the one worth alerting on). See OPERATIONS.md |
 | `sensor.ios2ha_camera_last_frame` | | Timestamp, rendered as a live relative age |
 | `sensor.ios2ha_camera_frame_rate` | fps | Measured from arrival times; 11–14.5 in practice |
 | `sensor.ios2ha_camera_holders` | | Why the phone is connected right now: `capture`, `viewer`, `viewer (linger)` while a viewer's 30 s grace period runs down, `on_demand_off` when the switch above is off, or `none` |

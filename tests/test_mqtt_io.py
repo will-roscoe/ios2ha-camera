@@ -62,7 +62,10 @@ def test_every_sensor_says_what_its_reading_means():
     # a state_class either.
     # holders is a list of who is holding the connection open (or "none"), not
     # a quantity, so it carries neither a unit nor a state_class either.
-    not_a_measurement = {"stream_state", "last_frame", "holders"}
+    # cable_state joins these as an enum: like stream_state it names a condition
+    # rather than measuring a quantity, so it takes neither a unit nor a
+    # state_class.
+    not_a_measurement = {"stream_state", "last_frame", "holders", "cable_state"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
                           "focus_sharpness", "motion"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}

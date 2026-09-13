@@ -17,6 +17,8 @@ Threading matters here, so it is stated once:
 
 import contextlib
 import logging
+import os
+import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -47,6 +49,68 @@ def estimate_fps(buffer, n=30, default=12.0, since=None):
     return (len(recent) - 1) / span if span > 0 else default
 
 
+# -- cable self-heal ---------------------------------------------------------
+#
+# The container bind-mounts usbmuxd's socket as a file. usbmuxd exits whenever no
+# device is attached and creates a new socket on restart, so the container is left
+# holding a deleted inode and every cable operation fails until it is recreated.
+#
+# The host-side fix is the systemd drop-in installed by
+# scripts/install-usbmuxd-hook.sh, which restarts the container the moment usbmuxd
+# comes back. That is the primary mechanism and it acts in seconds. What follows is
+# the fallback for hosts where the hook is not installed, so it is deliberately slow
+# and heavily guarded: a service that restarts itself on a wrong signal is worse
+# than the fault it is trying to fix.
+
+# A cable already broken at boot must not restart the container forever: every new
+# process would find the same dead socket. Waiting out an interval longer than the
+# fault takes to appear means a genuine orphaning is always seen by a process that
+# has been up a while.
+CABLE_MIN_UPTIME_S = 600.0
+# The failure has to persist. usbmuxd restarting normally is brief.
+CABLE_FAILING_FOR_S = 300.0
+# Asking to exit is not instant, and the health tick keeps running meanwhile.
+CABLE_RESTART_COOLDOWN_S = 3600.0
+
+# usbmuxd itself is unreachable. NOT the same as the phone being unplugged, which
+# raises NoDeviceConnectedError or DeviceNotFoundError: usbmuxd is answering fine
+# then, and restarting would fire every time the cable is pulled.
+_USBMUXD_DOWN = ("ConnectionFailedToUsbmuxdError",)
+
+
+def is_usbmuxd_down(exc):
+    """True when `exc` means usbmuxd is unreachable, not that no phone is attached.
+
+    PhoneManager._call wraps everything as PhoneUnavailable but keeps the original
+    on __cause__ and its class name in the message, so both are checked. The class
+    is authoritative; the message is the fallback for anything that arrives
+    unwrapped.
+    """
+    seen = set()
+    e = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if type(e).__name__ in _USBMUXD_DOWN:
+            return True
+        e = e.__cause__ or e.__context__
+    # Deliberately the full class name rather than "usbmuxd": an unrelated message
+    # that merely mentions the daemon must not trigger a restart.
+    return any(n.lower() in str(exc).lower() for n in _USBMUXD_DOWN)
+
+
+def _terminate_self():
+    """Ask this process to exit, and let Docker's restart policy bring it back.
+
+    SIGTERM rather than os._exit so the normal shutdown path runs: the offline
+    availability gets published, so Home Assistant shows the camera as unavailable
+    instead of holding a stale state until the new process starts.
+    """
+    log.error("restarting: usbmuxd has been unreachable long enough that the socket "
+              "mount is presumed orphaned. Install scripts/install-usbmuxd-hook.sh "
+              "on the host to have this handled in seconds instead.")
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
 def _dark_noise(rgb):
     """Noise and signal-to-noise in the darkest tenth of the finished still.
 
@@ -70,7 +134,15 @@ def _dark_noise(rgb):
 class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
-                 device_executor=None):
+                 device_executor=None, request_restart=None, clock=None):
+        # Injected so tests can drive time and record the restart instead of
+        # signalling the test runner's own process.
+        self._clock = clock or time.monotonic
+        self._request_restart = request_restart or _terminate_self
+        self._started_at = self._clock()
+        self._cable_down_since = None
+        self._last_cable_restart = None
+        self._cable_state = "ok"
         self.s = settings
         self.buffer = buffer
         self.mqtt = mqtt
@@ -404,6 +476,10 @@ class Supervisor:
             "camera_online": (self.upstream.camera_online(now) if self.upstream else
                               (self.stream_state == "streaming"
                                and newest is not None and now - newest < self.fresh_s)),
+            # Published so the orphaned-socket case can be alerted on well before
+            # the self-restart is reached, and so a plain unplugged cable is
+            # visibly different from a broken daemon.
+            "cable_state": self._cable_state,
         }
         if state is not None:
             d["stream_state"] = state
@@ -436,12 +512,53 @@ class Supervisor:
             b = self.phone.battery()
         except PhoneUnavailable as e:
             log.info("battery unavailable: %s", e)
+            self._note_cable_failure(e)
             return {}
+        self._note_cable_ok()
         return {"battery": b.get("level"), "battery_temperature": b.get("temperature"),
                 "charging": bool(b.get("charging")),
                 "battery_current_ma": b.get("current_ma"),
                 "charger_watts": b.get("charger_watts"),
                 "battery_health_pct": b.get("health_pct")}
+
+    # -- cable self-heal ------------------------------------------------------
+
+    def _note_cable_ok(self):
+        if self._cable_down_since is not None:
+            log.info("cable recovered after %.0fs", self._clock() - self._cable_down_since)
+        self._cable_down_since = None
+        self._cable_state = "ok"
+
+    def _note_cable_failure(self, exc):
+        """Record a cable failure and restart the process if every guard agrees.
+
+        Only a usbmuxd failure starts the clock. An unplugged phone is reported
+        but never counted: it is the normal state whenever the cable is out, and
+        restarting for it would turn unplugging the phone into a restart loop.
+        """
+        if not is_usbmuxd_down(exc):
+            self._cable_down_since = None
+            self._cable_state = "no_device"
+            return
+
+        now = self._clock()
+        self._cable_state = "usbmuxd_down"
+        if self._cable_down_since is None:
+            self._cable_down_since = now
+            log.warning("usbmuxd unreachable; the socket mount may be orphaned: %s", exc)
+        if self._cable_restart_needed(now):
+            self._last_cable_restart = now
+            self._request_restart()
+
+    def _cable_restart_needed(self, now):
+        if now - self._started_at < CABLE_MIN_UPTIME_S:
+            return False
+        if now - self._cable_down_since < CABLE_FAILING_FOR_S:
+            return False
+        if (self._last_cable_restart is not None
+                and now - self._last_cable_restart < CABLE_RESTART_COOLDOWN_S):
+            return False
+        return True
 
     # -- loops --------------------------------------------------------------
 

@@ -43,6 +43,13 @@ def _e(prefix, comp, obj, cfg):
 _SENSORS = [
     dict(obj="stream_state", name="Stream state", device_class="enum",
          options=["streaming", "idle", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
+    # The USB side, which is independent of the WiFi stream above. "no_device" is
+    # the cable being out, which is ordinary; "usbmuxd_down" means the daemon is
+    # unreachable and the socket mount is presumed orphaned, which is a fault and
+    # is what the offline alert should watch.
+    dict(obj="cable_state", name="Cable state", device_class="enum",
+         options=["ok", "no_device", "usbmuxd_down"], icon="mdi:usb-port",
+         category="diagnostic"),
     dict(obj="subject_level", name="Subject level", state_class="measurement", precision=1,
          icon="mdi:brightness-4"),
     dict(obj="depth_used", name="Depth used", unit="frames", state_class="measurement",
