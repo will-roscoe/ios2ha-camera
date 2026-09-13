@@ -1,7 +1,7 @@
 import types
 import pytest
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
-from ios2ha_camera.upstream import Upstream
+from ios2ha_camera.upstream import Upstream, ONLINE_IDLE_S, PROBE_INTERVAL_S, ProbeStreamingOff, TICK_STALE_S
 
 
 class FakeIngestor:
@@ -123,3 +123,79 @@ def test_a_hold_released_long_after_the_last_tick_gets_full_linger():
     clk[0] = 1531.0
     up.tick()
     assert ing.calls == ["start", "stop"]  # connection closes
+
+
+def _probe_returning(buf, ts_box):
+    def probe():
+        return Frame(b"jpeg", ts_box[0])
+    return probe
+
+
+def test_a_probe_runs_only_while_idle_and_its_frame_lands_in_the_buffer():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+    ts = [1000.0]
+    up = Upstream(ing, buf, _settings(), probe=_probe_returning(buf, ts))
+    up.tick(now=1000.0)                       # idle: probes at once
+    assert buf.newest_ts() == 1000.0
+    h = up.hold("viewer")
+    ts[0] = 1000.0 + PROBE_INTERVAL_S
+    up.tick(now=ts[0])                        # session open: no probe
+    assert buf.newest_ts() == 1000.0
+    h.release()
+
+
+def test_state_is_idle_after_a_good_probe_and_streaming_once_frames_flow():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+    ts = [1000.0]
+    up = Upstream(ing, buf, _settings(), probe=_probe_returning(buf, ts))
+    up.tick(now=1000.0)
+    assert up.state(now=1001.0) == "idle"
+    assert up.camera_online(now=1001.0) is True
+    with up.hold("viewer"):
+        up.tick(now=1002.0)
+        buf.append(Frame(b"jpeg", 1002.5))
+        assert up.state(now=1003.0) == "streaming"
+
+
+def test_a_503_probe_reports_streaming_off_and_backs_off():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+
+    def probe():
+        raise ProbeStreamingOff()
+
+    up = Upstream(ing, buf, _settings(), probe=probe)
+    up.tick(now=1000.0)
+    assert up.state(now=1000.0) == "streaming_off"
+    assert up.camera_online(now=1000.0) is False
+    up.tick(now=1000.0 + PROBE_INTERVAL_S + 1)          # second failure
+    up.tick(now=1000.0 + PROBE_INTERVAL_S + 2)          # too soon: backed off
+    assert up._probe_failures == 2
+
+
+def test_camera_online_goes_false_when_the_thread_stops_ticking():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+    up = Upstream(ing, buf, _settings(), probe=lambda: Frame(b"jpeg", 1000.0))
+    up.tick(now=1000.0)
+    assert up.camera_online(now=1000.0 + ONLINE_IDLE_S - 1) is True
+    stale = 1000.0 + TICK_STALE_S + 1
+    assert up.tick_age(now=stale) > TICK_STALE_S
+    assert up.camera_online(now=stale) is False
+
+
+def test_state_changes_are_published_once_each():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+    seen = []
+    up = Upstream(ing, buf, _settings(), on_state=seen.append,
+                  probe=lambda: Frame(b"jpeg", 1000.0))
+    up.tick(now=1000.0)
+    up.tick(now=1001.0)
+    assert seen == ["idle"]
+
+
+def test_duty_1h_counts_only_time_with_the_connection_open():
+    up, _, _, _ = _up()
+    h = up.hold("capture")
+    up.tick(now=0.0)
+    h.release()
+    up.tick(now=360.0)                       # open for 360 s of the hour
+    assert 9.0 < up.duty_1h(now=3600.0) < 11.0
