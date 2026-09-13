@@ -112,6 +112,48 @@ def test_holders_names_why_the_phone_is_connected():
     assert up.holders() == ()
 
 
+def test_holders_names_a_lingering_viewer_while_the_connection_stays_open():
+    up, _, _, clk = _up()
+    with up.hold("viewer", linger_s=30.0):
+        assert up.holders() == ("viewer",)
+        up.tick()
+    assert up.holders() == ("viewer (linger)",)
+    h = up.hold("capture")
+    try:
+        assert up.holders() == ("capture", "viewer (linger)")
+    finally:
+        h.release()
+    clk[0] = 1031.0
+    assert up.holders() == ()
+
+
+def test_a_stop_that_times_out_is_retried_before_ingest_is_started_again(caplog):
+    """Ingestor.stop() returns False when its thread outlived the join. Starting
+    a new session then would put two threads on the phone, which wedges the app."""
+    up, ing, _, _ = _up()
+    results = [False]
+    record_stop = ing.stop
+
+    def stop(timeout=None):
+        record_stop(timeout)
+        return results.pop(0) if results else True
+
+    ing.stop = stop
+    h = up.hold("capture")
+    up.tick(now=1000.0)
+    h.release()
+    with caplog.at_level(logging.WARNING, logger="ios2ha_camera.upstream"):
+        up.tick(now=1001.0)                    # this stop times out
+    h = up.hold("capture")                     # and the next capture wants the phone at once
+    try:
+        up.tick(now=1002.0)
+        up.tick(now=1003.0)
+    finally:
+        h.release()
+    assert ing.calls == ["start", "stop", "stop", "start"]
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
 def test_a_hold_released_long_after_the_last_tick_gets_full_linger():
     """Linger window should be relative to when hold is released, not last tick."""
     up, ing, _, clk = _up()
@@ -164,6 +206,21 @@ def test_state_is_idle_after_a_good_probe_and_streaming_once_frames_flow():
         up.tick(now=1002.0)
         buf.append(Frame(b"jpeg", 1002.5))
         assert up.state(now=1003.0) == "streaming"
+
+
+def test_a_failing_session_is_not_streaming_on_the_strength_of_a_probe_frame():
+    """The idle probe's frame is seconds old when a session opens. Counting it
+    would call a session that has only ever failed "streaming", and a dead app
+    online for as long as that frame stays fresh."""
+    up, _, buf, _ = _up()
+    buf.append(Frame(b"probe", 990.0))
+    h = up.hold("viewer")
+    try:
+        up.tick(now=1000.0)
+        up.on_ingest_state("unreachable")
+        assert up.state(now=1005.0) == "unreachable"
+    finally:
+        h.release()
 
 
 def test_a_503_probe_reports_streaming_off_and_backs_off():

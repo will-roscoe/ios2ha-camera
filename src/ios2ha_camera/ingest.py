@@ -67,6 +67,9 @@ class Ingestor:
             log.warning("start() called while still running; stopping the previous thread first")
             self.stop()
         self._stop.clear()
+        # A fresh session must report its first state even when it matches the
+        # last one: on_state is the only way its owner hears of a failure.
+        self.state = None
         self._thread = threading.Thread(target=self._run, name="ingest", daemon=True)
         self._thread.start()
 

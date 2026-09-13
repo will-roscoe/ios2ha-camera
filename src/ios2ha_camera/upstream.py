@@ -25,7 +25,6 @@ from .ring_buffer import Frame
 
 log = logging.getLogger(__name__)
 
-VIEWER_LINGER_S = 30.0
 TICK_WAIT_S = 0.5
 
 PROBE_INTERVAL_S = 60.0
@@ -106,6 +105,7 @@ class Upstream:
         self._linger_until = {}
         self._open = False
         self._opened_at = None
+        self._stop_failed = False
         self._failure = None            # None | "streaming_off" | "unreachable"
         self._probe_failures = 0
         self._next_probe_at = 0.0
@@ -143,11 +143,15 @@ class Upstream:
                     self._linger_until[reason] = now + linger_s
             self._wake.notify_all()
 
-    def holders(self):
+    def holders(self, now=None):
+        now = self._clock() if now is None else now
         with self._lock:
             if not getattr(self.s, "on_demand", True):
                 return ("on_demand_off",)
-            return tuple(sorted(self._counts))
+            # A lingering reason still keeps the connection open, so it is named
+            # rather than leaving this reading "none" while the phone is busy.
+            lingering = [f"{r} (linger)" for r, until in self._linger_until.items() if until > now]
+            return tuple(sorted([*self._counts, *lingering]))
 
     def _wanted(self, now):
         if not getattr(self.s, "on_demand", True):
@@ -163,7 +167,13 @@ class Upstream:
     def state(self, now=None):
         now = self._clock() if now is None else now
         newest = self.buffer.newest_ts()
-        if self._open and newest is not None and now - newest < FRESH_S:
+        # Only this session's frames prove it is streaming. The idle probe's
+        # last frame is still fresh when a session opens, and counting it would
+        # call a session that has only ever failed "streaming", ahead of the
+        # failure it reported.
+        opened_at = self._opened_at
+        if (self._open and opened_at is not None and newest is not None
+                and newest >= opened_at and now - newest < FRESH_S):
             return "streaming"
         if self._failure is not None:
             return self._failure
@@ -248,13 +258,21 @@ class Upstream:
         if want and not self._open:
             self.ing.start()
             self._open, self._opened_at = True, now
-        elif not want and self._open:
-            self.ing.stop()
-            self._sessions.append((self._opened_at, now))
-            while self._sessions and self._sessions[0][1] < now - 3600.0:
-                self._sessions.popleft()
-            self._open, self._opened_at = False, None
-            self._next_probe_at = now + PROBE_INTERVAL_S
+        elif self._open and (not want or self._stop_failed):
+            # A stop that timed out leaves the old ingest thread alive, so the
+            # session stays open and the stop is retried, even once a new hold
+            # wants the phone: starting beside that thread would put two clients
+            # on the phone.
+            if self.ing.stop():
+                self._stop_failed = False
+                self._sessions.append((self._opened_at, now))
+                while self._sessions and self._sessions[0][1] < now - 3600.0:
+                    self._sessions.popleft()
+                self._open, self._opened_at = False, None
+                self._next_probe_at = now + PROBE_INTERVAL_S
+            else:
+                self._stop_failed = True
+                log.warning("ingest thread did not stop; retrying before it can be started again")
         if not self._open and self.probe is not None and now >= self._next_probe_at:
             self._run_probe(now)
         self._publish(now)
