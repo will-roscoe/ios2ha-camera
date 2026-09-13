@@ -112,3 +112,14 @@ def test_stack_frames_memory_bounded_in_frame_count():
     # ~29x in practice, flat regardless of n -- 60x leaves headroom without
     # coming close to the naive n=300x figure it must be distinguished from.
     assert peak < 60 * one_frame_bytes
+
+
+def test_hard_cap_overrides_the_settings_caps():
+    s = Settings(); s.stacking_mode = "auto"; s.max_depth = 600; s.window_max_s = 60.0; s.interval_s = 600; s.clean_factor = 4.0; s.target_level = 40.0
+    assert stack.choose_depth(1.0, s, fps=13.9, previous_depth=None) > 100
+    assert stack.choose_depth(1.0, s, fps=13.9, previous_depth=None, hard_cap=41) == 41
+
+
+def test_without_hard_cap_nothing_changes():
+    s = Settings(); s.stacking_mode = "auto"; s.max_depth = 50; s.window_max_s = 60.0; s.interval_s = 600; s.clean_factor = 4.0; s.target_level = 40.0
+    assert stack.choose_depth(1.0, s, fps=13.9, previous_depth=None) == 50
