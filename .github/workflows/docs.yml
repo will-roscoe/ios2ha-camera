@@ -3,11 +3,13 @@ name: Docs
 # Builds the Sphinx documentation on every push and pull request, and publishes it
 # to GitHub Pages from main.
 #
-# NOTE ON PRIVATE REPOSITORIES: publishing Pages from a private repository needs a
-# paid GitHub plan. The `build` job runs regardless and uploads the rendered site as
-# an artifact, so the docs are still checked and still downloadable while this
-# repository stays private. The `deploy` job is the only part that needs Pages
-# enabled in Settings, and it is skipped everywhere except main.
+# THE PUBLISHED SITE IS PUBLIC even though this repository is private -- verified by
+# fetching https://will-roscoe.github.io/ios2ha-camera/ unauthenticated. Restricting
+# who can read a Pages site is an Enterprise feature; enabling Pages here does not
+# do it. Everything Sphinx renders is therefore world-readable, including the full
+# module source that sphinx.ext.viewcode publishes under _modules/. That is
+# intended, on the condition that no credential ever reaches it, which the
+# credential scan below enforces rather than leaves to memory.
 
 on:
   push:
@@ -42,6 +44,12 @@ jobs:
       # suppressed in conf.py with its reason.
       - name: Build
         run: sphinx-build -W --keep-going -b html docs docs/_build/html
+
+      # Runs before either upload, so a leaked credential fails the job rather than
+      # being published and then retracted -- a secret that reached a public URL has
+      # to be rotated, not deleted.
+      - name: Check for credentials in the rendered docs
+        run: python .github/scripts/check_docs_secrets.py docs/_build/html
 
       - name: Upload rendered site
         uses: actions/upload-artifact@v4
