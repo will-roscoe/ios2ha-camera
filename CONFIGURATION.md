@@ -142,8 +142,14 @@ illuminance would need exposure and gain metadata the app does not provide.
 
 | Entity | Unit | Meaning |
 |---|---|---|
-| `binary_sensor.ios2ha_camera_camera_online` | | Streaming with a frame within 30 s, **or** idle with a frame within 150 s; forced off whenever the upstream thread's own heartbeat is more than 180 s stale, regardless of state |
-| `sensor.ios2ha_camera_stream_state` | | `streaming`, `idle` (on demand, connected to nobody, still answering the health probe), `streaming_off` (app answered 503), `unreachable` |
+| `binary_sensor.ios2ha_camera_camera_online` | | Active with a frame within 30 s, **or** `ready` with a frame within 150 s; forced off whenever the upstream thread's own heartbeat is more than 180 s stale, regardless of state. Deliberately **false while `backgrounded`**: nothing yet brings the app back to the foreground, so frames really are unavailable |
+| `binary_sensor.ios2ha_camera_reachable_over_wifi` | | The phone's IP stack answered. True even when `backgrounded`, because a refusal proves something is there; false only on a timeout or no route |
+| `binary_sensor.ios2ha_camera_reachable_over_cable` | | usbmuxd is answering and a device is attached. Follows `cable_state` being `ok` |
+| `binary_sensor.ios2ha_camera_app_running` | | The camera app's process is alive, read over the cable. **The only thing that separates a backgrounded app from one iOS has killed** — over WiFi both simply refuse. Refreshed on the battery cadence, not the health tick, and **unknown** rather than false when the cable cannot answer |
+| `binary_sensor.ios2ha_camera_app_streaming` | | Reachable *and* willing to send. False for `backgrounded` and for `streaming_off` |
+| `binary_sensor.ios2ha_camera_capturing_stills` | | A capture is holding the connection |
+| `binary_sensor.ios2ha_camera_being_viewed` | | A viewer is holding it, including during the 30 s linger — the connection is still open and still costing battery |
+| `sensor.ios2ha_camera_stream_state` | | What the camera is doing, in one value. `unavailable` (nothing answers: off the network, or timed out); `backgrounded` (the port refuses, so the phone answers but the app is not listening); `streaming_off` (the app answered 503 — open, but Start streaming was never tapped); `ready` (reachable and willing, just not connected to); `capturing` (frames flowing for a still); `in_use` (frames flowing for a viewer, which wins when both apply); `streaming` (frames flowing with nobody holding, only reachable with `on_demand` off) |
 | `sensor.ios2ha_camera_cable_state` | | The USB side, independent of the WiFi stream above. `ok`; `no_device` (usbmuxd is answering, the cable is out — ordinary); `usbmuxd_down` (the daemon is unreachable and the socket mount is presumed orphaned — a fault, and the one worth alerting on). See OPERATIONS.md |
 | `sensor.ios2ha_camera_last_frame` | | Timestamp, rendered as a live relative age |
 | `sensor.ios2ha_camera_frame_rate` | fps | Measured from arrival times; 11–14.5 in practice |
@@ -170,7 +176,7 @@ user has a reason to turn blind.
 |---|---|---|---|
 | `PROBE_INTERVAL_S` | `upstream.py` | `60.0` s | How often the idle probe runs. `ONLINE_IDLE_S` and the backoff ladder are both derived from it, so changing it alone would desynchronise them from what they assume |
 | `PROBE_BACKOFF_MAX_S` | `upstream.py` | `300.0` s | Ceiling on the probe backoff after repeated failures (60, 120, 240, then capped here). Trades "how often to knock on a wedged app" against "how fast a recovery is noticed" — a call best made reading the code, not turning a dial |
-| `ONLINE_IDLE_S` | `upstream.py` | `150.0` s | How old the newest frame may be before `idle` gives up and falls back to `unreachable`. Sized off `PROBE_INTERVAL_S` and the probe's own read timeout, so it isn't independent of them |
+| `ONLINE_IDLE_S` | `upstream.py` | `150.0` s | How old the newest frame may be before `ready` gives up and falls back to `unavailable`. Sized off `PROBE_INTERVAL_S` and the probe's own read timeout, so it isn't independent of them |
 | `CAPTURE_OPEN_TIMEOUT_S` | `upstream.py` | `20.0` s | How long a capture's first wait for frames may take after taking its hold, before it gives up with "no frames". Sized with headroom over the measured ~113 ms first-frame latency, not something to tune per capture |
 | `TICK_STALE_S` | `upstream.py` | `180.0` s | How stale the upstream thread's own heartbeat may get before `camera_online` is forced false regardless of state. A safety net for a dead thread, not a normal operating parameter |
 | `VIEWER_LINGER_S` | `live.py` | `30.0` s | How long the phone stays connected after the last `/live` or `/live/stacked` viewer leaves, so a quick reconnect doesn't retrigger a probe. A connection-lifecycle policy, not a per-viewer preference |

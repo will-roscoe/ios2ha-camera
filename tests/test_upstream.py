@@ -202,17 +202,17 @@ def test_a_probe_runs_only_while_idle_and_its_frame_lands_in_the_buffer():
     h.release()
 
 
-def test_state_is_idle_after_a_good_probe_and_streaming_once_frames_flow():
+def test_state_is_ready_after_a_good_probe_and_in_use_once_a_viewer_holds():
     ing, buf = FakeIngestor(), RingBuffer(1 << 20)
     ts = [1000.0]
     up = Upstream(ing, buf, _settings(), probe=_probe_returning(buf, ts))
     up.tick(now=1000.0)
-    assert up.state(now=1001.0) == "idle"
+    assert up.state(now=1001.0) == "ready"
     assert up.camera_online(now=1001.0) is True
     with up.hold("viewer"):
         up.tick(now=1002.0)
         buf.append(Frame(b"jpeg", 1002.5))
-        assert up.state(now=1003.0) == "streaming"
+        assert up.state(now=1003.0) == "in_use"
 
 
 def test_a_failing_session_is_not_streaming_on_the_strength_of_a_probe_frame():
@@ -224,8 +224,8 @@ def test_a_failing_session_is_not_streaming_on_the_strength_of_a_probe_frame():
     h = up.hold("viewer")
     try:
         up.tick(now=1000.0)
-        up.on_ingest_state("unreachable")
-        assert up.state(now=1005.0) == "unreachable"
+        up.on_ingest_state("unavailable")
+        assert up.state(now=1005.0) == "unavailable"
     finally:
         h.release()
 
@@ -262,7 +262,7 @@ def test_state_changes_are_published_once_each():
                   probe=lambda: Frame(b"jpeg", 1000.0))
     up.tick(now=1000.0)
     up.tick(now=1001.0)
-    assert seen == ["idle"]
+    assert seen == ["ready"]
 
 
 def test_state_changes_are_logged_exactly_once_each(caplog):
@@ -271,10 +271,10 @@ def test_state_changes_are_logged_exactly_once_each(caplog):
     with caplog.at_level(logging.INFO, logger="ios2ha_camera.upstream"):
         up.tick(now=1000.0)
         assert [r.getMessage() for r in caplog.records if r.name == "ios2ha_camera.upstream"] == \
-            ["stream_state None -> idle"]
+            ["stream_state None -> ready"]
         up.tick(now=1001.0)          # no state change: must not log again
         assert [r.getMessage() for r in caplog.records if r.name == "ios2ha_camera.upstream"] == \
-            ["stream_state None -> idle"]
+            ["stream_state None -> ready"]
 
 
 def test_duty_1h_counts_only_time_with_the_connection_open():
@@ -375,9 +375,9 @@ def test_against_the_fake_camera_it_opens_lingers_and_probes():
         up.start()
         try:
             assert _wait_for(lambda: buf.newest_ts() is not None)   # the probe alone fills a frame
-            assert up.state() == "idle"
+            assert up.state() == "ready"
             with up.hold("viewer", linger_s=0.2):
-                assert _wait_for(lambda: up.state() == "streaming", timeout=5.0)
-            assert _wait_for(lambda: up.state() == "idle", timeout=5.0)
+                assert _wait_for(lambda: up.state() == "in_use", timeout=5.0)
+            assert _wait_for(lambda: up.state() == "ready", timeout=5.0)
         finally:
             up.stop()

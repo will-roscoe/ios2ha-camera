@@ -18,6 +18,53 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 1.2.0 — 2026-09-13
+
+**`stream_state`'s values have changed. Automations and templates that match them by
+name need editing.** By the rule at the top of this file that is a major change, and it is
+released as a minor one deliberately: nothing has shipped a release yet, so nobody is
+depending on the old names. Migration table below.
+
+"The camera is not sending frames" used to be one word covering four unrelated situations:
+a dead cable, a phone off the network, an app iOS had suspended, and an app whose Start
+streaming button was never tapped. Only two of those are faults, and they need different
+fixes. The distinction turned out to be free — measured on the device on 13 September,
+a backgrounded app **refuses** the connection immediately (iOS suspends the listening
+socket but leaves the process alive, and the phone still answers ICMP at 70–149 ms), while
+a phone genuinely off the network **times out**. The probe already makes that connection;
+it just had to stop flattening both into one state.
+
+| Was | Now | Why |
+|---|---|---|
+| `unreachable` | `unavailable` | Nothing answered: off the network, or the connection timed out |
+| `unreachable` | `backgrounded` | The port refused, so the phone answered and the app is not listening |
+| `idle` | `ready` | Reachable and willing, just not connected to at the moment |
+| `streaming_off` | `streaming_off` | Unchanged. The app is open but Start streaming was never tapped, and only a person can fix that |
+| `streaming` | `capturing` | Frames are flowing for a still |
+| `streaming` | `in_use` | Frames are flowing for a viewer. Wins over `capturing` when both apply |
+| `streaming` | `streaming` | Frames flowing with nobody holding, which happens only when `on_demand` is off |
+
+**Eight new boolean sensors**, because `stream_state` answers "what is it doing" while
+these answer "which part is broken":
+
+`reachable_over_cable`, `reachable_over_wifi`, `app_running`, `app_streaming`,
+`capturing_stills`, `being_viewed`, alongside the existing `camera_online` and `charging`.
+
+They are independent axes rather than a decomposition of the enum: the cable and the WiFi
+fail separately, and the app can be alive on a phone that is sending nothing.
+
+`app_running` is the one that needs the cable. Over WiFi a suspended app and one iOS has
+killed both simply refuse, so only a `proclist` over usbmux separates them. It is read on
+the battery cadence rather than the health tick, because it is a usbmux round trip, and it
+publishes **unknown** rather than `false` when the cable cannot answer — a false "app not
+running" would send someone to relaunch a perfectly healthy app.
+
+**The offline alert needs updating**, and OPERATIONS.md carries the new template.
+`camera_online` deliberately stays false while backgrounded: nothing in this release brings
+the app back to the foreground, so frames really are unavailable. 1.3.0, which backgrounds
+the app on purpose, is what makes that alert need to change — which is why this release
+comes first.
+
 ## 1.1.2 — 2026-09-13
 
 The cable stopped working for two hours on 13 September and nothing noticed. usbmuxd had

@@ -578,7 +578,7 @@ def test_capture_loop_honours_a_manual_request_without_waiting_for_the_interval(
 
 
 class FakeUpstream:
-    def __init__(self, state="idle", online=True):
+    def __init__(self, state="ready", online=True):
         self._state, self._online = state, online
         self.held = []
         self.session_start = None
@@ -589,8 +589,10 @@ class FakeUpstream:
     def camera_online(self, now=None):
         return self._online
 
-    def holders(self):
-        return ("viewer",) if self._state == "streaming" else ()
+    def holders(self, now=None):
+        # Signature must match the real Upstream.holders(now=None): health_state
+        # passes the timestamp so holders and state are read at the same instant.
+        return ("viewer",) if self._state in ("streaming", "in_use") else ()
 
     def duty_1h(self, now=None):
         return 12.5
@@ -602,22 +604,24 @@ class FakeUpstream:
         return self.session_start
 
 
-def test_health_reports_idle_as_online_and_omits_frame_rate():
+def test_health_reports_ready_as_online_and_omits_frame_rate():
     buf = RingBuffer(1 << 20)
     _fill(buf, 3, now=time.time())
-    sup = _sup(buf=buf, upstream=FakeUpstream(state="idle"))
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="ready"))
     d = sup.health_state()
-    assert d["stream_state"] == "idle"
+    assert d["stream_state"] == "ready"
     assert d["camera_online"] is True
     assert "frame_rate" not in d
     assert d["duty_1h"] == 12.5
     assert d["holders"] == "none"
 
 
-def test_health_reports_frame_rate_while_streaming():
+def test_health_reports_frame_rate_while_active():
+    """in_use rather than the bare "streaming": the fake reports a viewer
+    holding, and the real Upstream names the active sub-state after its holder."""
     buf = RingBuffer(1 << 20)
     _fill(buf, 30, now=time.time())
-    sup = _sup(buf=buf, upstream=FakeUpstream(state="streaming"))
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="in_use"))
     d = sup.health_state()
     assert d["frame_rate"] > 0
     assert d["holders"] == "viewer"

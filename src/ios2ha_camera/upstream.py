@@ -22,6 +22,7 @@ from collections import deque
 from .ingest import BOUNDARY
 from .mjpeg import iter_multipart
 from .ring_buffer import Frame
+from .states import ACTIVE_STATES, classify_probe_failure
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +109,8 @@ class Upstream:
         self._open = False
         self._opened_at = None
         self._stop_failed = False
-        self._failure = None            # None | "streaming_off" | "unreachable"
+        # None | "streaming_off" | "backgrounded" | "unavailable"
+        self._failure = None
         self._probe_failures = 0
         self._next_probe_at = 0.0
         self._last_tick = self._clock()
@@ -176,12 +178,29 @@ class Upstream:
         opened_at = self._opened_at
         if (self._open and opened_at is not None and newest is not None
                 and newest >= opened_at and now - newest < FRESH_S):
-            return "streaming"
+            return self._active_substate(now)
         if self._failure is not None:
             return self._failure
         if newest is not None and now - newest < ONLINE_IDLE_S:
-            return "idle"
-        return "unreachable"
+            return "ready"
+        return "unavailable"
+
+    def _active_substate(self, now):
+        """Which sub-state of "active" applies: frames are arriving, for whom?
+
+        Viewing wins when both apply. A viewer is a person waiting on the picture;
+        a capture is a background job that will finish on its own either way.
+
+        Neither holding while frames flow is reachable with `on_demand` switched
+        off, where the connection is simply always open, so that keeps the plain
+        name the state had before this release.
+        """
+        held = self.holders(now)
+        if any(h.startswith("viewer") for h in held):
+            return "in_use"
+        if any(h.startswith("capture") for h in held):
+            return "capturing"
+        return "streaming"
 
     def camera_online(self, now=None):
         now = self._clock() if now is None else now
@@ -190,7 +209,12 @@ class Upstream:
         # Home Assistant alert already watches for.
         if self.tick_age(now) > TICK_STALE_S:
             return False
-        return self.state(now) in ("streaming", "idle")
+        # "backgrounded" is deliberately absent. The phone answers and the app is
+        # alive, but nothing in 1.2.0 brings it back to the foreground, so frames
+        # are genuinely unavailable and the offline alert should still fire. A
+        # refusal also cannot tell a suspended app from a killed one; the
+        # `app_running` boolean, read over the cable, is what separates those.
+        return self.state(now) in ACTIVE_STATES + ("ready",)
 
     def duty_1h(self, now=None):
         now = self._clock() if now is None else now
@@ -232,7 +256,7 @@ class Upstream:
         except Exception as e:
             log.info("probe failed: %s: %s", type(e).__name__, e)
             with self._wake:
-                self._failure = "unreachable"
+                self._failure = classify_probe_failure(e)
                 self._probe_failures += 1
         else:
             if frame is not None:

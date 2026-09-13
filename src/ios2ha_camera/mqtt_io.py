@@ -6,8 +6,33 @@ import logging
 import paho.mqtt.client as mqtt
 
 from . import version
+from .states import STREAM_STATES
 
 log = logging.getLogger(__name__)
+
+
+# (object_id, display name, device_class or None)
+#
+# stream_state answers "what is it doing" in one value, which is what a dashboard
+# wants. These answer "which part is broken", which is what you want at 1am, and
+# they are independent axes rather than a decomposition of that one enum: the
+# cable and the WiFi can fail separately, and the app can be alive on a phone
+# that is not currently sending anything.
+_BINARY_SENSORS = [
+    ("camera_online", "Camera online", "connectivity"),
+    ("charging", "Phone charging", "battery_charging"),
+    # Two independent transports to the same phone. Losing the cable costs
+    # battery readings and app control; losing WiFi costs the picture.
+    ("reachable_over_cable", "Reachable over cable", "connectivity"),
+    ("reachable_over_wifi", "Reachable over WiFi", "connectivity"),
+    # Read over the cable, so this is what separates a backgrounded app (alive,
+    # socket suspended) from one iOS has killed. They look identical over WiFi.
+    ("app_running", "App running", "running"),
+    ("app_streaming", "App streaming", None),
+    # Who the frames are for. Both can be true at once.
+    ("capturing_stills", "Capturing stills", None),
+    ("being_viewed", "Being viewed", None),
+]
 
 
 def _e(prefix, comp, obj, cfg):
@@ -41,8 +66,11 @@ def _e(prefix, comp, obj, cfg):
 # Luminance figures are relative 0-255 after black-level subtraction, not lux,
 # so they deliberately carry no unit; see the design's section 4.3.
 _SENSORS = [
+    # Options come from states.STREAM_STATES rather than a second copy: Home
+    # Assistant rejects a state that is not in this list, so the two drifting
+    # apart shows up as an entity that silently goes unavailable.
     dict(obj="stream_state", name="Stream state", device_class="enum",
-         options=["streaming", "idle", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
+         options=list(STREAM_STATES), icon="mdi:video-wireless"),
     # The USB side, which is independent of the WiFi stream above. "no_device" is
     # the cable being out, which is ordinary; "usbmuxd_down" means the daemon is
     # unreachable and the socket mount is presumed orphaned, which is a fault and
@@ -252,11 +280,13 @@ def discovery_payloads(s):
         out.append(_e(p, "button", spec["obj"], cfg))
     for spec in _SENSORS:
         out.append(_e(p, "sensor", spec["obj"], _sensor(p, spec)))
-    for name, label, device_class in (("camera_online", "Camera online", "connectivity"),
-                                      ("charging", "Phone charging", "battery_charging")):
-        out.append(_e(p, "binary_sensor", name, {"name": label, "state_topic": st(name),
-                     "payload_on": "true", "payload_off": "false",
-                     "device_class": device_class, "entity_category": "diagnostic"}))
+    for name, label, device_class in _BINARY_SENSORS:
+        cfg = {"name": label, "state_topic": st(name),
+               "payload_on": "true", "payload_off": "false",
+               "entity_category": "diagnostic"}
+        if device_class:
+            cfg["device_class"] = device_class
+        out.append(_e(p, "binary_sensor", name, cfg))
     return out
 
 
