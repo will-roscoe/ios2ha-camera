@@ -677,3 +677,121 @@ def test_capture_with_no_frames_publishes_the_reason():
     sup = _sup(buf=buf, upstream=up)
     ev = sup.produce_still(now_fps=12.0)
     assert ev["error"] == "no frames: streaming_off"
+
+
+def _jpegs(n, val=30):
+    out = []
+    for i in range(n):
+        rng = np.random.default_rng(i)
+        a = np.clip(val + rng.normal(0, 12, (32, 32, 3)), 0, 255).astype("uint8")
+        b = io.BytesIO()
+        Image.fromarray(a).save(b, "JPEG", quality=92)
+        out.append(b.getvalue())
+    return out
+
+
+class StreamingIngestor:
+    """Appends frames at the phone's rate from start() until stop(), stamped on
+    arrival as the real Ingestor stamps them."""
+
+    def __init__(self, buf, fps=13.9):
+        self.buf, self.period, self.jpegs = buf, 1.0 / fps, _jpegs(8)
+        self._stop, self._thread = threading.Event(), None
+
+    def start(self):
+        stop = self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(stop,), daemon=True)
+        self._thread.start()
+
+    def _run(self, stop):
+        i = 0
+        while not stop.wait(self.period):
+            self.buf.append(Frame(self.jpegs[i % len(self.jpegs)], time.time()))
+            i += 1
+
+    def stop(self, timeout=None):
+        self._stop.set()
+        if self._thread is None:
+            return True
+        self._thread.join(2.0 if timeout is None else timeout)
+        return not self._thread.is_alive()
+
+
+def test_a_capture_that_opens_the_session_measures_only_that_sessions_frames(monkeypatch):
+    """Taking the hold only wakes the upstream thread, and the session opens on
+    its next tick, so the capture reads session_start_ts() before there is one.
+    Falling back to the whole window then counts a 25 s old probe frame, which
+    turns 13.9 fps into under 1 and stacks the stale frame with the fresh ones."""
+    from ios2ha_camera.upstream import Upstream
+
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 20
+    buf = RingBuffer(1 << 24)
+    stale_ts = time.time() - 25
+    buf.append(Frame(_jpegs(1)[0], stale_ts))
+    ing = StreamingIngestor(buf)
+    up = Upstream(ing, buf, s, probe=lambda: None)
+    mq = FakeMqtt()
+    sup = _sup(s, buf, mq, upstream=up)
+    stacked = []
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (stacked.extend(frames), real(frames))[1])
+    events = []
+    worker = threading.Thread(target=lambda: events.append(sup.produce_still()), daemon=True)
+    up.start()
+    try:
+        worker.start()
+        worker.join(timeout=20)
+        assert not worker.is_alive(), "the capture did not finish"
+        assert "error" not in events[0], events[0]
+        assert mq.published["frame_rate"] > 10
+        assert stacked and stale_ts not in [f.ts for f in stacked]
+    finally:
+        up.stop(timeout=5.0)
+        ing.stop()
+
+
+def test_a_capture_during_an_open_session_uses_frames_already_buffered(monkeypatch):
+    """A viewer already holds the session, so frames buffered since it opened
+    are current and the capture must use them rather than wait for newer ones."""
+    from ios2ha_camera import supervisor
+    from ios2ha_camera.upstream import Upstream
+
+    class SilentIngestor:
+        def start(self):
+            pass
+
+        def stop(self, timeout=None):
+            return True
+
+    monkeypatch.setattr(supervisor, "CAPTURE_OPEN_TIMEOUT_S", 2.0)
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 20
+    buf = RingBuffer(1 << 24)
+    now = time.time()
+    up = Upstream(SilentIngestor(), buf, s, probe=lambda: None)
+    waits = []
+    real_wait = up.wait_for_frames
+
+    def timed_wait(*a, **k):
+        t = time.monotonic()
+        try:
+            return real_wait(*a, **k)
+        finally:
+            waits.append(time.monotonic() - t)
+
+    up.wait_for_frames = timed_wait
+    sup = _sup(s, buf, FakeMqtt(), upstream=up)
+    viewer = up.hold("viewer")
+    try:
+        up.tick(now=now - 5)
+        _fill(buf, 24, now=now - 0.1, step=1 / 13.9)
+        ev = sup.produce_still(now=now)
+    finally:
+        viewer.release()
+    assert "error" not in ev, ev
+    assert ev["depth_used"] == 20
+    assert waits and max(waits) < 0.5, waits

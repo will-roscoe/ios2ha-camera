@@ -167,7 +167,12 @@ class Supervisor:
         # restarted -- exactly the drain this feature exists to end.
         with self.upstream.hold("capture") if self.upstream is not None else contextlib.nullcontext():
             if self.upstream is not None:
-                floor = max(self.upstream.session_start_ts() or 0.0, now - self.s.window_max_s)
+                # The hold only wakes the upstream thread, so a session it opens
+                # starts after `now` and has no start yet; its frames clear a
+                # floor of `now`, and older ones (a probe's) must not. A session
+                # already open keeps its earlier start, so a capture while
+                # someone is viewing uses the frames already buffered at once.
+                floor = max(self.upstream.session_start_ts() or now, now - self.s.window_max_s)
                 self.upstream.wait_for_frames(self.probe_n, floor, CAPTURE_OPEN_TIMEOUT_S)
                 probe_frames = [f for f in self.buffer.recent(self.probe_n) if f.ts >= floor]
                 if not probe_frames:
