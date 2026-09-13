@@ -57,7 +57,10 @@ def main(argv=None):
             pass
         else:
             print("frames are flowing")
-            return 0
+            # A failed step earlier (battery unreadable, app absent) is still
+            # worth a non-zero exit even though frames turned up -- otherwise
+            # an unattended caller reads a healthy phone that was not one.
+            return 1 if failed else 0
         time.sleep(5)
     print("timed out waiting for frames", file=sys.stderr)
     return 1

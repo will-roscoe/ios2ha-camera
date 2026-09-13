@@ -1,6 +1,6 @@
 import asyncio
 
-from ios2ha_camera import phone
+from ios2ha_camera import phone, phone_setup
 from ios2ha_camera.phone import PhoneManager, PhoneManagerMisuseError, PhoneUnavailable
 import pytest
 
@@ -268,3 +268,43 @@ def test_prepare_never_enables_developer_mode(monkeypatch):
     monkeypatch.setattr(pm, "battery", lambda: {"level": 48})
     pm.prepare(launch=True)
     assert called == []                       # enabling reboots the phone: never automatic
+
+
+def test_prepare_reraises_phone_manager_misuse_error(monkeypatch):
+    """A caller-side wiring bug (prepare() called from inside a running event
+    loop) must propagate untouched. Swallowing it here would misreport the
+    exact condition _call is designed to surface loudly, as an ordinary
+    phone-side failure -- and the three steps after it would fail identically
+    for no new reason, adding noise instead of information."""
+    pm = PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "developer_mode",
+                         lambda: (_ for _ in ()).throw(PhoneManagerMisuseError("wrong thread")))
+    monkeypatch.setattr(pm, "mount_ddi", lambda: None)
+    monkeypatch.setattr(pm, "is_running", lambda: True)
+    monkeypatch.setattr(pm, "battery", lambda: {"level": 48})
+    with pytest.raises(PhoneManagerMisuseError):
+        pm.prepare(launch=True)
+
+
+def test_main_reports_failure_even_when_frames_arrive(monkeypatch):
+    """A failed prepare() step (e.g. the app not running) must not be masked
+    by the probe finding frames from an earlier session -- the exit code is
+    the one signal an unattended caller (deploy.sh, cron) reads, and
+    returning 0 here would report a healthy phone that was not."""
+    class FakePhone:
+        def __init__(self, bundle_id):
+            pass
+
+        def prepare(self, launch=True):
+            return [{"step": "app", "ok": False, "detail": "boom"},
+                    {"step": "battery", "ok": True, "detail": {"level": 48}}]
+
+    class FakeSettings:
+        @staticmethod
+        def from_env(env):
+            return object()
+
+    monkeypatch.setattr(phone_setup, "PhoneManager", FakePhone)
+    monkeypatch.setattr(phone_setup, "Settings", FakeSettings)
+    monkeypatch.setattr(phone_setup, "http_probe", lambda s: object())  # frames found immediately
+    assert phone_setup.main(["--timeout", "1"]) == 1

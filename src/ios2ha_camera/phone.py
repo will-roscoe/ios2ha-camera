@@ -245,6 +245,11 @@ class PhoneManager:
         def run(name, fn):
             try:
                 steps.append({"step": name, "ok": True, "detail": fn()})
+            except PhoneManagerMisuseError:
+                # A caller-side wiring bug, not a phone-side condition: recording it
+                # as a failed step would bury the exact thing _call is meant to
+                # surface loudly, and every remaining step would fail identically.
+                raise
             except Exception as e:
                 steps.append({"step": name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
 
