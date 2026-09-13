@@ -183,8 +183,17 @@ class LiveStacker:
         and no NLM: the moving average is the denoiser. Blended with `img`
         itself -- the accumulated mean as shot -- by the weight `refresh_params`
         derived from the same subject level, exactly as render.render blends,
-        so a bright scene keeps the camera's own look here too."""
+        so a bright scene keeps the camera's own look here too.
+
+        The night curve (cv2.pow and the rest) is the dominant per-frame cost,
+        measured close to the whole 60 ms live budget on its own -- so at
+        weight 0 (daylight, the common case) it must never run at all, not
+        just have its result thrown away in the lerp; and at weight 1 the
+        lerp itself is skipped rather than computed as a 1x/0x no-op.
+        """
         bl, gains, lavg, lw, w = self._params
+        if w <= 1e-6:
+            return np.clip(img, 0, 255).astype(np.uint8)
         x = img - bl
         np.maximum(x, 0, out=x)
         x *= gains
@@ -205,6 +214,8 @@ class LiveStacker:
         # Darker tones desaturate, as in the stills.
         night = Y + (rgb - Y) * np.clip(Y / np.float32(0.4), 0.4, 1.0)
         night8 = np.clip(night, 0, 1) * np.float32(255)
+        if w >= 1 - 1e-6:
+            return night8.astype(np.uint8)
         as_shot = np.clip(img, 0, 255)
         blended = as_shot * np.float32(1 - w) + night8 * np.float32(w)
         return blended.astype(np.uint8)

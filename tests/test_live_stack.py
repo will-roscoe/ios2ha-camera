@@ -119,6 +119,25 @@ def test_tone_at_weight_zero_is_close_to_as_shot():
     assert np.abs(out.astype(int) - as_shot.astype(int)).max() <= 1
 
 
+def test_tone_skips_the_night_curve_entirely_at_weight_zero(monkeypatch):
+    """The night curve (dominated by cv2.pow) is the expensive part of tone();
+    at weight 0 -- the common daylight case -- it must never run at all, not
+    just have its result discarded in the lerp."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    st.step(_frame(180, 1000.0), now=1000.0)
+    acc = st.accumulated()
+    bl, gains, lavg, lw, _ = st._params
+    st._params = (bl, gains, lavg, lw, 0.0)
+
+    def boom(*a, **kw):
+        raise AssertionError("cv2.pow ran despite a weight of 0")
+
+    monkeypatch.setattr(cv2, "pow", boom)
+    out = st.tone(acc)
+    as_shot = np.clip(acc, 0, 255).astype(np.uint8)
+    assert np.array_equal(out, as_shot)
+
+
 def test_tone_at_weight_one_matches_todays_night_curve_exactly():
     """weight 1 must reproduce the pre-blend arithmetic bit for bit -- a scene
     that already needs the full night treatment must see zero pixel change

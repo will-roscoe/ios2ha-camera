@@ -49,9 +49,12 @@ def night_weight(subject, target_level, night_gain=NIGHT_GAIN):
     used as-is. 1 once the required gain reaches night_gain -- today's night
     render, byte for byte. Linear between. A subject at or below zero cannot
     be brightened by any finite gain, so it is treated as needing the full
-    night render rather than dividing by it.
+    night render rather than dividing by it -- and `not subject > 0`, not
+    `subject <= 0`, so a NaN subject (a corrupted measurement, not a real
+    reading) takes the same safe path: every comparison with NaN is false,
+    so `<= 0` would let it straight through to the division below.
     """
-    if subject <= 0:
+    if not subject > 0:
         return 1.0
     gain = max(target_level / subject, 1.0)
     return float(np.clip((gain - 1) / (night_gain - 1), 0, 1))

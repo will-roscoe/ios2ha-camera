@@ -106,6 +106,25 @@ def test_night_weight_is_safe_at_a_subject_of_zero_or_below():
     assert render.night_weight(-5.0, 45.0) == 1.0
 
 
+def test_night_weight_is_safe_at_a_nan_subject():
+    # NaN <= 0 is False, so a naive non-positive guard lets it through; every
+    # comparison with NaN is false, which is exactly what "not subject > 0"
+    # exploits to catch it too.
+    assert render.night_weight(float("nan"), 45.0) == 1.0
+
+
+def test_render_with_a_nan_subject_gives_the_normal_night_render_not_black():
+    """A corrupted subject measurement must fail towards the safe (night)
+    render, not silently publish a black still."""
+    s = Settings(); s.render_intent = "natural"
+    scene = _dark_scene()
+    weight = render.night_weight(float("nan"), s.target_level)
+    out = render.render(scene, s, night_weight=weight)
+    full = render.render(scene, s, night_weight=1.0)
+    assert np.array_equal(out, full)
+    assert out.mean() > 5, "a NaN subject must not silently render an all-black frame"
+
+
 # -- render()'s day/night blend -----------------------------------------------
 
 def test_zero_weight_keeps_the_camera_look_and_skips_denoise(monkeypatch):
