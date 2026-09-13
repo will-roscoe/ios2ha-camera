@@ -18,6 +18,26 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 1.1.1 — 2026-09-13
+
+`natural`'s tone curve was tuned for night and assumed its input was linear light, but the phone's
+JPEGs already carry iOS's own gamma encoding and tone mapping -- applying `natural`'s Reinhard curve
+and gamma on top of that a second time made daylight stills flat and desaturated. Measured on a real
+960×540 daylight frame: the camera's own frame has saturation 38.1 and RMS contrast 58.1; the
+pre-1.1.1 render gave 18.4 and 54.7, with shadows lifted from 45 to 66.
+
+The render now blends between the camera's own look and the night render, by how much brightening
+the scene needs -- the same measurement that already sets the stack depth. A scene bright enough to
+need none of it (daylight) now keeps exactly the camera's own rendering, cleaned up by stacking; a
+scene needing four times brightening or more (night) is byte-for-byte what the render produced
+before this release; everything between blends smoothly. `/live/stacked` blends the same way,
+against its own running mean. `inspection` is unaffected -- it exists to read detail, not to look
+natural.
+
+No entities, topics or payload shapes changed.
+
+234 tests, no hardware required.
+
 ## 1.1.0 — 2026-09-13
 
 The phone connection is now on demand rather than held open for the life of the process. Streaming

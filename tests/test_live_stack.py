@@ -2,6 +2,7 @@ import io
 import threading
 import time
 import types
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
@@ -91,9 +92,13 @@ def test_the_tone_path_matches_render_within_the_measured_tolerance():
     st = LiveStacker(RingBuffer(1 << 22), s)
     st.step(_coloured_highlight_frame(1000.0), now=1000.0)
     acc = st.accumulated()
+    # refresh_params derives a real (not necessarily 1.0) weight from this
+    # frame's own subject level; the reference render must use that same
+    # weight to stay a fair comparison between the two paths.
+    weight = st._params[-1]
     bare = types.SimpleNamespace(**{**vars(s), "denoise_strength": 0.0, "chroma_radius": 0.0,
                                     "render_intent": "natural", "stretch_strength": 25.0})
-    ref = render.render(acc.astype(np.float64), bare)
+    ref = render.render(acc.astype(np.float64), bare, night_weight=weight)
     mine = st.tone(acc)
     assert np.abs(mine.astype(np.int16) - ref.astype(np.int16)).max() <= 3
     # A uniform or colourless frame would make both paths output flat black,
@@ -101,6 +106,64 @@ def test_the_tone_path_matches_render_within_the_measured_tolerance():
     # tone curve ran correctly; require actual spread in the output so this
     # test cannot pass vacuously.
     assert np.percentile(mine, 99) - np.percentile(mine, 1) >= 50
+
+
+def test_tone_at_weight_zero_is_close_to_as_shot():
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    st.step(_frame(180, 1000.0), now=1000.0)
+    acc = st.accumulated()
+    bl, gains, lavg, lw, _ = st._params
+    st._params = (bl, gains, lavg, lw, 0.0)
+    out = st.tone(acc)
+    as_shot = np.clip(acc, 0, 255).astype(np.uint8)
+    assert np.abs(out.astype(int) - as_shot.astype(int)).max() <= 1
+
+
+def test_tone_skips_the_night_curve_entirely_at_weight_zero(monkeypatch):
+    """The night curve (dominated by cv2.pow) is the expensive part of tone();
+    at weight 0 -- the common daylight case -- it must never run at all, not
+    just have its result discarded in the lerp."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    st.step(_frame(180, 1000.0), now=1000.0)
+    acc = st.accumulated()
+    bl, gains, lavg, lw, _ = st._params
+    st._params = (bl, gains, lavg, lw, 0.0)
+
+    def boom(*a, **kw):
+        raise AssertionError("cv2.pow ran despite a weight of 0")
+
+    monkeypatch.setattr(cv2, "pow", boom)
+    out = st.tone(acc)
+    as_shot = np.clip(acc, 0, 255).astype(np.uint8)
+    assert np.array_equal(out, as_shot)
+
+
+def test_tone_at_weight_one_matches_todays_night_curve_exactly():
+    """weight 1 must reproduce the pre-blend arithmetic bit for bit -- a scene
+    that already needs the full night treatment must see zero pixel change
+    from this feature existing at all."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    st.step(_coloured_highlight_frame(1000.0), now=1000.0)
+    acc = st.accumulated()
+    bl, gains, lavg, lw, _ = st._params
+    st._params = (bl, gains, lavg, lw, 1.0)
+    out = st.tone(acc)
+
+    # The exact steps tone() took before the day/night blend existed.
+    x = acc - bl
+    np.maximum(x, 0, out=x)
+    x = x * gains
+    L = x.mean(axis=2)
+    Ls = L * np.float32(st.s.night_key / lavg)
+    Ld = Ls * (1 + Ls / np.float32(max(lw, 1e-6) ** 2)) / (1 + Ls)
+    scale = np.where(L > 1e-6, Ld / np.maximum(L, np.float32(1e-6)), np.float32(0.0))
+    x = x * scale.astype(np.float32)[..., None]
+    np.clip(x, 0, 1, out=x)
+    rgb = cv2.pow(x, live_stack.GAMMA)
+    Y = rgb.mean(axis=2, keepdims=True)
+    expected_rgb = Y + (rgb - Y) * np.clip(Y / np.float32(0.4), 0.4, 1.0)
+    expected = (np.clip(expected_rgb, 0, 1) * 255).astype(np.uint8)
+    assert np.array_equal(out, expected)
 
 
 class _SlowBuffer:

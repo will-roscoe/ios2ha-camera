@@ -164,8 +164,12 @@ class LiveStacker:
         L = lin.mean(axis=2)
         lavg = float(np.exp(np.mean(np.log(1e-3 + L))))
         lw = float(np.percentile(self.s.night_key / lavg * L, 99.9))
-        self._params = (np.asarray(bl, np.float32), np.asarray(gains, np.float32), lavg, lw)
         subject = float(np.percentile(L, self.s.subject_percentile))
+        # The same subject level that drives the depth law below also drives
+        # how much of tone()'s day/night blend to use, so the two cannot
+        # disagree about how much brightening the scene needs.
+        weight = render.night_weight(subject, self.s.target_level)
+        self._params = (np.asarray(bl, np.float32), np.asarray(gains, np.float32), lavg, lw, weight)
         # previous_depth=None on purpose: choose_depth's ramp derives alpha from
         # settings.interval_s, i.e. it assumes 600 s between calls. At this
         # cadence it would jump half the remaining distance every two seconds,
@@ -176,8 +180,20 @@ class LiveStacker:
 
     def tone(self, img):
         """`render._tone_natural`'s arithmetic in float32, with no chroma blur
-        and no NLM: the moving average is the denoiser."""
-        bl, gains, lavg, lw = self._params
+        and no NLM: the moving average is the denoiser. Blended with `img`
+        itself -- the accumulated mean as shot -- by the weight `refresh_params`
+        derived from the same subject level, exactly as render.render blends,
+        so a bright scene keeps the camera's own look here too.
+
+        The night curve (cv2.pow and the rest) is the dominant per-frame cost,
+        measured close to the whole 60 ms live budget on its own -- so at
+        weight 0 (daylight, the common case) it must never run at all, not
+        just have its result thrown away in the lerp; and at weight 1 the
+        lerp itself is skipped rather than computed as a 1x/0x no-op.
+        """
+        bl, gains, lavg, lw, w = self._params
+        if w <= 1e-6:
+            return np.clip(img, 0, 255).astype(np.uint8)
         x = img - bl
         np.maximum(x, 0, out=x)
         x *= gains
@@ -196,8 +212,13 @@ class LiveStacker:
         rgb = cv2.pow(x, GAMMA)
         Y = rgb.mean(axis=2, keepdims=True)
         # Darker tones desaturate, as in the stills.
-        out = Y + (rgb - Y) * np.clip(Y / np.float32(0.4), 0.4, 1.0)
-        return (np.clip(out, 0, 1) * 255).astype(np.uint8)
+        night = Y + (rgb - Y) * np.clip(Y / np.float32(0.4), 0.4, 1.0)
+        night8 = np.clip(night, 0, 1) * np.float32(255)
+        if w >= 1 - 1e-6:
+            return night8.astype(np.uint8)
+        as_shot = np.clip(img, 0, 255)
+        blended = as_shot * np.float32(1 - w) + night8 * np.float32(w)
+        return blended.astype(np.uint8)
 
     # -- thread --------------------------------------------------------------
 

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from ios2ha_camera import render
 from ios2ha_camera.settings import Settings
 
@@ -7,6 +8,13 @@ def _dark_scene():
     a = np.full((32, 32, 3), 3.0, dtype=np.float64)
     a[8:24, 8:24] = [6.0, 5.0, 9.0]   # a slightly brighter patch
     return a
+
+
+def _bright_noisy_scene():
+    # Well above target_level (45.0 by default): the camera's own exposure
+    # already meets it, so this stands in for a real daylight frame.
+    rng = np.random.default_rng(0)
+    return np.clip(200.0 + rng.normal(0, 15, (64, 64, 3)), 0, 255)
 
 
 def test_natural_brighter_than_input_but_not_maxed():
@@ -64,3 +72,98 @@ def test_tone_map_uses_one_shared_scale_not_a_per_channel_curve():
     ratio_a = A[0] / A[2]
     ratio_b = B[0] / B[2]
     assert abs(ratio_a - ratio_b) < 0.15
+
+
+# -- night_weight ------------------------------------------------------------
+
+def test_night_weight_is_zero_once_the_subject_meets_target():
+    assert render.night_weight(45.0, 45.0) == 0.0
+    assert render.night_weight(60.0, 45.0) == 0.0   # brighter still: no brightening needed either
+
+
+def test_night_weight_is_zero_exactly_at_gain_one():
+    # G = target / subject = 1
+    assert render.night_weight(45.0, 45.0) == 0.0
+
+
+def test_night_weight_is_one_third_at_gain_two():
+    assert render.night_weight(22.5, 45.0) == pytest.approx(1 / 3)
+
+
+def test_night_weight_is_one_at_and_beyond_gain_four():
+    assert render.night_weight(11.25, 45.0) == 1.0    # G == NIGHT_GAIN == 4
+    assert render.night_weight(5.0, 45.0) == 1.0       # G > NIGHT_GAIN
+
+
+def test_night_weight_is_monotonic_in_between():
+    subjects = [45.0, 30.0, 22.5, 15.0, 11.25, 5.0]    # decreasing subject -> increasing gain
+    weights = [render.night_weight(s, 45.0) for s in subjects]
+    assert weights == sorted(weights)
+
+
+def test_night_weight_is_safe_at_a_subject_of_zero_or_below():
+    assert render.night_weight(0.0, 45.0) == 1.0
+    assert render.night_weight(-5.0, 45.0) == 1.0
+
+
+def test_night_weight_is_safe_at_a_nan_subject():
+    # NaN <= 0 is False, so a naive non-positive guard lets it through; every
+    # comparison with NaN is false, which is exactly what "not subject > 0"
+    # exploits to catch it too.
+    assert render.night_weight(float("nan"), 45.0) == 1.0
+
+
+def test_render_with_a_nan_subject_gives_the_normal_night_render_not_black():
+    """A corrupted subject measurement must fail towards the safe (night)
+    render, not silently publish a black still."""
+    s = Settings(); s.render_intent = "natural"
+    scene = _dark_scene()
+    weight = render.night_weight(float("nan"), s.target_level)
+    out = render.render(scene, s, night_weight=weight)
+    full = render.render(scene, s, night_weight=1.0)
+    assert np.array_equal(out, full)
+    assert out.mean() > 5, "a NaN subject must not silently render an all-black frame"
+
+
+# -- render()'s day/night blend -----------------------------------------------
+
+def test_zero_weight_keeps_the_camera_look_and_skips_denoise(monkeypatch):
+    import cv2
+    calls = []
+    real_denoise = cv2.fastNlMeansDenoisingColored
+
+    def spy(*a, **k):
+        calls.append(1)
+        return real_denoise(*a, **k)
+
+    monkeypatch.setattr(cv2, "fastNlMeansDenoisingColored", spy)
+
+    s = Settings()
+    scene = _bright_noisy_scene()
+    out0 = render.render(scene, s, night_weight=0.0)
+    as_shot = np.clip(scene, 0, 255).astype(np.uint8)
+    assert np.abs(out0.astype(int) - as_shot.astype(int)).max() <= 2
+    assert calls == [], "denoise ran on a zero-weight (daylight) render"
+
+    render.render(scene, s, night_weight=1.0)
+    assert calls, "denoise never ran at all -- the spy itself is broken"
+
+
+def test_default_night_weight_matches_the_full_night_render_exactly():
+    s = Settings(); s.render_intent = "natural"
+    scene = _dark_scene()
+    default_out = render.render(scene, s)
+    full_out = render.render(scene, s, night_weight=1.0)
+    assert np.array_equal(default_out, full_out)
+    as_shot = np.clip(scene, 0, 255).astype(np.uint8)
+    assert not np.array_equal(default_out, as_shot)
+
+
+def test_inspection_ignores_the_blend_entirely():
+    s = Settings(); s.render_intent = "inspection"
+    scene = _dark_scene()
+    out_a = render.render(scene, s, night_weight=0.0)
+    out_b = render.render(scene, s, night_weight=1.0)
+    out_c = render.render(scene, s, night_weight=0.37)
+    assert np.array_equal(out_a, out_b)
+    assert np.array_equal(out_b, out_c)

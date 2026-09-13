@@ -197,6 +197,21 @@ stretch to near full range for reading detail, and is meant to look processed.
 `calibration()` returns the black level and gains that `render()` will apply, and `render()` accepts
 them back, so the sensors reporting those numbers cannot drift from the image they describe.
 
+**The day/night blend.** `natural`'s curve assumes it is given linear light, but the phone's JPEGs
+are already gamma-encoded and tone-mapped by iOS -- running `natural` on them unconditionally is a
+double tone map, and in daylight it shows up as flat, desaturated output. `render()` blends
+`natural`'s result back towards the stacked mean as shot, by `night_weight()`: the same brightening
+gain the depth law already computes (`G = target_level / subject`, floored at 1) also sets how much
+of the night render to use, `w = clip((G - 1) / (NIGHT_GAIN - 1), 0, 1)`. A scene bright enough to
+need no brightening (`G <= 1`) keeps exactly the camera's own rendering; a scene needing `NIGHT_GAIN`
+or more (`4.0`, the ceiling the night look was tuned against) is byte-for-byte what `render()`
+produced before this blend existed, so the night look is preserved by construction rather than by
+retuning it alongside the daylight fix. Chroma smoothing and denoise scale with the same weight, so a
+daylight still is not softened on top of needing no tone map. `inspection` ignores the blend outright
+-- it exists to read detail, not to look natural. `live_stack.py`'s `tone()` applies the identical
+blend, from a weight `refresh_params` derives from the same kind of subject measurement on its own
+subsample, against its own accumulated mean as shot.
+
 ### `live.py`
 An aiohttp app serving three routes. `/live` re-serves the buffered MJPEG; `/live/stacked` re-serves
 `LiveStacker`'s noise-reduced feed the same way; `/still.jpg` returns the last stacked still from

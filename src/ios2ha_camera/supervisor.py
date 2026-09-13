@@ -216,7 +216,11 @@ class Supervisor:
         stacked = stack.stack_frames(window)
         self.last_stack = stacked
         black, gains = render.calibration(stacked, self.s)
-        rgb = render.render(stacked, self.s, applied=(black, gains))
+        # The day/night blend rides on the same subject measurement that
+        # already drives depth -- one number, two consumers, so they cannot
+        # disagree about how much brightening the scene needs.
+        weight = render.night_weight(subject, self.s.target_level)
+        rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight)
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
         self.mqtt.publish_still(jpeg)

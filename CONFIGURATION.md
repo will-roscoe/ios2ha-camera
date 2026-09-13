@@ -180,6 +180,7 @@ user has a reason to turn blind.
 | `REFRESH_S` | `live_stack.py` | `2.0` s | How often tone parameters and depth are re-estimated from a pixel subsample. A CPU-versus-staleness trade-off already tuned to the cost of estimation, not a viewing preference |
 | `GAP_RESET_S` | `live_stack.py` | `2.0` s | A gap this long between frames resets the running average instead of blending across it — reflects the streaming cadence, not a stylistic choice |
 | `JPEG_QUALITY` | `live_stack.py` | `85` | Output quality for `/live/stacked`, lower than the stills' default of 92 because it runs at video rate, not once every ten minutes |
+| `NIGHT_GAIN` | `render.py` | `4.0` | The brightening gain at which the day/night blend is fully the night render. Reads alongside the reason it exists -- the phone's JPEGs are already tone-mapped, so a scene needing no brightening should keep the camera's own look -- not a look a dashboard number can substitute for |
 
 ## Topics
 
