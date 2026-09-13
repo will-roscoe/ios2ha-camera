@@ -22,16 +22,27 @@ def _frame(value, ts, size=(1920, 1080)):
     return Frame(b.getvalue(), ts)
 
 
-def _gradient_frame(ts, size=(1920, 1080)):
-    """A horizontal ramp, identical in all three channels: unlike a uniform
-    frame, this has an actual black level distinct from its highlights, so the
-    tone curve has something to do."""
+def _coloured_highlight_frame(ts, size=(1920, 1080)):
+    """A coloured gradient (each channel its own slope, so hue varies across
+    most of the frame and the desaturation blend has something to undo) with
+    a small, strongly saturated highlight patch.
+
+    The patch is under 0.1% of the pixels -- smaller than the 99.9th
+    percentile `refresh_params` uses to estimate the white point -- so it is
+    excluded from that estimate as an outlier and its scaled, pre-gamma value
+    overshoots 1.0 by a wide margin (measured ~1.7, not the ~1.0 a smooth
+    ramp gives), the way an accidental reflection or a light in frame would.
+    render.render() sees the same excluded outlier and clips it the same way,
+    so this only distinguishes the two paths when one of them stops clipping.
+    """
     w, h = size
-    row = np.linspace(5, 200, w).astype(np.uint8)
-    arr = np.broadcast_to(row, (h, w)).copy()
-    arr = np.stack([arr, arr, arr], axis=-1)
+    arr = np.empty((h, w, 3), dtype=np.float64)
+    arr[..., 0] = np.linspace(5, 180, w)
+    arr[..., 1] = np.linspace(15, 140, w)
+    arr[..., 2] = np.linspace(30, 90, w)
+    arr[500:540, 900:940] = (255, 8, 8)                # ~0.08% of the frame
     b = io.BytesIO()
-    Image.fromarray(arr).save(b, "JPEG", quality=92)
+    Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8)).save(b, "JPEG", quality=92)
     return Frame(b.getvalue(), ts)
 
 
@@ -44,9 +55,9 @@ def test_output_is_half_resolution():
 
 def test_the_warm_up_is_the_running_mean_of_what_it_has_seen():
     """A running mean for the first N frames: frame 1 alone, then the mean of
-    2, then of 3 -- each exact because the chosen depth (N, in the hundreds
-    for this dark, uniform frame) is far larger than the frame count so far,
-    so a = max(1/t, 1/N) is just 1/t."""
+    2, then of 3 -- each exact as long as the chosen depth N is at least the
+    frame count so far, so a = max(1/t, 1/N) is just 1/t (measured N == 3 for
+    this dark, uniform frame -- exactly enough for the three frames here)."""
     st = LiveStacker(RingBuffer(1 << 22), _settings())
     st.step(_frame(40, 1000.0), now=1000.0)
     assert st.accumulated().mean() == 40.0
@@ -74,14 +85,15 @@ def test_the_tone_path_matches_render_within_the_measured_tolerance():
     from ios2ha_camera import render
     s = _settings()
     st = LiveStacker(RingBuffer(1 << 22), s)
-    st.step(_gradient_frame(1000.0), now=1000.0)
+    st.step(_coloured_highlight_frame(1000.0), now=1000.0)
     acc = st.accumulated()
     bare = types.SimpleNamespace(**{**vars(s), "denoise_strength": 0.0, "chroma_radius": 0.0,
                                     "render_intent": "natural", "stretch_strength": 25.0})
     ref = render.render(acc.astype(np.float64), bare)
     mine = st.tone(acc)
     assert np.abs(mine.astype(np.int16) - ref.astype(np.int16)).max() <= 3
-    # A uniform frame would make both paths output flat black regardless of
-    # whether the tone curve ran at all; require actual spread in the output
-    # so this test cannot pass vacuously.
+    # A uniform or colourless frame would make both paths output flat black,
+    # or would make the desaturation blend a no-op, regardless of whether the
+    # tone curve ran correctly; require actual spread in the output so this
+    # test cannot pass vacuously.
     assert np.percentile(mine, 99) - np.percentile(mine, 1) >= 50
