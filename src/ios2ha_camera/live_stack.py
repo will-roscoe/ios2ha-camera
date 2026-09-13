@@ -75,7 +75,7 @@ class LiveStacker:
         with self._lock:
             self._viewers += 1
             if self._viewers == 1:
-                predecessor = self._thread
+                predecessor, previous_stop = self._thread, self._stop
                 # A fresh Event per generation, not clear()-and-reuse: detach()
                 # reads self._stop under the same lock, so whichever Event it
                 # sees -- the outgoing one or this new one -- is the one that
@@ -87,7 +87,15 @@ class LiveStacker:
                 self._thread = threading.Thread(
                     target=self._run_after, args=(predecessor, stop),
                     name="live-stack", daemon=True)
-                self._thread.start()
+                try:
+                    self._thread.start()
+                except BaseException:
+                    # live.py does not detach() after a failed attach(), so a
+                    # count left at 1 would stop every later attach() from
+                    # starting a thread, for the life of the process.
+                    self._viewers -= 1
+                    self._thread, self._stop = predecessor, previous_stop
+                    raise
 
     def detach(self):
         with self._lock:
@@ -196,11 +204,12 @@ class LiveStacker:
     def _run_after(self, predecessor, stop):
         """Wait out a still-exiting predecessor, then run this generation.
 
-        Runs in the new thread rather than in attach(): one accumulator, one
-        writer still holds, because this join guarantees the predecessor --
-        including its own tail that clears self._acc -- has fully finished
-        before this generation's _run touches it, but the waiting no longer
-        happens on attach()'s caller.
+        Runs in the new thread rather than in attach(), so the wait never
+        happens on attach()'s caller. The join is bounded and so guarantees
+        nothing: a predecessor stuck past THREAD_JOIN_TIMEOUT_S, in a slow step
+        say, can still be running beside this generation. What it can no longer
+        do is clear this generation's state on its way out, because _run's
+        teardown only clears for the generation that is current.
         """
         if predecessor is not None:
             predecessor.join(THREAD_JOIN_TIMEOUT_S)
@@ -222,5 +231,7 @@ class LiveStacker:
                     log.exception("live stack step failed")
             else:
                 time.sleep(POLL_S)
-        self._acc = None
-        self._latest = None
+        with self._lock:
+            if self._stop is stop:
+                self._acc = None
+                self._latest = None

@@ -1,9 +1,12 @@
 import io
+import threading
 import time
 import types
 import numpy as np
+import pytest
 from PIL import Image
-from ios2ha_camera.live_stack import SCALE, THREAD_JOIN_TIMEOUT_S, LiveStacker
+from ios2ha_camera import live_stack
+from ios2ha_camera.live_stack import REFRESH_S, SCALE, THREAD_JOIN_TIMEOUT_S, LiveStacker
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 
 
@@ -152,3 +155,105 @@ def test_attach_after_a_quick_detach_does_not_leave_the_old_thread_running():
         assert not first.is_alive()
     finally:
         st.detach()
+
+
+def test_tone_parameters_are_reestimated_on_the_refresh_interval_not_every_frame():
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    refreshes = []
+    real = st.refresh_params
+    st.refresh_params = lambda **kw: (refreshes.append(kw), real(**kw))[1]
+    st.step(_frame(40, 1000.0), now=1000.0)
+    st.step(_frame(40, 1001.0), now=1001.0)
+    assert len(refreshes) == 1
+    st.step(_frame(40, 1002.0), now=1000.0 + REFRESH_S + 0.1)
+    assert len(refreshes) == 2
+
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _join(*threads):
+    for t in threads:
+        if t is not None and t.ident is not None:
+            t.join(5.0)
+
+
+def test_a_thread_that_fails_to_start_does_not_disable_the_feed(monkeypatch):
+    """live.py skips detach() when attach() raises, so a viewer count left
+    behind by a failed start stopped every later attach() from starting a
+    thread, and /live/stacked served nothing for the life of the process."""
+    real_start = threading.Thread.start
+    failed = []
+
+    def start_failing_once(thread):
+        if thread.name == "live-stack" and not failed:
+            failed.append(thread)
+            raise RuntimeError("can't start new thread")
+        return real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_failing_once)
+    st = LiveStacker(RingBuffer(1 << 20), _settings())
+    try:
+        with pytest.raises(RuntimeError):
+            st.attach()
+        st.attach()
+        assert st._thread is not None and st._thread.is_alive()
+    finally:
+        st.detach()
+        _join(st._thread)
+
+
+class _GatedBuffer:
+    """Holds the first thread to read it until released and serves every other
+    thread one unchanging frame, so the test, not timing, decides when each
+    generation moves."""
+
+    def __init__(self, frame):
+        self.frame = frame
+        self.held = None
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+
+    def latest(self):
+        with self._lock:
+            if self.held is None:
+                self.held = threading.current_thread()
+        if threading.current_thread() is self.held:
+            self.entered.set()
+            self.release.wait(5.0)
+            return None
+        return self.frame
+
+
+def test_an_outgoing_thread_that_outlives_the_join_leaves_its_successor_alone(monkeypatch):
+    """_run_after gives up on its predecessor after THREAD_JOIN_TIMEOUT_S, so
+    the predecessor can finish after its successor has started. Its teardown
+    must not then blank the successor's accumulator and latest frame."""
+    monkeypatch.setattr(live_stack, "THREAD_JOIN_TIMEOUT_S", 0.05)
+    buf = _GatedBuffer(_frame(40, time.time()))
+    st = LiveStacker(buf, _settings())
+    first = second = None
+    try:
+        st.attach()
+        first = st._thread
+        assert buf.entered.wait(5.0)
+        st.detach()
+        st.attach()
+        second = st._thread
+        assert _wait_for(lambda: st.latest() is not None)
+        buf.release.set()
+        first.join(5.0)
+        assert not first.is_alive()
+        assert st.accumulated() is not None
+        assert st.latest() is not None
+    finally:
+        buf.release.set()
+        st.detach()
+        _join(first, second)
