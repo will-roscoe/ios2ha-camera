@@ -87,8 +87,19 @@ SIGKILLed mid-shutdown and Home Assistant kept showing the camera as online afte
 
 ### The MQTT account
 
-The Mosquitto add-on has no local logins, so it authenticates **Home Assistant** users. Create a
-dedicated non-admin, local-only account rather than reusing an admin one.
+Use a **broker-local login**, and do not create a Home Assistant account for this. The Mosquitto add-on
+takes a list of username and password pairs in its `logins` option; those accounts exist only in the
+broker. Any other broker works the same way through its own `passwd` file.
+
+The add-on will also authenticate Home Assistant users, and an earlier version of this document
+recommended that. It was the wrong advice: a Home Assistant login can reach far more than MQTT, and
+needing one to install a Home Assistant app is not a reasonable thing to ask of anyone.
+
+Two things worth knowing about add-on logins. Their passwords are stored as plain text in the add-on's
+options and can be read by anything with Supervisor API access, so give this one its own password and
+nothing else. And they can be narrowed further: set `customize.active` and supply an ACL from
+`/share/mosquitto` that limits the account to `ios2ha_camera/#` and the `homeassistant/#` discovery
+prefix, so a leak of it cannot touch the rest of your broker.
 
 ## Rolling back
 

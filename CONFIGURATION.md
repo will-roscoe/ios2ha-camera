@@ -14,7 +14,7 @@ Read by `Settings.from_env`, and coerced to the type of each field's default.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `MQTT_HOST` / `MQTT_PORT` | `192.168.1.5` / `1883` | |
-| `MQTT_USER` / `MQTT_PASSWORD` | — | A dedicated non-admin Home Assistant account; the Mosquitto add-on authenticates HA users |
+| `MQTT_USER` / `MQTT_PASSWORD` | — | A broker-local login, such as the Mosquitto add-on's `logins` option. No Home Assistant account is needed; see OPERATIONS.md |
 | `MQTT_PREFIX` | `ios2ha_camera` | Root of every topic |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
 | `LIVE_PORT` | `8099` | `/live` and `/still.jpg` |
