@@ -18,7 +18,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+docs = [
+    "sphinx>=8.0",
+    "furo>=2024.8",
+    "sphinx-autodoc-typehints>=2.0",
+    "sphinx-copybutton>=0.5",
+    "myst-parser>=4.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -31,3 +42,35 @@ where = ["src"]
 # "." so tests can import the shared fixtures as tests.fakes.*
 pythonpath = ["src", "."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F are pyflakes + pycodestyle, I sorts imports, UP modernises syntax to the
+# 3.12 floor, B catches likely bugs. Deliberately not the full rule set: this is a
+# small service, and a lint that fires on style opinions rather than defects gets
+# ignored.
+select = ["E", "F", "I", "UP", "B"]
+# onvif.py builds SOAP envelopes from %s templates. f-strings would not read more
+# clearly there, and rewriting working device-facing request bodies for a style
+# rule is risk without benefit.
+ignore = ["UP031"]
+
+[tool.ruff.lint.per-file-ignores]
+# The tests use semicolons to keep fixture setup on one line ("buf = RingBuffer(N);
+# states = []") and run long on assertion messages. That is a deliberate density
+# choice in test code and says nothing about the shipped service, so only the
+# formatting rules are relaxed here -- F, I, UP and B still apply.
+"tests/**" = ["E501", "E702", "E731"]
+# WS-Security and ONVIF namespace URLs are 85-120 characters and cannot be split.
+# Ruff already tolerates the worst lines here because an unsplittable token is
+# exempt from E501, so enforcing the limit on their neighbours only rewards
+# hiding a URL behind a variable. The whole file is exempt instead.
+"src/ios2ha_camera/onvif.py" = ["E501"]
+
+[tool.coverage.run]
+source = ["ios2ha_camera"]
+branch = true
