@@ -8,6 +8,14 @@ vision in dim light. `inspection` is an asinh stretch to near full range for
 reading detail in the still, and is expected to look processed rather than
 natural.
 
+`natural`'s curve treats its input as linear light, but the phone's JPEGs are
+already gamma-encoded and tone-mapped by iOS -- applying a second tone curve
+on top is a double tone map, and in daylight it shows as flat, desaturated
+output. `render()` blends `natural`'s result back towards the stacked mean as
+shot, by `night_weight()` (see there): a scene bright enough to need no
+brightening keeps the camera's own look, and the night treatment fades in
+only as the scene actually needs it.
+
 Every tone curve here derives ONE scale factor per pixel from luminance and
 multiplies all three channels by that same factor -- it never looks the
 curve up per channel. That is what keeps hue intact through tone mapping:
@@ -23,6 +31,30 @@ from .measure import black_level
 # bright content clips to display white -- "near full range", in contrast to
 # natural's low-key exposure, which is meant to hold headroom below white.
 _INSPECTION_HEADROOM = 1.15
+
+# The phone's JPEGs already carry iOS's own gamma encoding and tone mapping, so
+# a scene that needs no brightening should keep the camera's own rendering
+# rather than have _tone_natural's Reinhard curve and gamma stacked on top of
+# an image that has already been through one. NIGHT_GAIN is the brightening
+# gain at which the blend has fully crossed over to the night render; below it
+# the camera's own look increasingly shows through, in proportion to how
+# little correction the scene actually needs.
+NIGHT_GAIN = 4.0
+
+
+def night_weight(subject, target_level, night_gain=NIGHT_GAIN):
+    """How much of the night render to use, from how much brightening the scene needs.
+
+    0 once the scene already meets target_level -- the camera's own look is
+    used as-is. 1 once the required gain reaches night_gain -- today's night
+    render, byte for byte. Linear between. A subject at or below zero cannot
+    be brightened by any finite gain, so it is treated as needing the full
+    night render rather than dividing by it.
+    """
+    if subject <= 0:
+        return 1.0
+    gain = max(target_level / subject, 1.0)
+    return float(np.clip((gain - 1) / (night_gain - 1), 0, 1))
 
 
 def white_balance_gains(linear, mode):
@@ -86,30 +118,49 @@ def calibration(stacked, settings):
     return bl, gains
 
 
-def render(stacked, settings, applied=None):
+def render(stacked, settings, applied=None, night_weight=1.0):
     """Render a stacked (H, W, 3) float array to a display-ready uint8 RGB array.
 
     `applied` is an optional (black_level, gains) pair from calibration(), for a
     caller that also publishes those numbers and should not compute them twice.
+
+    `night_weight` (see night_weight()) blends the tone-curve output back
+    towards the stacked mean as shot, so a scene bright enough to need no
+    brightening keeps the camera's own look instead of a second tone map on
+    top of it. 1.0, the default, reproduces today's render exactly.
+    `inspection` ignores it outright: it exists to read detail, not to look
+    natural.
     """
     bl, gains = applied if applied is not None else calibration(stacked, settings)
     x = np.clip(stacked - bl, 0, None)
     x = x * gains
     L = x.mean(axis=2)
-    if settings.render_intent == "inspection":
+    inspection = settings.render_intent == "inspection"
+    if inspection:
         rgb = _tone_inspection(x, L, settings.stretch_strength)
     else:
         rgb = _tone_natural(x, L, settings.night_key)
     img8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-    if settings.chroma_radius > 0:
+
+    w = 1.0 if inspection else night_weight
+    if not inspection:
+        as_shot = np.clip(stacked, 0, 255).astype(np.uint8)
+        img8 = (as_shot.astype(np.float32) * (1 - w)
+                + img8.astype(np.float32) * w).round().astype(np.uint8)
+
+    # Scaled by the same weight as the blend above: a daylight still (w == 0)
+    # is the camera's own frame and must not be softened on top of that.
+    chroma_radius = settings.chroma_radius * w
+    if chroma_radius > 1e-6:
         y, cb, cr = Image.fromarray(img8).convert("YCbCr").split()
-        r = settings.chroma_radius
         img8 = np.asarray(Image.merge("YCbCr", (
-            y, cb.filter(ImageFilter.GaussianBlur(r)), cr.filter(ImageFilter.GaussianBlur(r)),
+            y, cb.filter(ImageFilter.GaussianBlur(chroma_radius)),
+            cr.filter(ImageFilter.GaussianBlur(chroma_radius)),
         )).convert("RGB"))
-    if settings.denoise_strength > 0:
+    denoise_strength = settings.denoise_strength * w
+    if denoise_strength > 1e-6:
         import cv2
-        h = float(settings.denoise_strength)
+        h = float(denoise_strength)
         img8 = cv2.fastNlMeansDenoisingColored(img8, None, h=h, hColor=h + 1,
                                                templateWindowSize=7, searchWindowSize=21)
     return img8

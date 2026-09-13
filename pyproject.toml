@@ -4,7 +4,7 @@ name = "ios2ha-camera"
 # so there is no second copy in the source to drift. Semantics are in
 # CHANGELOG.md: the Home Assistant entity and topic surface is the public
 # interface, because that is what breaks other people's automations.
-version = "1.1.0"
+version = "1.1.1"
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.26",

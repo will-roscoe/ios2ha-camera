@@ -231,6 +231,39 @@ def test_archive_is_skipped_when_the_disk_is_low_but_the_still_still_publishes()
     assert mq.stills, "the live still must keep working when only the disk is full"
 
 
+def test_produce_still_passes_the_measured_weight_to_render(monkeypatch):
+    """The day/night blend has to be derived from the subject level this very
+    capture measured, not a stale or default value -- a recording stub in
+    place of render.render is enough to prove the number actually arrives."""
+    from ios2ha_camera import render
+
+    s = Settings()
+    s.stacking_mode = "fixed"       # depth law's target_level plays no part in fixed mode
+    s.fixed_depth = 6
+    # Chosen so the measured subject (~5.05 for this buffer, fixed by the
+    # deterministic per-frame seeds in _fill) lands mid-blend rather than at
+    # the 1.0 the stub already defaults to -- otherwise a supervisor that
+    # forgot to pass night_weight at all would pass this test by accident.
+    s.target_level = 10.0
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 10)
+    mq = FakeMqtt()
+    sup = _sup(s, buf, mq)
+
+    calls = []
+
+    def stub_render(stacked, settings, applied=None, night_weight=1.0):
+        calls.append(night_weight)
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(render, "render", stub_render)
+    ev = sup.produce_still(now_fps=12.0)
+    assert calls, "render.render was never called"
+    expected = render.night_weight(ev["subject_level"], s.target_level)
+    assert 0.0 < expected < 1.0, "test setup must land mid-blend, not at an edge"
+    assert calls[0] == pytest.approx(expected, abs=0.02)
+
+
 def test_published_calibration_is_what_render_applied():
     """If the supervisor recomputed gains separately from render, the sensors
     could report numbers the image was never built with."""
