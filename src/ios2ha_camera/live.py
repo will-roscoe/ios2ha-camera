@@ -13,13 +13,18 @@ polls it at a capped rate and fans the latest frame out to every registered
 queue using non-blocking puts; if a client's queue is already full (it hasn't
 drained fast enough), the oldest queued frame is dropped to make room for the
 new one. That fan-out never awaits a client's socket, so a client whose write
-is genuinely stalled can only stall its own request task -- never a source
-read, a fan-out loop, or any other client.
+is stalled can only stall its own request task -- never a source read, a
+fan-out loop, or any other client.
 
 Home Assistant is not the only viewer any more: `/live/stacked` serves a
 noise-reduced feed from a `LiveStacker`, and both `/live` and `/live/stacked`
 now hold the phone connection open (via `Upstream.hold`) only for as long as
 they have a viewer attached -- that is what makes the connection on-demand.
+It also means a stalled client is no longer free: its request task holds the
+phone at about 300 mA for as long as the stall lasts, and aiohttp has no write
+timeout to end it. So every write is bounded by `WRITE_TIMEOUT_S`, and a viewer
+that stops reading for that long is treated exactly like one that left.
+
 Holding and releasing a hold is non-blocking, and so is `LiveStacker.attach`/
 `detach`, which is why a plain `with` and plain calls around the streaming
 loop are safe here: nothing in this module may block the event loop, since
@@ -45,6 +50,7 @@ FPS_CAP = 12
 FRAME_INTERVAL = 1.0 / FPS_CAP
 QUEUE_SIZE = 2  # short: a client behind by more than this is dropped, not queued
 VIEWER_LINGER_S = 30.0  # keep the phone connection open this long after the last viewer leaves
+WRITE_TIMEOUT_S = 5.0   # a write stalled this long is a viewer that stopped reading
 
 
 def _offer(queue, frame):
@@ -136,13 +142,17 @@ def _stream_handler(clients, source, attach=None, detach=None):
                 try:
                     while True:
                         frame = await queue.get()
-                        await resp.write(_part(frame))
-                except (ConnectionError, asyncio.CancelledError):
+                        # Bounded because this viewer holds the phone connection:
+                        # aiohttp has no write timeout, so a client that stays
+                        # connected but stops reading would hold it for good.
+                        await asyncio.wait_for(resp.write(_part(frame)), WRITE_TIMEOUT_S)
+                except (ConnectionError, asyncio.TimeoutError, asyncio.CancelledError):
                     # ConnectionError, not just its Reset/Aborted subclasses: aiohttp raises
                     # a bare ConnectionError("Connection lost") when a viewer goes away
                     # mid-write, and Home Assistant's camera does exactly that every time it
                     # grabs a thumbnail. A client leaving is normal and must not put a
-                    # traceback in an unattended service's log.
+                    # traceback in an unattended service's log. A write that timed out is
+                    # a client that stopped reading, and is treated as one that left.
                     pass
                 finally:
                     clients.discard(queue)

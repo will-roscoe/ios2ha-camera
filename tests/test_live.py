@@ -229,3 +229,28 @@ def test_a_stacker_that_fails_to_attach_still_releases_the_hold():
             assert resp.status == 500
             assert up.events == ["hold", "release"]
     asyncio.run(run())
+
+
+def test_a_viewer_that_stops_reading_releases_the_hold(monkeypatch):
+    """A client that stays connected but never reads blocks the handler's write
+    for good, since aiohttp has no write timeout, and while it waits there the
+    viewer's hold keeps the phone connected at about 300 mA."""
+    from ios2ha_camera import live
+    monkeypatch.setattr(live, "WRITE_TIMEOUT_S", 0.3, raising=False)
+
+    async def run():
+        buf = RingBuffer(100_000_000)
+        big = b"\xff\xd8" + b"\x00" * 8_000_000 + b"\xff\xd9"   # well past the socket buffers
+        buf.append(Frame(big, time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get("/live")          # headers only; the body is never read
+            try:
+                deadline = time.monotonic() + 5.0
+                while "release" not in up.events and time.monotonic() < deadline:
+                    buf.append(Frame(big, time.time()))
+                    await asyncio.sleep(0.05)
+                assert "release" in up.events, "a viewer that stopped reading still holds the phone"
+            finally:
+                resp.close()
+    asyncio.run(run())
