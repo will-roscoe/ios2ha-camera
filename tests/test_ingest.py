@@ -239,3 +239,21 @@ def test_stopping_is_not_reported_as_a_failure():
         assert _wait_for(lambda: "streaming" in states)
         ing.stop()
     assert states == ["streaming"]
+
+
+def test_each_session_reports_its_first_state_even_when_it_matches_the_last():
+    """Upstream opens a session per hold and clears a failure between sessions
+    when a probe succeeds, so a session failing exactly as the last one did
+    must still say so, or the failure never reaches it."""
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        cam.set_mode("off")
+        ing = _cam_ing(cam, buf, states)
+        try:
+            ing.start()
+            assert _wait_for(lambda: states.count("streaming_off") == 1)
+            ing.stop()
+            ing.start()
+            assert _wait_for(lambda: states.count("streaming_off") == 2), states
+        finally:
+            ing.stop()

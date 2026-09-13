@@ -15,6 +15,7 @@ Threading matters here, so it is stated once:
   PhoneManager's calls block and raise if called from a running loop.
 """
 
+import contextlib
 import logging
 import threading
 import time
@@ -27,13 +28,19 @@ import numpy as np
 from . import measure, render, stack
 from .phone import PhoneUnavailable
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
+from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
 log = logging.getLogger(__name__)
 
 
-def estimate_fps(buffer, n=30, default=12.0):
-    """Frame rate from the arrival times of the newest n frames."""
-    recent = buffer.recent(n)
+def estimate_fps(buffer, n=30, default=12.0, since=None):
+    """Frame rate from the arrival times of the newest n frames.
+
+    `since` excludes frames from before the current session: with on-demand the
+    buffer also holds probe frames a minute apart, and averaging across them
+    would report 0.02 fps for a stream running at 13.9.
+    """
+    recent = [f for f in buffer.recent(n) if since is None or f.ts >= since]
     if len(recent) < 2:
         return default
     span = recent[-1].ts - recent[0].ts
@@ -62,13 +69,15 @@ def _dark_noise(rgb):
 
 class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
-                 probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30, device_executor=None):
+                 upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
+                 device_executor=None):
         self.s = settings
         self.buffer = buffer
         self.mqtt = mqtt
         self.archive = archive
         self.onvif = onvif
         self.phone = phone
+        self.upstream = upstream
         self.probe_n = probe_n
         self.fresh_s = fresh_s
         self.min_free_bytes = min_free_bytes
@@ -134,7 +143,7 @@ class Supervisor:
     def _fresh(self, frames, now, max_age):
         return [f for f in frames if now - f.ts <= max_age]
 
-    def produce_still(self, now_fps, now=None):
+    def produce_still(self, now_fps=None, now=None):
         """Make, publish and archive one still. Reports failure over MQTT.
 
         A stacking, render or archive error would otherwise leave every
@@ -148,31 +157,61 @@ class Supervisor:
             return self._event({"ts": time.time() if now is None else now,
                                 "error": f"{type(e).__name__}: {e}"})
 
-    def _produce_still(self, now_fps, now=None):
+    def _produce_still(self, now_fps=None, now=None):
         now = time.time() if now is None else now
         t0 = time.monotonic()
 
-        probe_frames = self._fresh(self.buffer.recent(self.probe_n), now, self.fresh_s)
-        if not probe_frames:
-            # Stacking whatever is left in the buffer would archive a picture of
-            # the past as if it were now.
-            return self._event({"ts": now, "error": "no fresh frames"})
-        probe = [stack.decode(f) for f in probe_frames]
-        mean = np.mean(probe, axis=0)
+        # The `with` block is load-bearing: produce_still() swallows every
+        # exception below, so a manual release would be skipped by a decode
+        # error and the phone would stay connected until the container
+        # restarted -- exactly the drain this feature exists to end.
+        with self.upstream.hold("capture") if self.upstream is not None else contextlib.nullcontext():
+            if self.upstream is not None:
+                # The hold only wakes the upstream thread, so a session it opens
+                # starts after `now` and has no start yet; its frames clear a
+                # floor of `now`, and older ones (a probe's) must not. A session
+                # already open keeps its earlier start, so a capture while
+                # someone is viewing uses the frames already buffered at once.
+                floor = max(self.upstream.session_start_ts() or now, now - self.s.window_max_s)
+                self.upstream.wait_for_frames(self.probe_n, floor, CAPTURE_OPEN_TIMEOUT_S)
+                probe_frames = [f for f in self.buffer.recent(self.probe_n) if f.ts >= floor]
+                if not probe_frames:
+                    return self._event({"ts": now, "error": f"no frames: {self.upstream.state(now)}"})
+            else:
+                probe_frames = self._fresh(self.buffer.recent(self.probe_n), now, self.fresh_s)
+                if not probe_frames:
+                    # Stacking whatever is left in the buffer would archive a picture of
+                    # the past as if it were now.
+                    return self._event({"ts": now, "error": "no fresh frames"})
+            probe = [stack.decode(f) for f in probe_frames]
+            mean = np.mean(probe, axis=0)
 
-        bl_probe = measure.black_level(mean)
-        pct = measure.luminance_percentiles(mean, bl_probe)
-        subject = measure.luminance_percentiles(
-            mean, bl_probe, (self.s.subject_percentile,))[self.s.subject_percentile]
+            bl_probe = measure.black_level(mean)
+            pct = measure.luminance_percentiles(mean, bl_probe)
+            subject = measure.luminance_percentiles(
+                mean, bl_probe, (self.s.subject_percentile,))[self.s.subject_percentile]
 
-        depth = stack.choose_depth(subject, self.s, now_fps, self._previous_depth)
-        self._previous_depth = depth
-        required = measure.required_depth(subject, self.s.target_level, self.s.clean_factor)
+            if now_fps is None:
+                if self.upstream is not None:
+                    # Measured from this session's frames, never the whole buffer: the
+                    # probe frames in there are a minute apart.
+                    now_fps = estimate_fps(self.buffer, since=floor)
+                else:
+                    now_fps = estimate_fps(self.buffer)
+            depth = stack.choose_depth(subject, self.s, now_fps, self._previous_depth)
+            self._previous_depth = depth
+            required = measure.required_depth(subject, self.s.target_level, self.s.clean_factor)
 
-        window = self._fresh(self.buffer.recent(depth), now, self.s.window_max_s)
-        if not window:
-            return self._event({"ts": now, "error": "no frames in window"})
-        used = len(window)
+            if self.upstream is not None:
+                self.upstream.wait_for_frames(depth, floor, self.s.window_max_s)
+                # A list, not a generator: stack_frames iterates its source three
+                # times (one unclipped pass, two clipping passes).
+                window = [f for f in self.buffer.recent(depth) if f.ts >= floor]
+            else:
+                window = self._fresh(self.buffer.recent(depth), now, self.s.window_max_s)
+            if not window:
+                return self._event({"ts": now, "error": "no frames in window"})
+            used = len(window)
 
         stacked = stack.stack_frames(window)
         self.last_stack = stacked
@@ -250,6 +289,8 @@ class Supervisor:
                 self._submit(name, self._screenshot)
             elif name == "relaunch_app":
                 self._submit(name, self._relaunch)
+            elif name == "prepare_phone":
+                self._submit(name, self._prepare_phone)
             elif name == "autofocus":
                 self._submit(name, lambda: self._autofocus(bool(value)))
             else:
@@ -315,6 +356,12 @@ class Supervisor:
         self._event({"ts": time.time(), "control": "relaunch_app",
                      "result": "launched", "was_running": was_running})
 
+    def _prepare_phone(self):
+        if self.phone is None:
+            raise RuntimeError("phone management is not configured")
+        steps = self.phone.prepare(launch=True)
+        self._event({"ts": time.time(), "control": "prepare_phone", "steps": steps})
+
     def _autofocus(self, on):
         try:
             if self.onvif is not None and not self.onvif.set_autofocus("AUTO" if on else "MANUAL"):
@@ -338,19 +385,34 @@ class Supervisor:
     def health_state(self, now=None):
         now = time.time() if now is None else now
         newest = self.buffer.newest_ts()
-        age = None if newest is None else now - newest
+        state = self.upstream.state(now) if self.upstream else self.stream_state
         d = {
             # A timestamp rather than an age: Home Assistant turns this into a
             # relative time that keeps counting between health ticks, where a
             # published age is stale the moment it lands.
             "last_frame": (None if newest is None else
                            datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()),
-            "camera_online": (self.stream_state == "streaming"
-                              and age is not None and age < self.fresh_s),
-            "frame_rate": round(estimate_fps(self.buffer), 1),
+            "camera_online": (self.upstream.camera_online(now) if self.upstream else
+                              (self.stream_state == "streaming"
+                               and newest is not None and now - newest < self.fresh_s)),
         }
-        if self.stream_state is not None:
-            d["stream_state"] = self.stream_state
+        if state is not None:
+            d["stream_state"] = state
+        if self.upstream is not None:
+            d["holders"] = ", ".join(self.upstream.holders()) or "none"
+            d["duty_1h"] = self.upstream.duty_1h(now)
+            d["tick_age"] = round(self.upstream.tick_age(now), 1)
+        if getattr(self, "live_fps", None) is not None:
+            d["live_fps"] = self.live_fps()
+        # With an upstream, only while streaming: probe frames a minute apart
+        # would publish 0.02. Without one, keep publishing it unconditionally
+        # -- that's the old behaviour, and every existing caller still relies
+        # on it since on-demand's idle state doesn't exist for them.
+        if self.upstream is None:
+            d["frame_rate"] = round(estimate_fps(self.buffer), 1)
+        elif state == "streaming":
+            d["frame_rate"] = round(estimate_fps(
+                self.buffer, since=self.upstream.session_start_ts()), 1)
         return d
 
     def phone_state(self):
@@ -384,7 +446,7 @@ class Supervisor:
                 break
             self.capture_requested.clear()
             try:
-                self.produce_still(estimate_fps(self.buffer))
+                self.produce_still(None)
             except Exception:
                 log.exception("capture failed")
             if not manual:

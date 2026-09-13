@@ -1,7 +1,8 @@
 # Architecture
 
-One process, one connection to the phone, five threads and an event loop. This document covers what
-each module does and — more usefully — the decisions that are not obvious from reading the code.
+One process, one connection to the phone opened on demand, a fixed roster of background threads,
+and an event loop. This document covers what each module does and — more usefully — the decisions
+that are not obvious from reading the code.
 
 ## Threads
 
@@ -9,12 +10,14 @@ This is the part most worth understanding before changing anything.
 
 | Thread | Runs | Why it is separate |
 |---|---|---|
-| **ingest** | One persistent MJPEG connection, filling the ring buffer | Must never be blocked by anything downstream |
+| **upstream** | Decides *when* the phone is connected: opens and closes the one MJPEG connection on a 0.5 s tick, and probes the app every 60 s while nothing holds it | Every connect, disconnect, linger expiry and probe must happen in one place, or two callers could race the connection — the thing that wedges the phone |
+| **ingest** | One MJPEG connection, filling the ring buffer, for as long as `upstream` wants it open | Must never be blocked by anything downstream; only alive for the life of a session, not the process |
+| **live-stack** | Re-derives the low-light tone curve over the newest buffered frame at video rate | Only runs while `/live/stacked` has a viewer; started and stopped from an aiohttp handler, so it must never block that handler |
 | **capture** | The interval loop: stack, render, publish, archive | A night stack takes tens of seconds |
 | **health** | A 30 s tick publishing stream state, frame time and, every 5 min, the battery | Health on the capture interval would take ten minutes to report an outage |
 | **device worker** | One thread for ONVIF and USB actions triggered from MQTT | See below |
 | **paho network** | The MQTT client's own loop | Not ours to block |
-| **aiohttp loop** | The live view, and only the live view | Serves `/live` and `/still.jpg` |
+| **aiohttp loop** | The live view, and only the live view | Serves `/live`, `/live/stacked` and `/still.jpg` |
 
 Three rules hold this together:
 
@@ -28,8 +31,10 @@ Three rules hold this together:
   `PhoneManagerMisuseError` — deliberately not `PhoneUnavailable` — if called from inside a running
   loop, so that wiring mistake cannot masquerade as an unplugged phone.
 
-Shared state is small and guarded: `_last_state` (written from four threads, read whole on
-reconnect) lives under a lock, and the reconnect republish sends a snapshot. Handing over the live
+Shared state is small and guarded: `_last_state` (written from several threads — capture, health,
+the device worker, paho's network thread, and now also `ingest` and `upstream` via
+`on_stream_state` — and read whole on reconnect) lives under a lock, and the reconnect republish
+sends a snapshot. Handing over the live
 dict raised `RuntimeError: dictionary changed size during iteration` into a caller that only logged
 it, which silently disabled the republish — the failure mode that gave the lock its reason to exist.
 
@@ -66,6 +71,92 @@ One persistent `GET /mjpeg`, and the module where the "never churn" rule lives:
 - Connect and read have separate timeouts: a phone asleep at the TCP level blocks in `connect()`,
   where there is no socket for `stop()` to shut down.
 - `start()` joins a previous thread first, so a restart can never leave two clients on the phone.
+
+Its lifetime is no longer the process's: `upstream.py` calls `start()`/`stop()` around each session, so
+this module still owns *how* to stream but no longer owns *when*.
+
+### `upstream.py`
+Decides *when* the phone is connected. `Ingestor` still decides how.
+
+An open connection costs about 300 mA continuously and idle costs roughly nothing, so the
+connection is a resource taken and given back rather than held for the process's life. Anything
+that wants frames calls `hold(reason, linger_s=...)`, which returns a `Hold` — a capture's hold has
+no linger (it releases the instant it has its frames), a viewer's lingers for `VIEWER_LINGER_S` so a
+quick reconnect doesn't retrigger a probe. Releasing a hold twice is harmless by design: a viewer
+that drops mid-write can reach the release path more than once, and a second decrement must not
+cancel someone else's hold.
+
+Every decision — opening, closing, expiring a linger, running a probe — happens on one thread
+(`tick()`, run every 0.5 s), so two callers can never race the connection. Taking or releasing a
+hold only touches a counter under a lock, which is why `live.py` can do it directly from the aiohttp
+event loop without blocking it.
+
+**While idle**, the thread probes the app every `PROBE_INTERVAL_S` (60 s): connect, read one frame,
+close — 82–387 ms and about 2–3 mA a minute. A probe's frame lands in the ring buffer like any other,
+which is what lets `idle` still report a recent frame time. Consecutive failures back off — 60, 120,
+240 s, capped at `PROBE_BACKOFF_MAX_S` (300 s) — rather than knocking on a wedged app every minute
+for as long as it stays broken.
+
+**The frame-floor rule.** A capture takes a hold, then computes
+`floor = max(session_start_ts() or now, now - window_max_s)` and only stacks frames at or after it.
+`session_start_ts()` is `None`, or the timestamp the *current* session opened at — never a probe's.
+Without the floor, a capture starting just as the connection opens would see the idle probe's last
+frame, up to a minute old, sitting in the buffer beside its own, and could stack a minute-old
+snapshot in with fresh frames. A session already open when the capture starts (a viewer is
+watching) keeps its earlier `session_start_ts()`, so the capture uses whatever has already been
+buffered rather than waiting for a fresh session. The hold is released — and the connection can
+close — before stacking and rendering run, which is 10–20 s of CPU the phone no longer has to stay
+connected for.
+
+**The state model.** `state()` returns one of four values, most specific first:
+
+- `streaming` — the *current* session has produced a frame no older than `FRESH_S` (30 s), and that
+  frame is newer than the session's own start. A stale probe frame from before the session opened
+  cannot satisfy this, so a session that has only ever failed cannot read as streaming on the
+  strength of someone else's frame.
+- `streaming_off` / `unreachable` — the last session or probe ended in that failure.
+- `idle` — no failure, and *some* frame (a probe's, most likely) is newer than `ONLINE_IDLE_S`
+  (150 s — roughly two probe intervals plus the probe's own read timeout, so one missed probe does
+  not flip this early).
+- `unreachable` — otherwise.
+
+`camera_online()` is `True` for `streaming` or `idle`, *unless* the thread's own heartbeat
+(`tick_age()`) has gone stale for more than `TICK_STALE_S` (180 s), in which case it is `False`
+regardless of `state()`. A dead or wedged upstream thread must not leave `camera_online` frozen at
+whatever it last read as healthy — the exact silent-failure mode the offline alert exists to catch.
+
+`holders()` names why the phone is connected — `capture`, `viewer`, `viewer (linger)` while a linger
+is running down, `on_demand_off` when the switch disables on-demand entirely, or `()` (published as
+`none`) when nothing is holding it and it is merely idle-probing or shut. `duty_1h()` sums open
+spans over the trailing hour, including the one in progress, as a percentage.
+
+### `live_stack.py`
+Serves `/live/stacked`: the stills' low-light treatment at a rate a shared box can hold.
+
+**Why not `render.render`.** That renderer measured 1.9 s a frame at full resolution with its
+defaults, and 424 ms with denoise and chroma blur off — against a budget of about 80 ms a frame at
+`FPS_CAP`. `LiveStacker` keeps the same tone arithmetic (`_tone_natural`'s, reimplemented as
+`tone()`) but buys the speed back three ways: half resolution via the JPEG decoder's own DCT scaling
+(`SCALE = 2`, 1920×1080 → 960×540 — full resolution measured 4 fps and is not offered), an O(1)
+running mean instead of decoding and stacking N frames, and tone parameters estimated from a
+sixteenth of the pixels (`SUBSAMPLE = 4`) every `REFRESH_S` (2 s) rather than every frame. Measured
+against `render.render`'s output, the difference is at most 2/255. It reimplements only
+`_tone_natural`'s arithmetic, so `/live/stacked` always renders the `natural` intent regardless of
+`render_intent` — there is no fast-path equivalent of `inspection`'s asinh stretch here, and
+inspection is a still-only diagnostic tool.
+
+The running mean is `acc += (new - acc) * a`, with `a = max(1/t, 1/N)`: a plain running mean for the
+first `N` frames, settling into an exponential moving average once `t` passes `N`, so older frames
+are down-weighted rather than remembered forever. `N` (`depth()`) follows the same brightness law as
+the stills (`stack.choose_depth`), but with `hard_cap` set from `live_max_window_s` (default 3 s) in
+frames at the live frame rate, rather than the stills' 600-frame night cap — the live feed's depth
+means seconds of smear, not a fixed frame budget.
+
+The background thread only exists while at least one viewer is attached: `attach()`/`detach()` are
+called from an aiohttp handler and must never block it, so a still-exiting predecessor thread (from
+a previous viewer generation) is joined inside the *new* thread, not in `attach()` itself. A fresh
+`threading.Event` per generation, rather than reusing one, is what stops a `detach()` racing a
+new `attach()` from having its `set()` wiped out by the next generation's `clear()`.
 
 ### `measure.py`
 Pure functions over decoded frames: per-channel black level (a low percentile), luminance
@@ -107,16 +198,30 @@ stretch to near full range for reading detail, and is meant to look processed.
 them back, so the sensors reporting those numbers cannot drift from the image they describe.
 
 ### `live.py`
-An aiohttp app serving two routes. `/live` re-serves the buffered MJPEG; `/still.jpg` returns the
-last stacked still from memory, falling back to the newest raw frame.
+An aiohttp app serving three routes. `/live` re-serves the buffered MJPEG; `/live/stacked` re-serves
+`LiveStacker`'s noise-reduced feed the same way; `/still.jpg` returns the last stacked still from
+memory, falling back to the newest raw frame.
 
-A background broadcaster reads the ring buffer at a capped rate and fans each frame out to a short
-per-client queue with non-blocking puts, dropping the oldest frame for a client that has fallen
-behind. The fan-out never awaits a client socket, so a stalled viewer can stall only its own
-request — structurally, not by convention. That is the exact failure that killed the previous
-system, so it is the property the tests are built around.
+A background broadcaster per source reads its latest frame at a capped rate (`FPS_CAP`, 12) and fans
+it out to a short (`QUEUE_SIZE`, 2) per-client queue with non-blocking puts, dropping the oldest
+frame for a client that has fallen behind. The fan-out never awaits a client socket, so a stalled
+viewer can stall only its own request — structurally, not by convention. That is the exact failure
+that killed the previous system, so it is the property the tests are built around.
 
-`/still.jpg` never touches the phone, so a dashboard refreshing a thumbnail costs the phone nothing.
+A connected `/live` or `/live/stacked` viewer now also holds the phone connection open, via
+`Upstream.hold("viewer", linger_s=VIEWER_LINGER_S)` — that is what makes the connection on demand
+rather than permanent. Which makes a stalled client a new problem: it used to only stall its own
+request, but now it would also pin the phone at 300 mA for as long as it stayed connected, and
+aiohttp has no write timeout to end that. So every write is bounded by `WRITE_TIMEOUT_S` (30 s), and
+a write that times out is treated exactly like a viewer that left. 30 s rather than a shorter figure:
+at 5 s this also disconnected steady readers below roughly 1.2 Mbit/s (measured on loopback), because
+the kernel only wakes a paused writer once much of the send buffer has drained — a genuinely slow
+viewer, not a stalled one. `/live/stacked` additionally attaches/detaches `LiveStacker`'s background
+thread to the same connected lifetime.
+
+`/still.jpg` never touches the phone and takes no hold at all, so a dashboard refreshing a thumbnail
+costs the phone nothing — which is also what makes an on-demand upstream possible in the first
+place: if the thumbnail route held the phone, it would never go idle.
 
 ### `onvif.py`
 A small WS-Security SOAP client. The `/onvif/*` services need UsernameToken PasswordDigest —
@@ -129,6 +234,21 @@ throughout. Every public method blocks and is safe with the cable out. The three
 mount the developer disk image on demand — it does not survive a phone reboot — lazily, treating
 "already mounted" as success and retrying after a failure. `battery()` deliberately never mounts:
 it is a plain lockdown service, so it keeps working on a freshly rebooted phone.
+
+`prepare()` runs lockdown, Developer Mode, the developer image mount, an app launch and a battery
+read as five independent steps, each recorded even if an earlier one failed — "the developer image
+is missing" and "the app is not running" are separate facts, and whoever is reading this after a
+phone restart wants both. It never turns Developer Mode on itself: that is the one step
+`enable_developer_mode()` performs, and only when asked explicitly, because it reboots the phone.
+
+### `phone_setup.py`
+The CLI behind `./deploy.sh phone`: `python -m ios2ha_camera.phone_setup`. Runs `PhoneManager.prepare()`
+(with `--fix-developer-mode` first, if given — again, only on request, because of the reboot), then,
+unless `--no-wait`, polls `upstream.http_probe` every 5 s for up to `--timeout` (default 300 s)
+seconds, printing what changed once per kind of failure rather than once per poll, since a wait that
+can never succeed (a wrong password, the app gone) must not look identical to one still waiting for
+someone to tap Start streaming. It shares `http_probe` with `upstream.py` rather than rolling its own
+probe, so "does the app answer with a frame" is asked the same way everywhere it's asked.
 
 ### `archive.py`
 Writes the display JPEG under `YYYY/MM/DD/HHMMSS.jpg` via a temporary file and an atomic rename, so
@@ -151,7 +271,10 @@ The interval loop and the wiring. Beyond the obvious:
 - **Stale frames never become a still.** With no frame newer than 30 s it publishes an event and
   returns, rather than archiving a picture of the past as the present.
 - Frames older than the capture window are excluded, and the event carries `depth_used`,
-  `depth_requested` and `short`.
+  `depth_requested` and `short`. With an `Upstream` configured, "older than the capture window" is
+  the frame-floor rule described under `upstream.py`: a capture takes a hold, then only ever stacks
+  frames at or after `max(session_start_ts(), now - window_max_s)`, so a 60-second-old idle-probe
+  frame from before its session opened can never enter the stack.
 - **Archiving stops below a free-space floor** while the MQTT still keeps publishing.
 - Noise is measured from a high-pass residual in the darkest tenth of the finished still, with a
   median absolute deviation. Whole-image standard deviation — the obvious choice — rises with scene
@@ -161,11 +284,22 @@ The interval loop and the wiring. Beyond the obvious:
 
 ### `__main__.py`
 Reads the environment, builds everything, starts the threads, and hands the main thread to the live
-server. On SIGTERM it stops ingest, joins the loops and publishes "offline" before disconnecting.
+server. `web.run_app` returns on SIGTERM, which is how the container stops the process.
+
+**The shutdown budget.** Compose allows 20 s from SIGTERM before it SIGKILLs. `run_app` is given
+`shutdown_timeout=2.0`, but a `/live` viewer waiting for a frame can sit out that timeout *twice* —
+once while aiohttp waits for handlers to finish, once again after cancelling them — measured 4.0 s,
+not 2. Then `up.stop(timeout=5.0)`, two 3 s thread joins (capture, health) and up to 2 s for
+`mqtt.close()`: 4 + 5 + 3 + 3 + 2 = 17 s, inside the 20 s budget with headroom to spare. An upstream
+thread still alive after its 5 s is presumed stuck inside a probe's own timeout, and `stop()`
+deliberately leaves it alone rather than touching the ingestor from a second thread, which is the
+kind of two-client churn that wedges the app. Measured end to end with a viewer attached: 1.1–5.1 s
+— against 122 s before this branch, when the container's 20 s grace period was exceeded and SIGKILL
+landed before the offline availability was ever published.
 
 ## Testing
 
-157 tests, no hardware. `tests/fakes/fake_camera.py` is a real HTTP server that serves real JPEGs
+222 tests, no hardware. `tests/fakes/fake_camera.py` is a real HTTP server that serves real JPEGs
 with chunked transfer encoding and HTTP Basic, and can answer 503 or drop the connection, so the
 ingest path is exercised over real sockets rather than mocks.
 

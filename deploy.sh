@@ -10,6 +10,7 @@
 #   ./deploy.sh            sync, build, restart, verify
 #   ./deploy.sh check      compare the deployed tree against this one
 #   ./deploy.sh version    what is running right now
+#   ./deploy.sh phone      prepare the phone after it restarts (works while stopped)
 set -euo pipefail
 
 HOST="${IOS2HA_HOST:-arcturus.lan0}"
@@ -64,6 +65,25 @@ deploy)
      docker logs --since 120s $SERVICE 2>&1 | head -3"
   ;;
 
+phone)
+  # The helper's wait probes the app every 5 s. Beside a running service, which
+  # probes it and opens sessions of its own, that is a second client churning
+  # connections against an app that wedges under churn.
+  running=$(ssh -o BatchMode=yes "$HOST" "cd $STACK && docker compose ps -q --status running $SERVICE")
+  flags=""
+  if [ -n "$running" ]; then
+    echo "not waiting for frames: the running service is already probing the app, so tap Start streaming and watch stream_state in Home Assistant"
+    flags=" --no-wait"
+  fi
+  # Quoted for the remote shell, which re-splits the command line; guarded
+  # because printf with no arguments would still emit one empty argument.
+  if [ $# -gt 1 ]; then
+    flags="$flags$(printf ' %q' "${@:2}")"
+  fi
+  ssh -t -o BatchMode=yes "$HOST" \
+    "cd $STACK && docker compose run --rm --no-deps $SERVICE python -m ios2ha_camera.phone_setup$flags"
+  ;;
+
 *)
-  echo "usage: $0 [deploy|check|version]" >&2; exit 2 ;;
+  echo "usage: $0 [deploy|check|version|phone]" >&2; exit 2 ;;
 esac

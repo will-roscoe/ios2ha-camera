@@ -60,7 +60,9 @@ def test_every_sensor_says_what_its_reading_means():
     # carry no unit by design; everything else that is a quantity needs one.
     # last_frame is a timestamp: no unit, and a timestamp sensor must not carry
     # a state_class either.
-    not_a_measurement = {"stream_state", "last_frame"}
+    # holders is a list of who is holding the connection open (or "none"), not
+    # a quantity, so it carries neither a unit nor a state_class either.
+    not_a_measurement = {"stream_state", "last_frame", "holders"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
                           "focus_sharpness", "motion"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}
@@ -87,7 +89,7 @@ def test_the_readings_with_a_real_physical_type_declare_it():
     assert "state_class" not in sensors["last_frame"], "a timestamp cannot be a measurement"
     assert "last_frame_age" not in sensors, "replaced by the timestamp"
     assert sensors["stream_state"]["device_class"] == "enum"
-    assert set(sensors["stream_state"]["options"]) == {"streaming", "streaming_off", "unreachable"}
+    assert set(sensors["stream_state"]["options"]) == {"streaming", "idle", "streaming_off", "unreachable"}
     binaries = {t.split("/")[3]: cfg for t, cfg in payloads.items()
                 if t.startswith("homeassistant/binary_sensor/")}
     assert binaries["camera_online"]["device_class"] == "connectivity"
@@ -224,3 +226,20 @@ def test_charging_binary_sensor_present():
         [t for t in payloads if t.endswith("/binary_sensor/ios2ha/charging/config")][0]
     ]
     assert cfg["payload_on"] == "true" and cfg["payload_off"] == "false"
+
+
+def test_the_new_entities_are_discovered_with_pinned_ids():
+    ids = {cfg["default_entity_id"] for _, cfg in discovery_payloads(Settings())}
+    assert {"switch.ios2ha_camera_on_demand",
+            "number.ios2ha_camera_live_max_window_s",
+            "button.ios2ha_camera_prepare_phone",
+            "sensor.ios2ha_camera_holders",
+            "sensor.ios2ha_camera_live_fps",
+            "sensor.ios2ha_camera_duty_1h",
+            "sensor.ios2ha_camera_tick_age"} <= ids
+
+
+def test_stream_state_can_report_idle():
+    cfg = next(c for _, c in discovery_payloads(Settings())
+               if c["default_entity_id"] == "sensor.ios2ha_camera_stream_state")
+    assert "idle" in cfg["options"]

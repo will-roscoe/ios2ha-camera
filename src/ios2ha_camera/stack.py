@@ -114,7 +114,7 @@ def stack_frames(frames):
     return _sigma_clipped_mean_core(lambda: _decode_bounded(frames, workers), 2.5, 2)
 
 
-def choose_depth(subject, settings, fps, previous_depth):
+def choose_depth(subject, settings, fps, previous_depth, *, hard_cap=None):
     """Pick the stack depth for the next capture interval.
 
     `subject` is the measured subject luminance driving the depth law. Depth
@@ -125,6 +125,10 @@ def choose_depth(subject, settings, fps, previous_depth):
     `previous_depth` is None on the first interval -- there is nothing to
     ramp from yet, so the target is returned directly rather than needing an
     arbitrary seed value to smooth from.
+
+    `hard_cap` replaces the settings-derived cap for callers whose depth means
+    something different from a still's -- the live feed caps smear in seconds,
+    not in frames, and must not inherit the stills' 600-frame night depth.
     """
     if settings.stacking_mode == "off" or not settings.stacking_allowed:
         return 1
@@ -132,7 +136,9 @@ def choose_depth(subject, settings, fps, previous_depth):
         target_depth = int(settings.fixed_depth)
     else:
         target_depth = required_depth(subject, settings.target_level, settings.clean_factor)
-    hard_cap = min(int(settings.max_depth), int(fps * settings.window_max_s))
+    if hard_cap is None:
+        hard_cap = min(int(settings.max_depth), int(fps * settings.window_max_s))
+    hard_cap = max(1, int(hard_cap))
     target_depth = max(1, min(target_depth, hard_cap))
     if previous_depth is None or settings.interval_s <= 0:
         return target_depth

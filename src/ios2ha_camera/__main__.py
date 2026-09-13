@@ -9,12 +9,14 @@ from aiohttp import web
 from .archive import Archive
 from .ingest import Ingestor
 from .live import make_live_app
+from .live_stack import LiveStacker
 from .mqtt_io import MqttIO
 from .onvif import OnvifClient
 from .phone import PhoneManager
 from .ring_buffer import RingBuffer
 from .settings import Settings
 from .supervisor import Supervisor
+from .upstream import Upstream
 from . import version
 
 log = logging.getLogger(__name__)
@@ -39,9 +41,12 @@ def main():
     mqtt = MqttIO(s,
                   on_control=lambda n, v: sup.handle_control(n, v),
                   on_connected=lambda: sup.publish_controls())
-    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone)
-    ing = Ingestor(s.phone_host, s.phone_port, s.phone_user, s.phone_password, buf,
-                   on_state=sup.on_stream_state)
+    ing = Ingestor(s.phone_host, s.phone_port, s.phone_user, s.phone_password, buf)
+    up = Upstream(ing, buf, s, on_state=lambda st: sup.on_stream_state(st))
+    ing.on_state = up.on_ingest_state
+    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
+    stacker = LiveStacker(buf, s)
+    sup.live_fps = stacker.fps
 
     stop = threading.Event()
     threads = [
@@ -51,7 +56,6 @@ def main():
 
     mqtt.connect()      # asynchronous: a broker that is down does not stop capture
     mqtt.loop_start()
-    ing.start()
     for t in threads:
         t.start()
     # Version first, and on its own line: "what is actually running" is the
@@ -59,20 +63,36 @@ def main():
     log.info("ios2ha-camera %s, built %s", version.full(), version.BUILT)
     log.info("supervisor up: phone %s:%s, live view on :%s, interval %ss, archive %s",
              s.phone_host, s.phone_port, s.live_port, s.interval_s, s.archive_dir)
+    # Started last, after the log lines above: its first tick can fire a probe
+    # immediately, which must not race ahead of them in the log.
+    up.start()
 
     # The event loop belongs to the live view alone. run_app returns on SIGTERM,
     # which is how the container stops us.
     try:
-        web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg),
-                    host="0.0.0.0", port=s.live_port, print=None)
+        web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg,
+                                  upstream=up, stacker=stacker),
+                    host="0.0.0.0", port=s.live_port, print=None,
+                    # A /live viewer never finishes by itself, and at aiohttp's
+                    # default of 60 s the container is killed before the block
+                    # below ever runs.
+                    shutdown_timeout=2.0)
     finally:
         log.info("shutting down")
         stop.set()
         sup.capture_requested.set()   # wake the capture loop out of its wait
-        ing.stop()
+        # Compose allows 20 s from SIGTERM. The event loop's shutdown above has
+        # already spent up to 4 s of it, not 2: aiohttp waits shutdown_timeout
+        # once for handlers to finish and again after cancelling them, and a
+        # /live viewer waiting for a frame sits out both (measured 4.0 s). Then
+        # 5 s for up.stop(), two 3 s thread joins and up to 2 s for mqtt.close()
+        # -- 17 s in all. An upstream thread still alive after its 5 s is stuck
+        # in a probe, which stop() deliberately leaves alone rather than
+        # touching the ingestor from a second thread.
+        up.stop(timeout=5.0)
         sup.close()
         for t in threads:
-            t.join(timeout=5)
+            t.join(timeout=3)
         mqtt.close()                  # publishes offline; a clean disconnect has no last will
 
 

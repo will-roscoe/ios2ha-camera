@@ -66,6 +66,7 @@ All are `entity_category: config`, so Home Assistant files them under Configurat
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | auto |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | auto |
 | `number.ios2ha_camera_black_level_2` | Black level override B | 0–32 step 0.1 | | auto |
+| `number.ios2ha_camera_live_max_window_s` | Stacked feed window | 0.5–15 step 0.5 | s | `3.0` |
 
 What the less obvious ones do:
 
@@ -80,6 +81,9 @@ What the less obvious ones do:
   0.24/0.46/0.21). Blank is not zero; setting one to 0 pins it to zero.
 - **Denoise strength** is conservative on purpose: at higher strengths it sharpens text but paints
   flat areas into mottling.
+- **Stacked feed window** caps how many seconds of frames `/live/stacked` may blend into its running
+  average — a smear budget, not a frame count, so it means the same thing whatever the phone's frame
+  rate happens to be. It follows the same brightness law as the stills, just capped lower.
 
 ### Selects and switches
 
@@ -90,6 +94,7 @@ What the less obvious ones do:
 | `select.ios2ha_camera_render_intent` | `natural`, `inspection` | `natural` |
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | **Leave this on** | on |
+| `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
 
 `grey-world` is offered but not recommended: a frame dominated by one colour pushes it into a false
 cast. `brightest-patch` is the closest alternative to as-shot for object colour.
@@ -101,6 +106,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
+| `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |
 
 ## Sensors
 
@@ -136,10 +142,14 @@ illuminance would need exposure and gain metadata the app does not provide.
 
 | Entity | Unit | Meaning |
 |---|---|---|
-| `binary_sensor.ios2ha_camera_camera_online` | | Streaming **and** a frame within 30 s |
-| `sensor.ios2ha_camera_stream_state` | | `streaming`, `streaming_off` (app answered 503), `unreachable` |
+| `binary_sensor.ios2ha_camera_camera_online` | | Streaming with a frame within 30 s, **or** idle with a frame within 150 s; forced off whenever the upstream thread's own heartbeat is more than 180 s stale, regardless of state |
+| `sensor.ios2ha_camera_stream_state` | | `streaming`, `idle` (on demand, connected to nobody, still answering the health probe), `streaming_off` (app answered 503), `unreachable` |
 | `sensor.ios2ha_camera_last_frame` | | Timestamp, rendered as a live relative age |
 | `sensor.ios2ha_camera_frame_rate` | fps | Measured from arrival times; 11–14.5 in practice |
+| `sensor.ios2ha_camera_holders` | | Why the phone is connected right now: `capture`, `viewer`, `viewer (linger)` while a viewer's 30 s grace period runs down, `on_demand_off` when the switch above is off, or `none` |
+| `sensor.ios2ha_camera_live_fps` | fps | Output rate of `/live/stacked`, not the phone's own frame rate |
+| `sensor.ios2ha_camera_duty_1h` | % | Share of the last hour the phone connection was actually open |
+| `sensor.ios2ha_camera_tick_age` | s | Time since the upstream thread's own loop last ran; stuck here means the thread is wedged, not just the phone |
 | `sensor.ios2ha_camera_battery` | % | |
 | `sensor.ios2ha_camera_battery_current_ma` | mA | **Signed.** Negative means the load exceeds the supply — the one figure `charging` cannot give you |
 | `sensor.ios2ha_camera_charger_watts` | W | What the port advertises |
@@ -147,6 +157,29 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `sensor.ios2ha_camera_battery_temperature` | °C | |
 | `binary_sensor.ios2ha_camera_charging` | | Connected, which is not the same as gaining charge |
 | `sensor.ios2ha_camera_archive_free_gb` | GB | Archiving stops below 2 GB |
+
+## Internal constants
+
+Values that shape the on-demand connection and the live feed but are not exposed as controls,
+because each is either derived from another constant, a measured device limit, or a policy decision
+that only makes sense read alongside the code and comments that justify it — not a dial a dashboard
+user has a reason to turn blind.
+
+| Constant | Module | Value | Why it isn't a dashboard control |
+|---|---|---|---|
+| `PROBE_INTERVAL_S` | `upstream.py` | `60.0` s | How often the idle probe runs. `ONLINE_IDLE_S` and the backoff ladder are both derived from it, so changing it alone would desynchronise them from what they assume |
+| `PROBE_BACKOFF_MAX_S` | `upstream.py` | `300.0` s | Ceiling on the probe backoff after repeated failures (60, 120, 240, then capped here). Trades "how often to knock on a wedged app" against "how fast a recovery is noticed" — a call best made reading the code, not turning a dial |
+| `ONLINE_IDLE_S` | `upstream.py` | `150.0` s | How old the newest frame may be before `idle` gives up and falls back to `unreachable`. Sized off `PROBE_INTERVAL_S` and the probe's own read timeout, so it isn't independent of them |
+| `CAPTURE_OPEN_TIMEOUT_S` | `upstream.py` | `20.0` s | How long a capture's first wait for frames may take after taking its hold, before it gives up with "no frames". Sized with headroom over the measured ~113 ms first-frame latency, not something to tune per capture |
+| `TICK_STALE_S` | `upstream.py` | `180.0` s | How stale the upstream thread's own heartbeat may get before `camera_online` is forced false regardless of state. A safety net for a dead thread, not a normal operating parameter |
+| `VIEWER_LINGER_S` | `live.py` | `30.0` s | How long the phone stays connected after the last `/live` or `/live/stacked` viewer leaves, so a quick reconnect doesn't retrigger a probe. A connection-lifecycle policy, not a per-viewer preference |
+| `WRITE_TIMEOUT_S` | `live.py` | `30.0` s | How long a stalled write may run before a viewer is treated as gone. Chosen from measurement — 5 s wrongly dropped real viewers under about 1.2 Mbit/s — so it is already tuned to the actual failure mode, not a knob a viewer session should override |
+| `FPS_CAP` | `live.py` | `12` | Rate limit on the broadcast loop. Above the phone's own ~13.9 fps it would only add CPU, never real frames |
+| `QUEUE_SIZE` | `live.py` | `2` | Depth of each viewer's frame queue. Short on purpose — a client behind by more than this is meant to be dropped, not buffered |
+| `SCALE` | `live_stack.py` | `2` | `/live/stacked`'s downscale factor (1920×1080 → 960×540), applied via the JPEG decoder's own DCT scaling. Full resolution measured 4 fps and was never offered |
+| `REFRESH_S` | `live_stack.py` | `2.0` s | How often tone parameters and depth are re-estimated from a pixel subsample. A CPU-versus-staleness trade-off already tuned to the cost of estimation, not a viewing preference |
+| `GAP_RESET_S` | `live_stack.py` | `2.0` s | A gap this long between frames resets the running average instead of blending across it — reflects the streaming cadence, not a stylistic choice |
+| `JPEG_QUALITY` | `live_stack.py` | `85` | Output quality for `/live/stacked`, lower than the stills' default of 92 because it runs at video rate, not once every ten minutes |
 
 ## Topics
 

@@ -42,7 +42,7 @@ def _e(prefix, comp, obj, cfg):
 # so they deliberately carry no unit; see the design's section 4.3.
 _SENSORS = [
     dict(obj="stream_state", name="Stream state", device_class="enum",
-         options=["streaming", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
+         options=["streaming", "idle", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
     dict(obj="subject_level", name="Subject level", state_class="measurement", precision=1,
          icon="mdi:brightness-4"),
     dict(obj="depth_used", name="Depth used", unit="frames", state_class="measurement",
@@ -121,6 +121,16 @@ _SENSORS += [
          state_class="measurement", precision=2, category="diagnostic", icon="mdi:circle-opacity")
     for c in "rgb"
 ]
+_SENSORS += [
+    dict(obj="holders", name="Connection holders", category="diagnostic",
+         icon="mdi:account-clock"),
+    dict(obj="live_fps", name="Stacked feed rate", unit="fps", state_class="measurement",
+         precision=1, category="diagnostic", icon="mdi:filmstrip"),
+    dict(obj="duty_1h", name="Connected in the last hour", unit="%", state_class="measurement",
+         precision=1, category="diagnostic", icon="mdi:percent-outline"),
+    dict(obj="tick_age", name="Upstream tick age", unit="s", device_class="duration",
+         state_class="measurement", precision=1, category="diagnostic", icon="mdi:heart-pulse"),
+]
 
 # Tuning knobs. All configuration rather than measurement, and each carries its
 # unit so a person reading "600" knows it is seconds, plus a device class where
@@ -153,6 +163,8 @@ _NUMBERS = [
          icon="mdi:circle-opacity"),
     dict(obj="black_level_2", name="Black level override B", lo=0, hi=32, step=0.1,
          icon="mdi:circle-opacity"),
+    dict(obj="live_max_window_s", name="Stacked feed window", lo=0.5, hi=15, step=0.5, unit="s",
+         device_class="duration", icon="mdi:motion-outline"),
 ]
 
 
@@ -205,7 +217,8 @@ def discovery_payloads(s):
                      "command_topic": cmd(name), "options": opts,
                      "entity_category": "config"}))
     for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
-                              ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong")):
+                              ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong"),
+                              ("on_demand", "On demand", "mdi:power-plug-off-outline")):
         out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
                      "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
                      "entity_category": "config", "icon": icon}))
@@ -216,6 +229,8 @@ def discovery_payloads(s):
         dict(obj="screenshot", name="Phone screenshot", icon="mdi:cellphone-screenshot",
              category="diagnostic"),
         dict(obj="relaunch_app", name="Relaunch camera app", device_class="restart",
+             category="config"),
+        dict(obj="prepare_phone", name="Prepare phone", icon="mdi:cellphone-cog",
              category="config"),
     ]
     for spec in buttons:

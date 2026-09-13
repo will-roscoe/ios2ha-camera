@@ -18,6 +18,37 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 1.1.0 — 2026-09-13
+
+The phone connection is now on demand rather than held open for the life of the process. Streaming
+continuously cost about 300 mA and flattened the phone in around six hours on this installation's 3 W
+port; the connection is now something a capture or a live viewer takes and gives back, and while
+nothing needs it the phone is probed every 60 seconds instead — about 2–3 mA a minute. A capture
+releases the connection before it stacks and renders, so the 10–20 seconds of CPU that takes no
+longer keeps the phone connected for nothing. A dedicated thread makes every connect and disconnect
+decision, so nothing can race the connection the way two clients used to be able to.
+
+A new `/live/stacked` route serves the stills' low-light tone curve as a live feed at 960×540, built
+from a running average that only runs while someone is actually watching it.
+
+Shutdown is now bounded well inside the container's grace period even with a viewer attached —
+measured 1.1–5.1 s, against 122 s before, when the grace period could be exceeded and the offline
+state never got published.
+
+`./deploy.sh phone` brings the phone back after a restart: checks lockdown and Developer Mode,
+mounts the developer disk image, relaunches the app, and waits for someone to tap Start streaming,
+confirming frames actually arrive. `--fix-developer-mode` turns Developer Mode on by hand when
+needed — it reboots the phone, so nothing does that automatically.
+
+**Home Assistant surface:** 7 entities added, none removed or renamed — `switch.ios2ha_camera_on_demand`
+(off restores the previous always-connected behaviour), `number.ios2ha_camera_live_max_window_s`,
+`button.ios2ha_camera_prepare_phone`, and diagnostics `sensor.ios2ha_camera_holders`,
+`sensor.ios2ha_camera_live_fps`, `sensor.ios2ha_camera_duty_1h` and `sensor.ios2ha_camera_tick_age`.
+`sensor.ios2ha_camera_stream_state` gains a new option, `idle`, for a phone that is connected on
+demand but not currently streaming to anyone.
+
+222 tests, no hardware required.
+
 ## 1.0.0 — 2026-09-12
 
 First deployed version. Replaces an arrangement in which Home Assistant pulled MJPEG directly from

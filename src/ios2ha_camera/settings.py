@@ -10,7 +10,7 @@ CONTROLS = {
     "target_level", "subject_percentile", "clean_factor", "max_depth",
     "window_max_s", "ramp_tau_s", "black_level_override", "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
-    "denoise_strength", "autofocus",
+    "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
 }
 
 # Discovery publishes one number entity per channel, so the per-channel names
@@ -75,6 +75,8 @@ class Settings:
     chroma_radius: float = 3.0
     denoise_strength: float = 3.0
     autofocus: bool = True
+    on_demand: bool = True               # False keeps the connection open continuously
+    live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
 
     @classmethod
     def from_env(cls, env):

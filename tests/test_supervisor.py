@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from ios2ha_camera import stack
 from ios2ha_camera.mqtt_io import discovery_payloads
 from ios2ha_camera.phone import PhoneUnavailable
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
@@ -159,6 +160,14 @@ def test_every_discovery_sensor_gets_a_value():
     sup.publish_state(sup.health_state())
     sup.publish_state(sup.phone_state())
     sup.publish_controls()
+
+    # holders, live_fps, duty_1h and tick_age are only populated with an
+    # upstream and a live stacker wired in, as __main__ does; a second
+    # supervisor sharing the same mqtt fake stands in for that wiring so this
+    # test still covers every declared sensor.
+    up_sup = _sup(s, buf, mq, upstream=FakeUpstream(state="streaming"))
+    up_sup.live_fps = lambda: 12.3
+    up_sup.publish_state(up_sup.health_state())
 
     declared = set()
     for topic, _cfg in discovery_payloads(s):
@@ -533,3 +542,256 @@ def test_capture_loop_honours_a_manual_request_without_waiting_for_the_interval(
     t.join(timeout=5)
     assert mq.stills, "a manual capture waited for the 3600 s interval"
     assert not t.is_alive()
+
+
+class FakeUpstream:
+    def __init__(self, state="idle", online=True):
+        self._state, self._online = state, online
+        self.held = []
+        self.session_start = None
+
+    def state(self, now=None):
+        return self._state
+
+    def camera_online(self, now=None):
+        return self._online
+
+    def holders(self):
+        return ("viewer",) if self._state == "streaming" else ()
+
+    def duty_1h(self, now=None):
+        return 12.5
+
+    def tick_age(self, now=None):
+        return 0.4
+
+    def session_start_ts(self):
+        return self.session_start
+
+
+def test_health_reports_idle_as_online_and_omits_frame_rate():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 3, now=time.time())
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="idle"))
+    d = sup.health_state()
+    assert d["stream_state"] == "idle"
+    assert d["camera_online"] is True
+    assert "frame_rate" not in d
+    assert d["duty_1h"] == 12.5
+    assert d["holders"] == "none"
+
+
+def test_health_reports_frame_rate_while_streaming():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 30, now=time.time())
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="streaming"))
+    d = sup.health_state()
+    assert d["frame_rate"] > 0
+    assert d["holders"] == "viewer"
+
+
+def test_estimate_fps_ignores_frames_from_before_the_session():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 5, now=time.time() - 600, step=60)     # probe frames, a minute apart
+    _fill(buf, 10, now=time.time(), step=1 / 13)
+    assert estimate_fps(buf, since=time.time() - 5) > 10
+
+
+class RecordingUpstream(FakeUpstream):
+    """Records the order of hold release against stacking."""
+    def __init__(self, buf, **kw):
+        super().__init__(**kw)
+        self.buf, self.events = buf, []
+        self.session_start = time.time()
+
+    def hold(self, reason, linger_s=0.0):
+        outer = self
+
+        class _H:
+            def __enter__(self_inner):
+                outer.events.append(f"hold:{reason}")
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                outer.events.append(f"release:{reason}")
+                return False
+        return _H()
+
+    def session_start_ts(self):
+        return self.session_start
+
+    def wait_for_frames(self, n, since_ts, timeout, poll=0.1):
+        return sum(1 for f in self.buf.recent(n) if f.ts >= since_ts)
+
+
+def test_capture_releases_the_hold_before_it_stacks(monkeypatch):
+    buf = RingBuffer(1 << 24)
+    up = RecordingUpstream(buf, state="streaming")
+    _fill(buf, 20, now=time.time())
+    sup = _sup(buf=buf, upstream=up)
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (up.events.append("stack"), real(frames))[1])
+    sup.produce_still(now_fps=12.0)
+    assert up.events == ["hold:capture", "release:capture", "stack"]
+
+
+def test_capture_releases_the_hold_when_stacking_setup_raises(monkeypatch):
+    buf = RingBuffer(1 << 24)
+    up = RecordingUpstream(buf, state="streaming")
+    _fill(buf, 20, now=time.time())
+    sup = _sup(buf=buf, upstream=up)
+    monkeypatch.setattr(stack, "decode", lambda f: (_ for _ in ()).throw(ValueError("truncated")))
+    ev = sup.produce_still(now_fps=12.0)
+    assert "error" in ev
+    assert up.events[-1] == "release:capture"
+
+
+def test_capture_excludes_a_fresh_frame_from_before_its_session(monkeypatch):
+    s = Settings()
+    s.stacking_mode = "fixed"
+    # Bigger than the buffer's 21 frames, so recent() alone -- with no floor
+    # filtering at all -- would already return the stale frame; only the
+    # session-start component of floor can be responsible for excluding it.
+    s.fixed_depth = 25
+    buf = RingBuffer(1 << 24)
+    now = time.time()
+    _fill(buf, 1, now=now - 20)          # stale, but inside fresh_s=30 and window_max_s=60
+    up = RecordingUpstream(buf, state="streaming")
+    up.session_start = now - 1
+    _fill(buf, 20, now=now)
+    sup = _sup(s, buf=buf, upstream=up)
+    received = []
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (received.extend(frames), real(frames))[1])
+    sup.produce_still(now_fps=12.0, now=now)
+    assert received
+    assert all(f.ts >= up.session_start for f in received)
+
+
+def test_capture_with_no_frames_publishes_the_reason():
+    buf = RingBuffer(1 << 20)
+    up = RecordingUpstream(buf, state="streaming_off")
+    up.session_start = time.time()
+    sup = _sup(buf=buf, upstream=up)
+    ev = sup.produce_still(now_fps=12.0)
+    assert ev["error"] == "no frames: streaming_off"
+
+
+def _jpegs(n, val=30):
+    out = []
+    for i in range(n):
+        rng = np.random.default_rng(i)
+        a = np.clip(val + rng.normal(0, 12, (32, 32, 3)), 0, 255).astype("uint8")
+        b = io.BytesIO()
+        Image.fromarray(a).save(b, "JPEG", quality=92)
+        out.append(b.getvalue())
+    return out
+
+
+class StreamingIngestor:
+    """Appends frames at the phone's rate from start() until stop(), stamped on
+    arrival as the real Ingestor stamps them."""
+
+    def __init__(self, buf, fps=13.9):
+        self.buf, self.period, self.jpegs = buf, 1.0 / fps, _jpegs(8)
+        self._stop, self._thread = threading.Event(), None
+
+    def start(self):
+        stop = self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(stop,), daemon=True)
+        self._thread.start()
+
+    def _run(self, stop):
+        i = 0
+        while not stop.wait(self.period):
+            self.buf.append(Frame(self.jpegs[i % len(self.jpegs)], time.time()))
+            i += 1
+
+    def stop(self, timeout=None):
+        self._stop.set()
+        if self._thread is None:
+            return True
+        self._thread.join(2.0 if timeout is None else timeout)
+        return not self._thread.is_alive()
+
+
+def test_a_capture_that_opens_the_session_measures_only_that_sessions_frames(monkeypatch):
+    """Taking the hold only wakes the upstream thread, and the session opens on
+    its next tick, so the capture reads session_start_ts() before there is one.
+    Falling back to the whole window then counts a 25 s old probe frame, which
+    turns 13.9 fps into under 1 and stacks the stale frame with the fresh ones."""
+    from ios2ha_camera.upstream import Upstream
+
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 20
+    buf = RingBuffer(1 << 24)
+    stale_ts = time.time() - 25
+    buf.append(Frame(_jpegs(1)[0], stale_ts))
+    ing = StreamingIngestor(buf)
+    up = Upstream(ing, buf, s, probe=lambda: None)
+    mq = FakeMqtt()
+    sup = _sup(s, buf, mq, upstream=up)
+    stacked = []
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (stacked.extend(frames), real(frames))[1])
+    events = []
+    worker = threading.Thread(target=lambda: events.append(sup.produce_still()), daemon=True)
+    up.start()
+    try:
+        worker.start()
+        worker.join(timeout=20)
+        assert not worker.is_alive(), "the capture did not finish"
+        assert "error" not in events[0], events[0]
+        assert mq.published["frame_rate"] > 10
+        assert stacked and stale_ts not in [f.ts for f in stacked]
+    finally:
+        up.stop(timeout=5.0)
+        ing.stop()
+
+
+def test_a_capture_during_an_open_session_uses_frames_already_buffered(monkeypatch):
+    """A viewer already holds the session, so frames buffered since it opened
+    are current and the capture must use them rather than wait for newer ones."""
+    from ios2ha_camera import supervisor
+    from ios2ha_camera.upstream import Upstream
+
+    class SilentIngestor:
+        def start(self):
+            pass
+
+        def stop(self, timeout=None):
+            return True
+
+    monkeypatch.setattr(supervisor, "CAPTURE_OPEN_TIMEOUT_S", 2.0)
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 20
+    buf = RingBuffer(1 << 24)
+    now = time.time()
+    up = Upstream(SilentIngestor(), buf, s, probe=lambda: None)
+    waits = []
+    real_wait = up.wait_for_frames
+
+    def timed_wait(*a, **k):
+        t = time.monotonic()
+        try:
+            return real_wait(*a, **k)
+        finally:
+            waits.append(time.monotonic() - t)
+
+    up.wait_for_frames = timed_wait
+    sup = _sup(s, buf, FakeMqtt(), upstream=up)
+    viewer = up.hold("viewer")
+    try:
+        up.tick(now=now - 5)
+        _fill(buf, 24, now=now - 0.1, step=1 / 13.9)
+        ev = sup.produce_still(now=now)
+    finally:
+        viewer.release()
+    assert "error" not in ev, ev
+    assert ev["depth_used"] == 20
+    assert waits and max(waits) < 0.5, waits

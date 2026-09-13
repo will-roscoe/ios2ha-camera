@@ -1,4 +1,5 @@
 import asyncio
+import time
 from aiohttp.test_utils import TestServer, TestClient
 from ios2ha_camera.ring_buffer import RingBuffer, Frame
 from ios2ha_camera.live import CLIENTS, make_live_app, QUEUE_SIZE
@@ -113,4 +114,143 @@ def test_still_route_says_so_when_there_is_nothing_at_all():
         app = make_live_app(RingBuffer(1000), latest_still=lambda: None)
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/still.jpg")).status == 503
+    asyncio.run(run())
+
+
+class FakeUpstream:
+    """Stands in for Upstream: records hold()/release() without touching the
+    phone, so these tests can check a viewer's hold lifecycle in isolation.
+
+    hold() itself records the acquisition, matching Upstream.hold(), which
+    mutates its internal counts at call time rather than at __enter__ -- so
+    something that raises between hold() returning and the with block being
+    entered shows up here as a "hold" with no matching "release", not as
+    nothing at all.
+    """
+
+    def __init__(self):
+        self.events = []
+
+    def hold(self, reason, linger_s=0.0):
+        self.events.append("hold")
+        outer = self
+
+        class _H:
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *exc):
+                outer.events.append("release")
+                return False
+        return _H()
+
+
+def test_a_viewer_holds_the_connection_and_releases_on_disconnect():
+    async def run():
+        buf = RingBuffer(1 << 20)
+        buf.append(Frame(b"\xff\xd8jpeg", time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get("/live")
+            await resp.content.read(64)
+            resp.close()
+            # Bounded wait for the handler's finally to run, not a fixed
+            # sleep: the disconnect is only observed asynchronously from here.
+            await asyncio.wait_for(_wait_until(lambda: "release" in up.events), timeout=2.0)
+            assert up.events[0] == "hold"
+    asyncio.run(run())
+
+
+def test_still_jpg_never_holds_the_connection():
+    async def run():
+        buf = RingBuffer(1 << 20)
+        buf.append(Frame(b"\xff\xd8jpeg", time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get("/still.jpg")
+            assert resp.status == 200
+            assert up.events == []
+    asyncio.run(run())
+
+
+def test_the_stacked_route_serves_the_stackers_frames():
+    async def run():
+        buf = RingBuffer(1 << 20)
+
+        class FakeStacker:
+            def __init__(self):
+                self.attached = 0
+
+            def attach(self):
+                self.attached += 1
+
+            def detach(self):
+                self.attached -= 1
+
+            def latest(self):
+                return Frame(b"\xff\xd8stacked", time.time())
+
+        st = FakeStacker()
+        app = make_live_app(buf, upstream=FakeUpstream(), stacker=st)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/live/stacked")
+            chunk = await resp.content.read(256)
+            assert b"stacked" in chunk
+            assert st.attached == 1
+            resp.close()
+    asyncio.run(run())
+
+
+def test_a_stacker_that_fails_to_attach_still_releases_the_hold():
+    """Upstream.hold() takes effect at call time, before the with block is
+    even entered -- so if attach() raises before the hold is ever released,
+    there is no linger timeout to fall back on: release() was never reached
+    at all, and the phone connection leaks forever. attach() must run inside
+    the hold's with block, not before it, so a raise from it still unwinds
+    through __exit__ and releases the hold; detach() must then also not run,
+    since there was no successful attach() for it to undo."""
+    async def run():
+        buf = RingBuffer(1 << 20)
+
+        class FailingStacker:
+            def attach(self):
+                raise RuntimeError("boom")
+
+            def detach(self):
+                raise AssertionError("detach() must not run without a matching attach()")
+
+            def latest(self):
+                return None
+
+        up = FakeUpstream()
+        app = make_live_app(buf, upstream=up, stacker=FailingStacker())
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/live/stacked")
+            assert resp.status == 500
+            assert up.events == ["hold", "release"]
+    asyncio.run(run())
+
+
+def test_a_viewer_that_stops_reading_releases_the_hold(monkeypatch):
+    """A client that stays connected but never reads blocks the handler's write
+    for good, since aiohttp has no write timeout, and while it waits there the
+    viewer's hold keeps the phone connected at about 300 mA."""
+    from ios2ha_camera import live
+    monkeypatch.setattr(live, "WRITE_TIMEOUT_S", 0.3, raising=False)
+
+    async def run():
+        buf = RingBuffer(100_000_000)
+        big = b"\xff\xd8" + b"\x00" * 8_000_000 + b"\xff\xd9"   # well past the socket buffers
+        buf.append(Frame(big, time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get("/live")          # headers only; the body is never read
+            try:
+                deadline = time.monotonic() + 5.0
+                while "release" not in up.events and time.monotonic() < deadline:
+                    buf.append(Frame(big, time.time()))
+                    await asyncio.sleep(0.05)
+                assert "release" in up.events, "a viewer that stopped reading still holds the phone"
+            finally:
+                resp.close()
     asyncio.run(run())
