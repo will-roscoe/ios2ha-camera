@@ -1,0 +1,2 @@
+```{include} ../../OPERATIONS.md
+```
