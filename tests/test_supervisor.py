@@ -533,3 +533,56 @@ def test_capture_loop_honours_a_manual_request_without_waiting_for_the_interval(
     t.join(timeout=5)
     assert mq.stills, "a manual capture waited for the 3600 s interval"
     assert not t.is_alive()
+
+
+class FakeUpstream:
+    def __init__(self, state="idle", online=True):
+        self._state, self._online = state, online
+        self.held = []
+        self.session_start = None
+
+    def state(self, now=None):
+        return self._state
+
+    def camera_online(self, now=None):
+        return self._online
+
+    def holders(self):
+        return ("viewer",) if self._state == "streaming" else ()
+
+    def duty_1h(self, now=None):
+        return 12.5
+
+    def tick_age(self, now=None):
+        return 0.4
+
+    def session_start_ts(self):
+        return self.session_start
+
+
+def test_health_reports_idle_as_online_and_omits_frame_rate():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 3, now=time.time())
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="idle"))
+    d = sup.health_state()
+    assert d["stream_state"] == "idle"
+    assert d["camera_online"] is True
+    assert "frame_rate" not in d
+    assert d["duty_1h"] == 12.5
+    assert d["holders"] == "none"
+
+
+def test_health_reports_frame_rate_while_streaming():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 30, now=time.time())
+    sup = _sup(buf=buf, upstream=FakeUpstream(state="streaming"))
+    d = sup.health_state()
+    assert d["frame_rate"] > 0
+    assert d["holders"] == "viewer"
+
+
+def test_estimate_fps_ignores_frames_from_before_the_session():
+    buf = RingBuffer(1 << 20)
+    _fill(buf, 5, now=time.time() - 600, step=60)     # probe frames, a minute apart
+    _fill(buf, 10, now=time.time(), step=1 / 13)
+    assert estimate_fps(buf, since=time.time() - 5) > 10

@@ -31,9 +31,14 @@ from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
 log = logging.getLogger(__name__)
 
 
-def estimate_fps(buffer, n=30, default=12.0):
-    """Frame rate from the arrival times of the newest n frames."""
-    recent = buffer.recent(n)
+def estimate_fps(buffer, n=30, default=12.0, since=None):
+    """Frame rate from the arrival times of the newest n frames.
+
+    `since` excludes frames from before the current session: with on-demand the
+    buffer also holds probe frames a minute apart, and averaging across them
+    would report 0.02 fps for a stream running at 13.9.
+    """
+    recent = [f for f in buffer.recent(n) if since is None or f.ts >= since]
     if len(recent) < 2:
         return default
     span = recent[-1].ts - recent[0].ts
@@ -62,13 +67,15 @@ def _dark_noise(rgb):
 
 class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
-                 probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30, device_executor=None):
+                 upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
+                 device_executor=None):
         self.s = settings
         self.buffer = buffer
         self.mqtt = mqtt
         self.archive = archive
         self.onvif = onvif
         self.phone = phone
+        self.upstream = upstream
         self.probe_n = probe_n
         self.fresh_s = fresh_s
         self.min_free_bytes = min_free_bytes
@@ -338,19 +345,32 @@ class Supervisor:
     def health_state(self, now=None):
         now = time.time() if now is None else now
         newest = self.buffer.newest_ts()
-        age = None if newest is None else now - newest
+        state = self.upstream.state(now) if self.upstream else self.stream_state
         d = {
             # A timestamp rather than an age: Home Assistant turns this into a
             # relative time that keeps counting between health ticks, where a
             # published age is stale the moment it lands.
             "last_frame": (None if newest is None else
                            datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()),
-            "camera_online": (self.stream_state == "streaming"
-                              and age is not None and age < self.fresh_s),
-            "frame_rate": round(estimate_fps(self.buffer), 1),
+            "camera_online": (self.upstream.camera_online(now) if self.upstream else
+                              (self.stream_state == "streaming"
+                               and newest is not None and now - newest < self.fresh_s)),
         }
-        if self.stream_state is not None:
-            d["stream_state"] = self.stream_state
+        if state is not None:
+            d["stream_state"] = state
+        if self.upstream is not None:
+            d["holders"] = ", ".join(self.upstream.holders()) or "none"
+            d["duty_1h"] = self.upstream.duty_1h(now)
+            d["tick_age"] = round(self.upstream.tick_age(now), 1)
+        # With an upstream, only while streaming: probe frames a minute apart
+        # would publish 0.02. Without one, keep publishing it unconditionally
+        # -- that's the old behaviour, and every existing caller still relies
+        # on it since on-demand's idle state doesn't exist for them.
+        if self.upstream is None:
+            d["frame_rate"] = round(estimate_fps(self.buffer), 1)
+        elif state == "streaming":
+            d["frame_rate"] = round(estimate_fps(
+                self.buffer, since=self.upstream.session_start_ts()), 1)
         return d
 
     def phone_state(self):
