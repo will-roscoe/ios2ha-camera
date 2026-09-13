@@ -10,7 +10,8 @@ uncommitted edits. `deploy.sh` passes them; a source run reports "source".
 """
 
 import os
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 try:
     VERSION = _pkg_version("ios2ha-camera")

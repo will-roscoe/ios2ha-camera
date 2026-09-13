@@ -2,10 +2,12 @@ import asyncio
 import time
 import types
 
+import pytest
+
 from ios2ha_camera import phone, phone_setup
 from ios2ha_camera.phone import PhoneManager, PhoneManagerMisuseError, PhoneUnavailable
 from ios2ha_camera.upstream import ProbeStreamingOff
-import pytest
+
 
 def test_battery_returns_dict_shape(monkeypatch):
     pm = PhoneManager("com.example")

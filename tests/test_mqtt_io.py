@@ -1,5 +1,5 @@
 from ios2ha_camera.mqtt_io import MqttIO, discovery_payloads
-from ios2ha_camera.settings import Settings, CONTROLS
+from ios2ha_camera.settings import CONTROLS, Settings
 
 
 class _Msg:

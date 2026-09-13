@@ -1,4 +1,5 @@
 import numpy as np
+
 from ios2ha_camera import measure
 
 
@@ -54,7 +55,6 @@ def test_focus_sharpness_flat_image_near_zero():
 
 
 def test_focus_sharpness_edges_score_higher():
-    import cv2
     edged = _img(128.0)
     # Add hard horizontal edge in the middle
     edged[16:, :] = 64.0

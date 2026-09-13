@@ -1,5 +1,6 @@
 """Pure numpy measurement functions over decoded frames."""
 import math
+
 import numpy as np
 
 

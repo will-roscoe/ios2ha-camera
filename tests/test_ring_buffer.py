@@ -1,4 +1,4 @@
-from ios2ha_camera.ring_buffer import RingBuffer, Frame
+from ios2ha_camera.ring_buffer import Frame, RingBuffer
 
 
 def test_evicts_oldest_over_byte_budget():

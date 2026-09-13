@@ -2,9 +2,9 @@ import base64
 import urllib.request
 
 import pytest
+from tests.fakes.fake_camera import BOUNDARY, CREDENTIALS, FakeCamera, _jpeg
 
 from ios2ha_camera.mjpeg import PartTooLarge, iter_multipart
-from tests.fakes.fake_camera import BOUNDARY, CREDENTIALS, FakeCamera, _jpeg
 
 
 def _open(cam, path="/mjpeg"):

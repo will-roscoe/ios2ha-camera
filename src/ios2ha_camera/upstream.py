@@ -29,7 +29,8 @@ TICK_WAIT_S = 0.5
 
 PROBE_INTERVAL_S = 60.0
 PROBE_BACKOFF_MAX_S = 300.0
-ONLINE_IDLE_S = 150.0          # two probe intervals, plus 30 s of slack for a slow probe and the tick loop
+# Two probe intervals, plus 30 s of slack for a slow probe and the tick loop.
+ONLINE_IDLE_S = 150.0
 TICK_STALE_S = 180.0
 FRESH_S = 30.0                 # matches Supervisor.fresh_s: a live stream's frames are seconds old
 
@@ -92,7 +93,8 @@ class Hold:
 
 
 class Upstream:
-    def __init__(self, ingestor, buffer, settings, on_state=lambda s: None, *, probe=None, clock=None):
+    def __init__(self, ingestor, buffer, settings, on_state=lambda s: None,
+                 *, probe=None, clock=None):
         self.ing = ingestor
         self.buffer = buffer
         self.s = settings
@@ -312,7 +314,8 @@ class Upstream:
                 # Touching the ingestor now would put two threads on the one
                 # connection -- the thing that wedges the app -- so leave it to
                 # the thread, which is a daemon and dies with the process.
-                log.warning("upstream thread did not exit within %.1fs; leaving ingest to it", timeout)
+                log.warning("upstream thread did not exit within %.1fs; "
+                            "leaving ingest to it", timeout)
                 return
         if self._open:
             self.ing.stop(timeout=max(0.1, deadline - time.monotonic()))

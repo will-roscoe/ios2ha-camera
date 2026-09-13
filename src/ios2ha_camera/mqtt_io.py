@@ -113,7 +113,8 @@ _SENSORS += [
 ]
 _SENSORS += [
     dict(obj=f"wb_gain_{c}", name=f"White balance gain {c.upper()}",
-         state_class="measurement", precision=3, category="diagnostic", icon="mdi:white-balance-auto")
+         state_class="measurement", precision=3, category="diagnostic",
+         icon="mdi:white-balance-auto")
     for c in "rgb"
 ]
 _SENSORS += [
@@ -326,7 +327,8 @@ class MqttIO:
         self.c.publish(f"{self.s.mqtt_prefix}/event", json.dumps(d))
 
     def set_available(self, ok):
-        self.c.publish(f"{self.s.mqtt_prefix}/available", "online" if ok else "offline", retain=True)
+        self.c.publish(f"{self.s.mqtt_prefix}/available",
+                       "online" if ok else "offline", retain=True)
 
     def close(self, timeout=2.0):
         """Go offline deliberately, then disconnect.

@@ -23,8 +23,10 @@ looking the curve up separately per channel would compress each channel by
 a different amount and shift or wash out colour.
 """
 import io
+
 import numpy as np
 from PIL import Image, ImageFilter
+
 from .measure import black_level
 
 # Push the inspection stretch slightly past the measured highlight so genuinely
@@ -116,7 +118,8 @@ def calibration(stacked, settings):
     computing them here once, and handing the result back to render(), is what
     keeps the published numbers identical to the applied ones.
     """
-    bl = np.asarray(settings.black_level_override) if settings.black_level_override else black_level(stacked)
+    bl = (np.asarray(settings.black_level_override) if settings.black_level_override
+          else black_level(stacked))
     gains = white_balance_gains(np.clip(stacked - bl, 0, None), settings.white_balance)
     return bl, gains
 

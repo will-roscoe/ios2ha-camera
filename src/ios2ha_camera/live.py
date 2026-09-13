@@ -33,12 +33,14 @@ that would freeze every other viewer along with it.
 
 import asyncio
 from contextlib import nullcontext
+
 from aiohttp import web
 
 # Typed keys rather than plain strings: aiohttp warns on str keys, and an
 # unattended service wants a log with nothing routine in it.
 BUFFER = web.AppKey("buffer", object)
-CLIENTS = web.AppKey("clients", set)  # the raw /live route's clients; kept for callers that inspect it directly
+# The raw /live route's clients; kept for callers that inspect it directly.
+CLIENTS = web.AppKey("clients", set)
 SOURCES = web.AppKey("sources", list)
 UPSTREAM = web.AppKey("upstream", object)
 STACKER = web.AppKey("stacker", object)
@@ -151,7 +153,7 @@ def _stream_handler(clients, source, attach=None, detach=None):
                         # aiohttp has no write timeout, so a client that stays
                         # connected but stops reading would hold it for good.
                         await asyncio.wait_for(resp.write(_part(frame)), WRITE_TIMEOUT_S)
-                except (ConnectionError, asyncio.TimeoutError, asyncio.CancelledError):
+                except (TimeoutError, ConnectionError, asyncio.CancelledError):
                     # ConnectionError, not just its Reset/Aborted subclasses: aiohttp raises
                     # a bare ConnectionError("Connection lost") when a viewer goes away
                     # mid-write, and Home Assistant's camera does exactly that every time it
