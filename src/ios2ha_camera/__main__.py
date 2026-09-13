@@ -72,20 +72,27 @@ def main():
     try:
         web.run_app(make_live_app(buf, latest_still=lambda: sup.last_still_jpeg,
                                   upstream=up, stacker=stacker),
-                    host="0.0.0.0", port=s.live_port, print=None)
+                    host="0.0.0.0", port=s.live_port, print=None,
+                    # A /live viewer never finishes by itself, and at aiohttp's
+                    # default of 60 s the container is killed before the block
+                    # below ever runs.
+                    shutdown_timeout=2.0)
     finally:
         log.info("shutting down")
         stop.set()
         sup.capture_requested.set()   # wake the capture loop out of its wait
-        # Compose gives the container 20s to stop: 5s here, two 5s thread joins
-        # below (10s), and up to 2s for mqtt.close() -- 17s total, leaving some
-        # margin under the 20s stop_grace_period. A thread still alive after 5s
-        # is stuck in a probe, which stop() deliberately leaves alone rather
-        # than touching the ingestor from a second thread.
+        # Compose allows 20 s from SIGTERM. The event loop's shutdown above has
+        # already spent up to 4 s of it, not 2: aiohttp waits shutdown_timeout
+        # once for handlers to finish and again after cancelling them, and a
+        # /live viewer waiting for a frame sits out both (measured 4.0 s). Then
+        # 5 s for up.stop(), two 3 s thread joins and up to 2 s for mqtt.close()
+        # -- 17 s in all. An upstream thread still alive after its 5 s is stuck
+        # in a probe, which stop() deliberately leaves alone rather than
+        # touching the ingestor from a second thread.
         up.stop(timeout=5.0)
         sup.close()
         for t in threads:
-            t.join(timeout=5)
+            t.join(timeout=3)
         mqtt.close()                  # publishes offline; a clean disconnect has no last will
 
 
