@@ -12,10 +12,16 @@ Taking and releasing a hold only touches a counter, which is why `live.py` can
 do it straight from the aiohttp event loop.
 """
 
+import base64
+import http.client
 import logging
 import threading
 import time
 from collections import deque
+
+from .ingest import BOUNDARY
+from .mjpeg import iter_multipart
+from .ring_buffer import Frame
 
 log = logging.getLogger(__name__)
 
@@ -28,9 +34,37 @@ ONLINE_IDLE_S = 150.0          # two probe intervals plus the probe's read timeo
 TICK_STALE_S = 180.0
 FRESH_S = 30.0                 # matches Supervisor.fresh_s: a live stream's frames are seconds old
 
+PROBE_CONNECT_TIMEOUT_S = 5.0
+PROBE_READ_TIMEOUT_S = 10.0
+
 
 class ProbeStreamingOff(Exception):
     """The app answered 503: it is running but not streaming."""
+
+
+def http_probe(settings):
+    """One frame, then close. The cheapest question that distinguishes
+    'streaming', 'running but not streaming' (503) and 'gone'. Measured at
+    82-387 ms and about 2-3 mA a minute."""
+    auth = "Basic " + base64.b64encode(
+        f"{settings.phone_user}:{settings.phone_password}".encode()).decode()
+    conn = http.client.HTTPConnection(settings.phone_host, settings.phone_port,
+                                      timeout=PROBE_CONNECT_TIMEOUT_S)
+    try:
+        conn.connect()
+        # Set here, not after getresponse(): a close-delimited response (which
+        # is what the app sends) makes getresponse() drop conn.sock, same as
+        # ingest.py's _stream_once, leaving nothing to raise the timeout on.
+        conn.sock.settimeout(PROBE_READ_TIMEOUT_S)
+        conn.request("GET", "/mjpeg", headers={"Authorization": auth})
+        resp = conn.getresponse()
+        if resp.status == 503:
+            raise ProbeStreamingOff()
+        if resp.status != 200:
+            raise RuntimeError(f"HTTP {resp.status}")
+        return Frame(next(iter_multipart(resp, BOUNDARY)), time.time())
+    finally:
+        conn.close()
 
 
 class Hold:
@@ -62,7 +96,7 @@ class Upstream:
         self.buffer = buffer
         self.s = settings
         self.on_state = on_state
-        self.probe = probe
+        self.probe = probe if probe is not None else (lambda: http_probe(self.s))
         self._clock = clock if clock is not None else time.time
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
@@ -76,6 +110,8 @@ class Upstream:
         self._last_tick = self._clock()
         self._published = None
         self._sessions = deque()        # (opened_at, closed_at) for duty_1h
+        self._stop_event = threading.Event()
+        self._thread = None
 
     # -- holds ---------------------------------------------------------------
 
@@ -217,3 +253,46 @@ class Upstream:
         if not self._open and self.probe is not None and now >= self._next_probe_at:
             self._run_probe(now)
         self._publish(now)
+
+    # -- thread ----------------------------------------------------------------
+
+    def start(self):
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="upstream", daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                self.tick()
+            except Exception:
+                # One bad tick must never end the thread: everything the service
+                # publishes about the phone comes from here, and a dead thread
+                # would freeze it all at its last good value.
+                log.exception("upstream tick failed")
+            with self._wake:
+                self._wake.wait(TICK_WAIT_S)
+
+    def stop(self, timeout=15.0):
+        self._stop_event.set()
+        with self._wake:
+            self._wake.notify_all()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        if self._open:
+            self.ing.stop()
+            self._open, self._opened_at = False, None
+
+    def wait_for_frames(self, n, since_ts, timeout, poll=0.1):
+        """Block this (worker) thread until n frames newer than since_ts exist.
+
+        Returns how many there are, which may be fewer on timeout. Polling
+        rather than a condition because frames arrive on the ingest thread,
+        which knows nothing about this class.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            have = sum(1 for f in self.buffer.recent(n) if f.ts >= since_ts)
+            if have >= n or time.monotonic() >= deadline:
+                return have
+            time.sleep(poll)

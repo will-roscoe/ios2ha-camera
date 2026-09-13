@@ -1,7 +1,12 @@
+import time
 import types
+from urllib.parse import urlparse
+
 import pytest
+from ios2ha_camera.ingest import Ingestor
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 from ios2ha_camera.upstream import Upstream, ONLINE_IDLE_S, PROBE_INTERVAL_S, ProbeStreamingOff, TICK_STALE_S
+from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
 
 
 class FakeIngestor:
@@ -199,3 +204,58 @@ def test_duty_1h_counts_only_time_with_the_connection_open():
     h.release()
     up.tick(now=360.0)                       # open for 360 s of the hour
     assert 9.0 < up.duty_1h(now=3600.0) < 11.0
+
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_wait_for_frames_counts_only_frames_from_this_session():
+    up, _, buf, _ = _up()
+    buf.append(Frame(b"old", 100.0))          # a probe frame from before the session
+    buf.append(Frame(b"new", 200.0))
+    assert up.wait_for_frames(2, since_ts=150.0, timeout=0.05) == 1
+    buf.append(Frame(b"new", 201.0))
+    assert up.wait_for_frames(2, since_ts=150.0, timeout=0.05) == 2
+
+
+def test_a_raising_tick_does_not_kill_the_thread():
+    up, ing, _, _ = _up()
+    boom = [2]
+
+    def tick(now=None):
+        if boom[0] > 0:
+            boom[0] -= 1
+            raise RuntimeError("bang")
+        boom[0] -= 1
+
+    up.tick = tick
+    up.start()
+    assert _wait_for(lambda: boom[0] < 0)
+    up.stop()
+
+
+def test_against_the_fake_camera_it_opens_lingers_and_probes():
+    buf = RingBuffer(1 << 22)
+    with FakeCamera() as cam:
+        u = urlparse(cam.url)
+        s = _settings(phone_host=u.hostname, phone_port=u.port,
+                      phone_user=CREDENTIALS[0], phone_password=CREDENTIALS[1])
+        ing = Ingestor(u.hostname, u.port, CREDENTIALS[0], CREDENTIALS[1], buf,
+                       backoff_initial=0.05, backoff_max=0.2, read_timeout=2.0)
+        up = Upstream(ing, buf, s)
+        ing.on_state = up.on_ingest_state
+        up.start()
+        try:
+            assert _wait_for(lambda: buf.newest_ts() is not None)   # the probe alone fills a frame
+            assert up.state() == "idle"
+            with up.hold("viewer", linger_s=0.2):
+                assert _wait_for(lambda: up.state() == "streaming", timeout=5.0)
+            assert _wait_for(lambda: up.state() == "idle", timeout=5.0)
+        finally:
+            up.stop()
