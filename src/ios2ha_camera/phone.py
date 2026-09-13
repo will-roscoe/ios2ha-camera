@@ -232,6 +232,12 @@ class PhoneManager:
         is set, so nothing calls this without a person asking for it."""
         return self._call(self._enable_developer_mode)
 
+    def _check_lockdown(self):
+        async def go():
+            lockdown = await self._lockdown()
+            await lockdown.close()
+        return self._run(go())
+
     def prepare(self, launch=True):
         """Bring the phone back to a state where it can stream, and say what it found.
 
@@ -253,6 +259,9 @@ class PhoneManager:
             except Exception as e:
                 steps.append({"step": name, "ok": False, "detail": f"{type(e).__name__}: {e}"})
 
+        # First, because every later step goes over lockdown: with the cable out
+        # or the pairing lost, that is the one fact that explains the rest.
+        run("lockdown", lambda: (self._call(self._check_lockdown), "reachable")[1])
         run("developer_mode", lambda: "on" if self.developer_mode() else "OFF (run with --fix-developer-mode)")
         run("developer_image", lambda: (self.mount_ddi(), "mounted")[1])
 

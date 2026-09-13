@@ -48,13 +48,19 @@ def main(argv=None):
 
     deadline = time.time() + args.timeout
     print("waiting for frames: open Guardian Eye on the phone and tap Start streaming")
+    last = None
     while time.time() < deadline:
         try:
             http_probe(s)
-        except ProbeStreamingOff:
-            pass
-        except Exception:
-            pass
+        except Exception as e:
+            # Said once per kind of failure rather than swallowed: a wait that
+            # can never succeed (a wrong password, the app gone) must not look
+            # like one still waiting for the tap.
+            if type(e) is not last:
+                last = type(e)
+                why = ("the app is running but streaming is off (HTTP 503)"
+                       if isinstance(e, ProbeStreamingOff) else f"{type(e).__name__}: {e}")
+                print(f"still waiting: {why}")
         else:
             print("frames are flowing")
             # A failed step earlier (battery unreadable, app absent) is still

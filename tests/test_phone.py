@@ -1,7 +1,10 @@
 import asyncio
+import time
+import types
 
 from ios2ha_camera import phone, phone_setup
 from ios2ha_camera.phone import PhoneManager, PhoneManagerMisuseError, PhoneUnavailable
+from ios2ha_camera.upstream import ProbeStreamingOff
 import pytest
 
 def test_battery_returns_dict_shape(monkeypatch):
@@ -246,6 +249,8 @@ def test_battery_tolerates_a_device_that_omits_the_power_fields(monkeypatch):
 
 def test_prepare_reports_every_step_even_when_one_fails(monkeypatch):
     pm = PhoneManager("com.example.app")
+    lockdown = _FakeLockdown()
+    monkeypatch.setattr(pm, "_lockdown", _async_return(lockdown))
     monkeypatch.setattr(pm, "developer_mode", lambda: True)
     monkeypatch.setattr(pm, "mount_ddi", lambda: None)
     monkeypatch.setattr(pm, "is_running", lambda: (_ for _ in ()).throw(PhoneUnavailable("no DDI")))
@@ -253,14 +258,16 @@ def test_prepare_reports_every_step_even_when_one_fails(monkeypatch):
     monkeypatch.setattr(pm, "battery", lambda: {"level": 48})
     steps = pm.prepare(launch=True)
     names = [s["step"] for s in steps]
-    assert names == ["developer_mode", "developer_image", "app", "battery"]
-    assert steps[2]["ok"] is False
-    assert steps[3]["ok"] is True            # a failed step does not abort the rest
+    assert names == ["lockdown", "developer_mode", "developer_image", "app", "battery"]
+    assert steps[0]["ok"] is True and lockdown.closed is True
+    assert steps[3]["ok"] is False
+    assert steps[4]["ok"] is True            # a failed step does not abort the rest
 
 
 def test_prepare_never_enables_developer_mode(monkeypatch):
     pm = PhoneManager("com.example.app")
     called = []
+    monkeypatch.setattr(pm, "_lockdown", _async_return(_FakeLockdown()))
     monkeypatch.setattr(pm, "developer_mode", lambda: False)
     monkeypatch.setattr(pm, "enable_developer_mode", lambda: called.append("enabled"))
     monkeypatch.setattr(pm, "mount_ddi", lambda: None)
@@ -277,6 +284,7 @@ def test_prepare_reraises_phone_manager_misuse_error(monkeypatch):
     phone-side failure -- and the three steps after it would fail identically
     for no new reason, adding noise instead of information."""
     pm = PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_lockdown", _async_return(_FakeLockdown()))
     monkeypatch.setattr(pm, "developer_mode",
                          lambda: (_ for _ in ()).throw(PhoneManagerMisuseError("wrong thread")))
     monkeypatch.setattr(pm, "mount_ddi", lambda: None)
@@ -308,3 +316,82 @@ def test_main_reports_failure_even_when_frames_arrive(monkeypatch):
     monkeypatch.setattr(phone_setup, "Settings", FakeSettings)
     monkeypatch.setattr(phone_setup, "http_probe", lambda s: object())  # frames found immediately
     assert phone_setup.main(["--timeout", "1"]) == 1
+
+
+def test_developer_mode_reports_what_lockdown_says(monkeypatch):
+    class ModeLockdown(_FakeLockdown):
+        def __init__(self, status):
+            super().__init__()
+            self.status = status
+
+        async def get_developer_mode_status(self):
+            return self.status
+
+    for status in (True, False):
+        pm = PhoneManager("com.example.app")
+        lockdown = ModeLockdown(status)
+        monkeypatch.setattr(pm, "_lockdown", _async_return(lockdown))
+        assert pm.developer_mode() is status
+        assert lockdown.closed is True
+
+
+def _fake_setup(monkeypatch, developer_mode=True):
+    calls = []
+
+    class FakePhone:
+        def __init__(self, bundle_id):
+            pass
+
+        def developer_mode(self):
+            calls.append("developer_mode")
+            return developer_mode
+
+        def enable_developer_mode(self):
+            calls.append("enable_developer_mode")
+
+        def prepare(self, launch=True):
+            return [{"step": "app", "ok": True, "detail": "already running"}]
+
+    class FakeSettings:
+        @staticmethod
+        def from_env(env):
+            return object()
+
+    monkeypatch.setattr(phone_setup, "PhoneManager", FakePhone)
+    monkeypatch.setattr(phone_setup, "Settings", FakeSettings)
+    return calls
+
+
+def test_the_cli_never_enables_developer_mode_without_the_flag(monkeypatch):
+    """Enabling Developer Mode reboots the phone."""
+    calls = _fake_setup(monkeypatch, developer_mode=False)
+    assert phone_setup.main(["--no-wait"]) == 0
+    assert "enable_developer_mode" not in calls
+    calls = _fake_setup(monkeypatch, developer_mode=False)
+    phone_setup.main(["--no-wait", "--fix-developer-mode"])
+    assert calls == ["developer_mode", "enable_developer_mode"]
+
+
+def test_the_wait_prints_each_new_kind_of_probe_failure_once(monkeypatch, capsys):
+    """Every probe error used to be swallowed, so a wait that could never end
+    well (a wrong password, the app gone) looked just like one waiting for a tap."""
+    outcomes = [ConnectionRefusedError(111, "Connection refused"),
+                ConnectionRefusedError(111, "Connection refused"),
+                ProbeStreamingOff(), ProbeStreamingOff()]
+
+    def probe(settings):
+        if outcomes:
+            raise outcomes.pop(0)
+        return object()
+
+    _fake_setup(monkeypatch)
+    monkeypatch.setattr(phone_setup, "http_probe", probe)
+    monkeypatch.setattr(phone_setup, "time",
+                        types.SimpleNamespace(time=time.time, sleep=lambda s: None))
+    assert phone_setup.main(["--timeout", "5"]) == 0
+    out = capsys.readouterr().out
+    waiting = [line for line in out.splitlines() if line.startswith("still waiting")]
+    assert len(waiting) == 2, out
+    assert "ConnectionRefusedError" in waiting[0]
+    assert "503" in waiting[1]
+    assert "frames are flowing" in out
