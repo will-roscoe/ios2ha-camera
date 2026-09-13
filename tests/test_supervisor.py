@@ -639,16 +639,27 @@ def test_capture_releases_the_hold_when_stacking_setup_raises(monkeypatch):
     assert up.events[-1] == "release:capture"
 
 
-def test_capture_ignores_frames_from_before_its_session():
+def test_capture_excludes_a_fresh_frame_from_before_its_session(monkeypatch):
+    s = Settings()
+    s.stacking_mode = "fixed"
+    # Bigger than the buffer's 21 frames, so recent() alone -- with no floor
+    # filtering at all -- would already return the stale frame; only the
+    # session-start component of floor can be responsible for excluding it.
+    s.fixed_depth = 25
     buf = RingBuffer(1 << 24)
     now = time.time()
-    _fill(buf, 4, now=now - 120, step=60)          # probe frames
+    _fill(buf, 1, now=now - 20)          # stale, but inside fresh_s=30 and window_max_s=60
     up = RecordingUpstream(buf, state="streaming")
     up.session_start = now - 1
     _fill(buf, 20, now=now)
-    sup = _sup(buf=buf, upstream=up)
-    ev = sup.produce_still(now_fps=12.0, now=now)
-    assert ev["depth_used"] <= 20
+    sup = _sup(s, buf=buf, upstream=up)
+    received = []
+    real = stack.stack_frames
+    monkeypatch.setattr(stack, "stack_frames",
+                        lambda frames: (received.extend(frames), real(frames))[1])
+    sup.produce_still(now_fps=12.0, now=now)
+    assert received
+    assert all(f.ts >= up.session_start for f in received)
 
 
 def test_capture_with_no_frames_publishes_the_reason():
