@@ -1,5 +1,10 @@
 # ios2ha-camera
 
+[![CI](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ci.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ci.yml)
+[![Docs](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/docs.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/docs.yml)
+![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)
+![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20discovery-41BDF5?logo=homeassistant&logoColor=white)
+
 An iPhone, permanently pointed out of a window, turned into a dependable Home Assistant camera.
 
 A supervisor service runs on a Linux host and is the **only** client of the phone. It holds one
@@ -69,13 +74,16 @@ and relaunching the app — short of the one thing that can't be automated: tapp
 ```bash
 python3 -m venv ~/.venvs/ios2ha-camera
 ~/.venvs/ios2ha-camera/bin/pip install -e '.[dev]'
-~/.venvs/ios2ha-camera/bin/pytest -q          # 222 tests, no hardware needed
+~/.venvs/ios2ha-camera/bin/pytest -q          # 283 tests, no hardware needed
+~/.venvs/ios2ha-camera/bin/ruff check .
 ```
 
 The whole test suite runs against a fake camera that serves real JPEGs over real sockets, so
-nothing here needs a phone.
+nothing here needs a phone. Those same two commands, plus a `docker build`, are what CI runs on
+every push.
 
-To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**.
+To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**. To change it, see
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## The documentation
 
@@ -85,6 +93,11 @@ To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**.
 | **[CONFIGURATION.md](CONFIGURATION.md)** | Every control and every sensor, with units, defaults and which knob to reach for |
 | **[OPERATIONS.md](OPERATIONS.md)** | Deploying, versioning, reading the logs, the alerts, and the device quirks that will otherwise cost you an evening |
 | **[CHANGELOG.md](CHANGELOG.md)** | Releases, and what a major, minor or patch version means for your automations |
+| **[CONTRIBUTING.md](CONTRIBUTING.md)** | Running the tests, the commit convention, and how a change becomes a version |
+
+There is also a Sphinx site under `docs/`, built on every pull request. It includes the files
+above rather than copying them, and adds the parts that suit a browsable site better — the API
+reference, and the promises made about the Home Assistant surface.
 
 ## What it produces
 
