@@ -419,6 +419,34 @@ def test_stream_state_is_published_the_moment_it_changes():
     assert sup.mqtt.published["stream_state"] == "streaming_off"
 
 
+def test_the_whole_health_reading_follows_a_stream_state_change_at_once():
+    """Seen on both deploys on 2026-09-14: the health thread's first tick ran
+    before the first probe, publishing camera_online off and last_frame unknown.
+    The probe's `ready` a quarter of a second later corrected stream_state alone,
+    so the two contradicted each other for ~35 s until the next tick, and every
+    later change -- `stalled` included -- left camera_online lagging the same way."""
+    from ios2ha_camera.upstream import Upstream
+
+    class NoIngest:
+        def start(self):
+            pass
+
+        def stop(self, timeout=None):
+            return True
+
+    buf = RingBuffer(5_000_000)
+    up = Upstream(NoIngest(), buf, Settings(), probe=lambda: Frame(b"jpeg", time.time()))
+    sup = _sup(buf=buf, upstream=up)
+    up.on_state = sup.on_stream_state
+    sup.publish_state(sup.health_state())      # the first health tick, before any probe
+    assert sup.mqtt.published["camera_online"] is False
+    up.tick()                                  # the first probe succeeds
+    pub = sup.mqtt.published
+    assert pub["stream_state"] == "ready"
+    assert pub["camera_online"] is True and pub["app_streaming"] is True
+    assert pub["last_frame"] is not None
+
+
 def test_phone_state_is_empty_when_the_cable_is_out():
     sup = _sup(phone=FakePhone(error=PhoneUnavailable("no device")))
     assert sup.phone_state() == {}
