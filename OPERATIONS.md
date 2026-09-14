@@ -112,6 +112,13 @@ Two different things can be meant by "roll back", and they fix different problem
 - **Redeploy an older tag** with `./deploy.sh` from that tag's commit, if the fault is in the code
   itself rather than in the connection policy.
 
+**A downgrade from 2.0.0 needs your automations edited back**, not just the container rolled
+back. 2.0.0 renamed every `stream_state` value: `unreachable` split into `unavailable` and
+`backgrounded`, `idle` became `ready`, and `streaming` split into `capturing`, `in_use` and
+`streaming`. Anything matching those by name — the offline alert's template especially — was
+edited to the new names when you upgraded and will silently stop matching on the way back.
+The retained-value problem below applies too, in both directions.
+
 A downgrade to a version before 1.1.0 needs one extra step. `stream_state` gained a new option,
 `idle`, in 1.1.0; an older version's Home Assistant discovery payload does not list it, so a
 retained `idle` value left over from the newer version is not one of the older enum's valid options
@@ -141,7 +148,7 @@ did not hold enough frames inside the capture window, and the MQTT event carries
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
-true while `streaming` with a frame within 30 seconds, **or** while `idle` with a frame within 150
+true while active with a frame within 30 seconds, **or** while `ready` with a frame within 150
 seconds — idle is the normal state whenever nothing is capturing or watching, so it must not read as
 offline on its own. It is forced **false** whenever the upstream thread's own heartbeat
 (`sensor.ios2ha_camera_tick_age`) has gone more than 180 seconds without ticking, regardless of what
@@ -149,7 +156,7 @@ state it last reported — a wedged or dead thread must not leave every reading 
 last saw as healthy.
 
 **The idle probe.** While nothing holds the connection, it is probed every 60 seconds — connect, read
-one frame, close, for about 2–3 mA a minute — which is what keeps `idle` fed with a recent frame and
+one frame, close, for about 2–3 mA a minute — which is what keeps `ready` fed with a recent frame and
 lets a genuine outage still be noticed between captures. A failing probe backs off (60, 120, 240 s,
 capped at 300 s) rather than knocking on a wedged app every minute. If the app itself starts
 wedging or needs relaunching more often than it used to, the probe's own connect/disconnect cycle is
@@ -169,11 +176,12 @@ stalled write, the same as one that genuinely went away. This exists so a stalle
 the phone connection open indefinitely; a shorter timeout was tried first and wrongly dropped real
 viewers on slow links.
 
-Five alerts are worth having, and all five exist:
+Six alerts are worth having:
 
 | Alert | Trigger | Why |
 |---|---|---|
-| Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting |
+| Offline | `camera_online` off or unavailable for 5 min | The original failure; unavailable means the supervisor itself stopped reporting. See below — the message should name what is actually wrong |
+| Cable down | `cable_state` is `usbmuxd_down` for 10 min | The socket mount is orphaned: battery, app control and **Prepare phone** are all dead, while the WiFi stream carries on as if nothing were wrong. Do **not** alert on `no_device`, which is just the cable being out |
 | Losing charge | Battery current negative for 20 min | The supply cannot keep up; invisible in "charging". Check `sensor.ios2ha_camera_holders` and `sensor.ios2ha_camera_duty_1h` first — a connection stuck open (a viewer that never left, or `on_demand` switched off) looks exactly like a weak charger on the battery current alone |
 | Battery low | Below 40% | It will stop capturing when the phone dies |
 | Battery hot | Above 42 °C for 10 min | Charges and streams continuously |
@@ -182,6 +190,131 @@ Five alerts are worth having, and all five exist:
 A caveat learned the hard way: Home Assistant will report a notification as delivered whether or not
 your phone ever receives it. If the companion app has lost its connection, `notify` still succeeds.
 Test the whole path occasionally rather than trusting that an alert exists.
+
+### Making the offline alert say what is wrong
+
+Before 2.0.0 the offline alert could only say "the camera is offline", because
+`stream_state` had one word for four unrelated situations. It now distinguishes them, and
+the message should too — the fix is different in every case, and three of the four do not
+need anyone to get up.
+
+```jinja
+{% set s = states('sensor.ios2ha_camera_stream_state') %}
+{% if s == 'streaming_off' %}
+  The app is running but not streaming. Open Guardian Eye and tap Start streaming —
+  nothing else can do this.
+{% elif s == 'backgrounded' %}
+  {% if is_state('binary_sensor.ios2ha_camera_app_running', 'off') %}
+  iOS has killed the app. Press Relaunch app, then tap Start streaming.
+  {% elif is_state('binary_sensor.ios2ha_camera_backgrounding_active', 'on') %}
+  Backgrounded on purpose to save battery. Nothing to do -- it wakes for the
+  next capture. (This branch should not normally alert: camera_online stays on
+  for a deliberate backgrounding.)
+  {% else %}
+  The app is backgrounded, so its socket is suspended. Foreground it to resume.
+  {% endif %}
+{% elif s == 'unavailable' %}
+  The phone is not answering at all. Check WiFi and that it is powered.
+{% elif is_state('binary_sensor.ios2ha_camera_reachable_over_cable', 'off') %}
+  The phone is streaming, but the cable is down: no battery readings and no app
+  control. See "When the cable stops working".
+{% else %}
+  Camera offline, state {{ s }}.
+{% endif %}
+```
+
+The `app_running` branch is the one worth having. A backgrounded app and one iOS has killed
+look identical over WiFi — both refuse the connection — and only the cable can tell them
+apart. One resumes by itself when foregrounded; the other needs relaunching. Note that
+`app_running` is **unknown**, not `off`, when the cable cannot answer, so
+`is_state(..., 'off')` correctly declines to claim the app is dead on no evidence.
+
+### Backgrounding to charge the phone
+
+Streaming costs roughly 300 mA and this installation runs from a 3 W port, so a phone that
+streams continuously never recovers. Backgrounding the camera app pauses the stream without
+stopping it — iOS suspends the listening socket and leaves the process running — and that is
+worth around 370 mA. Measured on the device: **30% to 96% in under three hours**.
+
+Below `background_below_pct` (50% by default) the supervisor backgrounds the app whenever
+nothing needs frames, and foregrounds it again the moment something does. Above
+`resume_above_pct` (80%) it stops. In between it carries on with whatever it was doing, which
+is what stops a phone resting near the threshold flipping back and forth.
+
+While this is happening:
+
+- `binary_sensor.ios2ha_camera_backgrounding_active` is **on**.
+- `sensor.ios2ha_camera_stream_state` reads `backgrounded` between captures.
+- **`camera_online` stays on**, so the offline alert does not fire. That exemption applies
+  only to a backgrounding this service performed; a phone backgrounded by anything else still
+  alerts, and so does a real outage while the policy is engaged.
+- Captures take a few seconds longer, while the app comes back to the foreground.
+
+Turning `switch.ios2ha_camera_backgrounding` off foregrounds the app immediately rather than
+waiting for the battery to recover.
+
+One thing to expect on the phone itself: backgrounding works by foregrounding **Settings**,
+because there is no "go home" over usbmux and killing the app would need someone to tap Start
+streaming afterwards. So the phone's screen shows Settings rather than the camera preview
+between captures. Harmless with Screen Curtain on, but it does mean you cannot tell at a
+glance whether the camera app is alive — `binary_sensor.ios2ha_camera_app_running` answers
+that instead.
+
+### When the cable stops working
+
+The container reaches the phone two ways: over WiFi for frames, and over the Lightning cable via
+`usbmuxd` for battery readings and app control. Compose bind-mounts usbmuxd's socket as a **file**:
+
+```yaml
+- /var/run/usbmuxd:/var/run/usbmuxd
+```
+
+`usbmuxd` runs with `--systemd`, which implies `--enable-exit`: it exits whenever no device is
+attached, and creates a **new socket, with a new inode**, when udev starts it again. The container is
+still holding the old, deleted inode, so from then on every cable operation fails with
+`ConnectionFailedToUsbmuxdError` — permanently, until the container is recreated. Nothing about the
+WiFi stream changes, so stills keep being produced and the fault is invisible unless you are watching
+the battery figures. On 13 September this cost two hours.
+
+There are two defences, and the first is much better than the second.
+
+**On the host, run this once.** It is the real fix and it acts within seconds:
+
+```bash
+sudo ./scripts/install-usbmuxd-hook.sh
+```
+
+It adds an `ExecStartPost` drop-in to `usbmuxd.service` that restarts the container as soon as
+usbmuxd comes back. It is guarded so it cannot make things worse: it runs via `systemd-run
+--no-block`, so usbmuxd's own startup is never delayed by a container restart; it uses
+`ExecStartPost=-`, so a failure can never stop usbmuxd itself; it only restarts a container that is
+already running, so one you stopped deliberately stays stopped; it exits quietly when Docker is not
+up yet, which is normal during boot; and it rate-limits to one restart a minute, because udev starts
+usbmuxd on **every** attach and a cable with a bad contact would otherwise restart the container
+continuously. `sudo ./scripts/install-usbmuxd-hook.sh --uninstall` reverses it, and re-running it is
+harmless.
+
+Check it is working with `journalctl -t ios2ha-camera-reattach`.
+
+**In the container, as a fallback** for hosts without that hook, the supervisor restarts itself once
+usbmuxd has been unreachable for five minutes, and Docker's `unless-stopped` policy brings it back on
+a fresh socket. It is deliberately slow, and it will not fire in the first ten minutes of a process
+(a cable already broken at boot would otherwise loop forever), nor twice within an hour, nor for a
+phone that is merely unplugged. Recognise it in the log by:
+
+```
+restarting: usbmuxd has been unreachable long enough that the socket mount is presumed orphaned.
+```
+
+Seeing that line means the host hook is not installed, or did not work.
+
+**The manual fix**, if you are looking at a broken cable right now:
+
+```bash
+docker compose up -d --force-recreate ios2ha-camera
+```
+
+A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
 ## What the phone will and will not do
 
@@ -244,7 +377,7 @@ The battery current sensor is the one to watch. `charging` only means "connected
 **No stills, `stream_state` is `streaming_off`.** The app answered 503: streaming is off. Open
 Guardian Eye and tap Start streaming.
 
-**No stills, `stream_state` is `unreachable`.** The phone is not answering at all — check it is
+**No stills, `stream_state` is `unavailable`.** The phone is not answering at all — check it is
 awake, on the network, and that the app is running. The relaunch button can start the app but
 cannot start streaming.
 

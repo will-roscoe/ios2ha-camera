@@ -17,6 +17,8 @@ Threading matters here, so it is stated once:
 
 import contextlib
 import logging
+import os
+import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,8 +28,10 @@ import cv2
 import numpy as np
 
 from . import measure, render, stack
+from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
+from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
 log = logging.getLogger(__name__)
@@ -45,6 +49,68 @@ def estimate_fps(buffer, n=30, default=12.0, since=None):
         return default
     span = recent[-1].ts - recent[0].ts
     return (len(recent) - 1) / span if span > 0 else default
+
+
+# -- cable self-heal ---------------------------------------------------------
+#
+# The container bind-mounts usbmuxd's socket as a file. usbmuxd exits whenever no
+# device is attached and creates a new socket on restart, so the container is left
+# holding a deleted inode and every cable operation fails until it is recreated.
+#
+# The host-side fix is the systemd drop-in installed by
+# scripts/install-usbmuxd-hook.sh, which restarts the container the moment usbmuxd
+# comes back. That is the primary mechanism and it acts in seconds. What follows is
+# the fallback for hosts where the hook is not installed, so it is deliberately slow
+# and heavily guarded: a service that restarts itself on a wrong signal is worse
+# than the fault it is trying to fix.
+
+# A cable already broken at boot must not restart the container forever: every new
+# process would find the same dead socket. Waiting out an interval longer than the
+# fault takes to appear means a genuine orphaning is always seen by a process that
+# has been up a while.
+CABLE_MIN_UPTIME_S = 600.0
+# The failure has to persist. usbmuxd restarting normally is brief.
+CABLE_FAILING_FOR_S = 300.0
+# Asking to exit is not instant, and the health tick keeps running meanwhile.
+CABLE_RESTART_COOLDOWN_S = 3600.0
+
+# usbmuxd itself is unreachable. NOT the same as the phone being unplugged, which
+# raises NoDeviceConnectedError or DeviceNotFoundError: usbmuxd is answering fine
+# then, and restarting would fire every time the cable is pulled.
+_USBMUXD_DOWN = ("ConnectionFailedToUsbmuxdError",)
+
+
+def is_usbmuxd_down(exc):
+    """True when `exc` means usbmuxd is unreachable, not that no phone is attached.
+
+    PhoneManager._call wraps everything as PhoneUnavailable but keeps the original
+    on __cause__ and its class name in the message, so both are checked. The class
+    is authoritative; the message is the fallback for anything that arrives
+    unwrapped.
+    """
+    seen = set()
+    e = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if type(e).__name__ in _USBMUXD_DOWN:
+            return True
+        e = e.__cause__ or e.__context__
+    # Deliberately the full class name rather than "usbmuxd": an unrelated message
+    # that merely mentions the daemon must not trigger a restart.
+    return any(n.lower() in str(exc).lower() for n in _USBMUXD_DOWN)
+
+
+def _terminate_self():
+    """Ask this process to exit, and let Docker's restart policy bring it back.
+
+    SIGTERM rather than os._exit so the normal shutdown path runs: the offline
+    availability gets published, so Home Assistant shows the camera as unavailable
+    instead of holding a stale state until the new process starts.
+    """
+    log.error("restarting: usbmuxd has been unreachable long enough that the socket "
+              "mount is presumed orphaned. Install scripts/install-usbmuxd-hook.sh "
+              "on the host to have this handled in seconds instead.")
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _dark_noise(rgb):
@@ -70,8 +136,29 @@ def _dark_noise(rgb):
 class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
-                 device_executor=None):
+                 device_executor=None, request_restart=None, clock=None):
+        # Injected so tests can drive time and record the restart instead of
+        # signalling the test runner's own process.
+        self._clock = clock or time.monotonic
+        self._request_restart = request_restart or _terminate_self
+        self._started_at = self._clock()
+        self._cable_down_since = None
+        self._last_cable_restart = None
+        self._cable_state = "ok"
+        # None until the cable has been asked once, and published as unknown
+        # rather than guessed. Refreshed on the battery cadence rather than the
+        # health tick: it is a usbmux round trip, and asking every 30 s would
+        # spend the cable on a question whose answer changes rarely.
+        self._app_running = None
         self.s = settings
+        # Reads the switch and both thresholds live, because all three are Home
+        # Assistant controls that can change between one capture and the next.
+        self.backgrounding = BackgroundingPolicy(
+            phone,
+            lambda: bool(getattr(self.s, "backgrounding", False)),
+            lambda: float(getattr(self.s, "background_below_pct", 50.0)),
+            lambda: float(getattr(self.s, "resume_above_pct", 80.0)),
+        )
         self.buffer = buffer
         self.mqtt = mqtt
         self.archive = archive
@@ -401,16 +488,20 @@ class Supervisor:
             # published age is stale the moment it lands.
             "last_frame": (None if newest is None else
                            datetime.fromtimestamp(newest, tz=UTC).isoformat()),
-            "camera_online": (self.upstream.camera_online(now) if self.upstream else
-                              (self.stream_state == "streaming"
-                               and newest is not None and now - newest < self.fresh_s)),
+            "camera_online": self._camera_online(state, now, newest),
+            # Published so the orphaned-socket case can be alerted on well before
+            # the self-restart is reached, and so a plain unplugged cable is
+            # visibly different from a broken daemon.
+            "cable_state": self._cable_state,
         }
         if state is not None:
             d["stream_state"] = state
         if self.upstream is not None:
-            d["holders"] = ", ".join(self.upstream.holders()) or "none"
+            held = self.upstream.holders(now)
+            d["holders"] = ", ".join(held) or "none"
             d["duty_1h"] = self.upstream.duty_1h(now)
             d["tick_age"] = round(self.upstream.tick_age(now), 1)
+            d.update(self._boolean_state(state, held))
         if getattr(self, "live_fps", None) is not None:
             d["live_fps"] = self.live_fps()
         # With an upstream, only while streaming: probe frames a minute apart
@@ -419,7 +510,7 @@ class Supervisor:
         # on it since on-demand's idle state doesn't exist for them.
         if self.upstream is None:
             d["frame_rate"] = round(estimate_fps(self.buffer), 1)
-        elif state == "streaming":
+        elif state in ACTIVE_STATES:
             d["frame_rate"] = round(estimate_fps(
                 self.buffer, since=self.upstream.session_start_ts()), 1)
         return d
@@ -436,12 +527,136 @@ class Supervisor:
             b = self.phone.battery()
         except PhoneUnavailable as e:
             log.info("battery unavailable: %s", e)
+            self._note_cable_failure(e)
+            # The cable is the only thing that can answer this, so with it gone
+            # the honest answer is "unknown", not "no".
+            self._app_running = None
             return {}
+        self._note_cable_ok()
+        # Asked here rather than on the health tick because this is a usbmux
+        # round trip. It is the one signal that separates an app iOS has
+        # suspended from one it has killed: over WiFi both simply refuse.
+        try:
+            self._app_running = bool(self.phone.is_running())
+        except PhoneUnavailable as e:
+            log.info("app state unavailable: %s", e)
+            self._app_running = None
+        # Already on the health thread, and the policy only decides -- any phone
+        # call it makes here is the release path, which must happen promptly or
+        # the app stays asleep.
+        self.backgrounding.on_battery(b.get("level"))
         return {"battery": b.get("level"), "battery_temperature": b.get("temperature"),
                 "charging": bool(b.get("charging")),
                 "battery_current_ma": b.get("current_ma"),
                 "charger_watts": b.get("charger_watts"),
                 "battery_health_pct": b.get("health_pct")}
+
+    def _camera_online(self, state, now, newest):
+        """Whether the camera is working, which is not the same as sending frames.
+
+        Upstream reports `backgrounded` as offline, and for a phone that wandered
+        into the background on its own that is right: nothing will bring it back.
+
+        But when this service backgrounded the app *deliberately* to save
+        battery, the camera is fine -- it wakes for the next capture on its own,
+        proven on the device. Calling that offline would fire the five-minute
+        offline alert every night the battery ran low, and an alert that cries
+        wolf nightly is one nobody reads.
+
+        Only a backgrounding this service performed counts: `backgrounded` is
+        set by our own successful call, so a phone somebody else backgrounded
+        still reads offline.
+        """
+        if state == "backgrounded" and self.backgrounding.backgrounded:
+            return True
+        if self.upstream is not None:
+            return self.upstream.camera_online(now)
+        return (self.stream_state == "streaming"
+                and newest is not None and now - newest < self.fresh_s)
+
+    # -- session hooks, for Upstream ------------------------------------------
+    #
+    # Upstream calls these on its tick thread, which must never block: a usbmux
+    # round trip there would stall every hold, probe and state publication behind
+    # it. They hand the work to the device worker, the same single thread that
+    # already serialises MQTT-driven device actions, so two phone calls can never
+    # overlap on the cable.
+
+    def on_session_open(self):
+        if self.backgrounding.backgrounded:
+            self._device_executor.submit(self.backgrounding.on_session_open)
+
+    def on_session_close(self):
+        if self.backgrounding.active:
+            self._device_executor.submit(self.backgrounding.on_session_close)
+
+    def _boolean_state(self, state, held):
+        """The independent axes behind `stream_state`, as plain booleans.
+
+        `stream_state` says what the camera is doing in one value; these say which
+        part is broken, which is the question at 1am. They are not a decomposition
+        of it -- the cable and the WiFi fail separately, and the app can be alive
+        on a phone that is sending nothing.
+        """
+        # A refusal proves the phone's IP stack answered: something is listening
+        # on the network even though the app's port is not. A timeout does not.
+        reachable_wifi = state in ACTIVE_STATES + ("ready", "streaming_off", "backgrounded")
+        return {
+            "reachable_over_wifi": reachable_wifi,
+            "reachable_over_cable": self._cable_state == "ok",
+            # Only the cable can answer this. Over WiFi a suspended app and a
+            # killed one both simply refuse. None means "not asked yet", which is
+            # published as unknown rather than guessed at.
+            "app_running": self._app_running,
+            # Reachable and willing to send. False for streaming_off (the Start
+            # streaming button has not been tapped) and for backgrounded.
+            "app_streaming": state in ACTIVE_STATES + ("ready",),
+            "capturing_stills": any(h.startswith("capture") for h in held),
+            "being_viewed": any(h.startswith("viewer") for h in held),
+            # Whether the power-saving policy is engaged, which is not the same
+            # as the switch being on: with a full battery the switch is on and
+            # this is off.
+            "backgrounding_active": self.backgrounding.active,
+        }
+
+    # -- cable self-heal ------------------------------------------------------
+
+    def _note_cable_ok(self):
+        if self._cable_down_since is not None:
+            log.info("cable recovered after %.0fs", self._clock() - self._cable_down_since)
+        self._cable_down_since = None
+        self._cable_state = "ok"
+
+    def _note_cable_failure(self, exc):
+        """Record a cable failure and restart the process if every guard agrees.
+
+        Only a usbmuxd failure starts the clock. An unplugged phone is reported
+        but never counted: it is the normal state whenever the cable is out, and
+        restarting for it would turn unplugging the phone into a restart loop.
+        """
+        if not is_usbmuxd_down(exc):
+            self._cable_down_since = None
+            self._cable_state = "no_device"
+            return
+
+        now = self._clock()
+        self._cable_state = "usbmuxd_down"
+        if self._cable_down_since is None:
+            self._cable_down_since = now
+            log.warning("usbmuxd unreachable; the socket mount may be orphaned: %s", exc)
+        if self._cable_restart_needed(now):
+            self._last_cable_restart = now
+            self._request_restart()
+
+    def _cable_restart_needed(self, now):
+        if now - self._started_at < CABLE_MIN_UPTIME_S:
+            return False
+        if now - self._cable_down_since < CABLE_FAILING_FOR_S:
+            return False
+        if (self._last_cable_restart is not None
+                and now - self._last_cable_restart < CABLE_RESTART_COOLDOWN_S):
+            return False
+        return True
 
     # -- loops --------------------------------------------------------------
 

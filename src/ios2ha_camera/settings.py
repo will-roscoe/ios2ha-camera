@@ -11,6 +11,7 @@ CONTROLS = {
     "window_max_s", "ramp_tau_s", "black_level_override", "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
+    "backgrounding", "background_below_pct", "resume_above_pct",
 }
 
 # Discovery publishes one number entity per channel, so the per-channel names
@@ -77,6 +78,16 @@ class Settings:
     autofocus: bool = True
     on_demand: bool = True               # False keeps the connection open continuously
     live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
+    # Backgrounding between captures. iOS suspends a backgrounded app's listening
+    # socket while leaving the process alive, which is worth roughly 370 mA:
+    # measured 2026-09-13, the phone went from 30% to 96% in under three hours
+    # backgrounded, where streaming barely breaks even on this 3 W port.
+    backgrounding: bool = True
+    # Hysteresis, so a phone hovering at the threshold does not thrash between
+    # foreground and background. Only engages when the battery is genuinely low,
+    # and stops once it has recovered a real margin.
+    background_below_pct: float = 50.0
+    resume_above_pct: float = 80.0
 
     @classmethod
     def from_env(cls, env):

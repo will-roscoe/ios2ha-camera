@@ -22,6 +22,7 @@ from collections import deque
 from .ingest import BOUNDARY
 from .mjpeg import iter_multipart
 from .ring_buffer import Frame
+from .states import ACTIVE_STATES, classify_probe_failure
 
 log = logging.getLogger(__name__)
 
@@ -94,11 +95,19 @@ class Hold:
 
 class Upstream:
     def __init__(self, ingestor, buffer, settings, on_state=lambda s: None,
-                 *, probe=None, clock=None):
+                 *, probe=None, clock=None,
+                 on_session_open=lambda: None, on_session_close=lambda: None):
         self.ing = ingestor
         self.buffer = buffer
         self.s = settings
         self.on_state = on_state
+        # Called as a session opens and closes, so something else can prepare the
+        # phone -- 2.1.0 uses them to foreground and background the app. They must
+        # not block: this is the tick thread, and a usbmux round trip here would
+        # stall every hold, probe and state publication behind it. The supervisor
+        # hands them to its device worker.
+        self.on_session_open = on_session_open
+        self.on_session_close = on_session_close
         self.probe = probe if probe is not None else (lambda: http_probe(self.s))
         self._clock = clock if clock is not None else time.time
         self._lock = threading.Lock()
@@ -108,7 +117,8 @@ class Upstream:
         self._open = False
         self._opened_at = None
         self._stop_failed = False
-        self._failure = None            # None | "streaming_off" | "unreachable"
+        # None | "streaming_off" | "backgrounded" | "unavailable"
+        self._failure = None
         self._probe_failures = 0
         self._next_probe_at = 0.0
         self._last_tick = self._clock()
@@ -176,12 +186,29 @@ class Upstream:
         opened_at = self._opened_at
         if (self._open and opened_at is not None and newest is not None
                 and newest >= opened_at and now - newest < FRESH_S):
-            return "streaming"
+            return self._active_substate(now)
         if self._failure is not None:
             return self._failure
         if newest is not None and now - newest < ONLINE_IDLE_S:
-            return "idle"
-        return "unreachable"
+            return "ready"
+        return "unavailable"
+
+    def _active_substate(self, now):
+        """Which sub-state of "active" applies: frames are arriving, for whom?
+
+        Viewing wins when both apply. A viewer is a person waiting on the picture;
+        a capture is a background job that will finish on its own either way.
+
+        Neither holding while frames flow is reachable with `on_demand` switched
+        off, where the connection is simply always open, so that keeps the plain
+        name the state had before this release.
+        """
+        held = self.holders(now)
+        if any(h.startswith("viewer") for h in held):
+            return "in_use"
+        if any(h.startswith("capture") for h in held):
+            return "capturing"
+        return "streaming"
 
     def camera_online(self, now=None):
         now = self._clock() if now is None else now
@@ -190,7 +217,12 @@ class Upstream:
         # Home Assistant alert already watches for.
         if self.tick_age(now) > TICK_STALE_S:
             return False
-        return self.state(now) in ("streaming", "idle")
+        # "backgrounded" is deliberately absent. The phone answers and the app is
+        # alive, but nothing in 2.0.0 brings it back to the foreground, so frames
+        # are genuinely unavailable and the offline alert should still fire. A
+        # refusal also cannot tell a suspended app from a killed one; the
+        # `app_running` boolean, read over the cable, is what separates those.
+        return self.state(now) in ACTIVE_STATES + ("ready",)
 
     def duty_1h(self, now=None):
         now = self._clock() if now is None else now
@@ -232,7 +264,7 @@ class Upstream:
         except Exception as e:
             log.info("probe failed: %s: %s", type(e).__name__, e)
             with self._wake:
-                self._failure = "unreachable"
+                self._failure = classify_probe_failure(e)
                 self._probe_failures += 1
         else:
             if frame is not None:
@@ -253,11 +285,29 @@ class Upstream:
         stack them alongside its own."""
         return self._opened_at
 
+    @staticmethod
+    def _safely(fn, what):
+        """Run a session callback without letting it break the tick.
+
+        These belong to someone else, and the connection lifecycle must not stop
+        because a power-saving hook raised. `_run` would swallow it anyway, but
+        that would skip the rest of this tick -- including publishing state.
+        """
+        try:
+            fn()
+        except Exception:
+            log.exception("%s failed", what)
+
     def tick(self, now=None):
         now = self._clock() if now is None else now
         self._last_tick = now
         want = self._wanted(now)
         if want and not self._open:
+            # Before ingest, not after: if the app is backgrounded its socket is
+            # suspended, so connecting first would just fail. Waking it is
+            # asynchronous, and the caller's existing wait for frames
+            # (CAPTURE_OPEN_TIMEOUT_S) is what absorbs the latency.
+            self._safely(self.on_session_open, "on_session_open")
             self.ing.start()
             self._open, self._opened_at = True, now
         elif self._open and (not want or self._stop_failed):
@@ -272,6 +322,9 @@ class Upstream:
                     self._sessions.popleft()
                 self._open, self._opened_at = False, None
                 self._next_probe_at = now + PROBE_INTERVAL_S
+                # After the connection is really closed, so the app is never put
+                # to sleep with a client still attached.
+                self._safely(self.on_session_close, "on_session_close")
             else:
                 self._stop_failed = True
                 log.warning("ingest thread did not stop; retrying before it can be started again")

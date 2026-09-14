@@ -6,8 +6,37 @@ import logging
 import paho.mqtt.client as mqtt
 
 from . import version
+from .states import STREAM_STATES
 
 log = logging.getLogger(__name__)
+
+
+# (object_id, display name, device_class or None)
+#
+# stream_state answers "what is it doing" in one value, which is what a dashboard
+# wants. These answer "which part is broken", which is what you want at 1am, and
+# they are independent axes rather than a decomposition of that one enum: the
+# cable and the WiFi can fail separately, and the app can be alive on a phone
+# that is not currently sending anything.
+_BINARY_SENSORS = [
+    ("camera_online", "Camera online", "connectivity"),
+    ("charging", "Phone charging", "battery_charging"),
+    # Two independent transports to the same phone. Losing the cable costs
+    # battery readings and app control; losing WiFi costs the picture.
+    ("reachable_over_cable", "Reachable over cable", "connectivity"),
+    ("reachable_over_wifi", "Reachable over WiFi", "connectivity"),
+    # Read over the cable, so this is what separates a backgrounded app (alive,
+    # socket suspended) from one iOS has killed. They look identical over WiFi.
+    ("app_running", "App running", "running"),
+    ("app_streaming", "App streaming", None),
+    # Who the frames are for. Both can be true at once.
+    ("capturing_stills", "Capturing stills", None),
+    ("being_viewed", "Being viewed", None),
+    # Whether the power-saving policy is currently engaged. Distinct from the
+    # `backgrounding` switch, which only says whether it is *allowed* to engage:
+    # with a full battery the switch is on and this is off.
+    ("backgrounding_active", "Backgrounding active", None),
+]
 
 
 def _e(prefix, comp, obj, cfg):
@@ -41,8 +70,18 @@ def _e(prefix, comp, obj, cfg):
 # Luminance figures are relative 0-255 after black-level subtraction, not lux,
 # so they deliberately carry no unit; see the design's section 4.3.
 _SENSORS = [
+    # Options come from states.STREAM_STATES rather than a second copy: Home
+    # Assistant rejects a state that is not in this list, so the two drifting
+    # apart shows up as an entity that silently goes unavailable.
     dict(obj="stream_state", name="Stream state", device_class="enum",
-         options=["streaming", "idle", "streaming_off", "unreachable"], icon="mdi:video-wireless"),
+         options=list(STREAM_STATES), icon="mdi:video-wireless"),
+    # The USB side, which is independent of the WiFi stream above. "no_device" is
+    # the cable being out, which is ordinary; "usbmuxd_down" means the daemon is
+    # unreachable and the socket mount is presumed orphaned, which is a fault and
+    # is what the offline alert should watch.
+    dict(obj="cable_state", name="Cable state", device_class="enum",
+         options=["ok", "no_device", "usbmuxd_down"], icon="mdi:usb-port",
+         category="diagnostic"),
     dict(obj="subject_level", name="Subject level", state_class="measurement", precision=1,
          icon="mdi:brightness-4"),
     dict(obj="depth_used", name="Depth used", unit="frames", state_class="measurement",
@@ -139,6 +178,13 @@ _SENSORS += [
 _NUMBERS = [
     dict(obj="interval_s", name="Capture interval", lo=30, hi=3600, step=1, unit="s",
          device_class="duration", icon="mdi:timer-outline"),
+    # The hysteresis band for backgrounding. Two numbers rather than one so a
+    # phone sitting at the threshold cannot thrash: it engages low and only
+    # stops once the battery has recovered a real margin.
+    dict(obj="background_below_pct", name="Background below", lo=0, hi=100, step=1,
+         unit="%", device_class="battery", icon="mdi:battery-arrow-down"),
+    dict(obj="resume_above_pct", name="Resume above", lo=0, hi=100, step=1,
+         unit="%", device_class="battery", icon="mdi:battery-arrow-up"),
     dict(obj="fixed_depth", name="Fixed depth", lo=1, hi=1000, step=1, unit="frames",
          icon="mdi:layers-triple"),
     dict(obj="target_level", name="Target subject level", lo=1, hi=255, step=1,
@@ -219,7 +265,8 @@ def discovery_payloads(s):
                      "entity_category": "config"}))
     for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
                               ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong"),
-                              ("on_demand", "On demand", "mdi:power-plug-off-outline")):
+                              ("on_demand", "On demand", "mdi:power-plug-off-outline"),
+                              ("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down")):
         out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
                      "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
                      "entity_category": "config", "icon": icon}))
@@ -245,11 +292,13 @@ def discovery_payloads(s):
         out.append(_e(p, "button", spec["obj"], cfg))
     for spec in _SENSORS:
         out.append(_e(p, "sensor", spec["obj"], _sensor(p, spec)))
-    for name, label, device_class in (("camera_online", "Camera online", "connectivity"),
-                                      ("charging", "Phone charging", "battery_charging")):
-        out.append(_e(p, "binary_sensor", name, {"name": label, "state_topic": st(name),
-                     "payload_on": "true", "payload_off": "false",
-                     "device_class": device_class, "entity_category": "diagnostic"}))
+    for name, label, device_class in _BINARY_SENSORS:
+        cfg = {"name": label, "state_topic": st(name),
+               "payload_on": "true", "payload_off": "false",
+               "entity_category": "diagnostic"}
+        if device_class:
+            cfg["device_class"] = device_class
+        out.append(_e(p, "binary_sensor", name, cfg))
     return out
 
 

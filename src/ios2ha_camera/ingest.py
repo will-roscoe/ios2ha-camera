@@ -18,6 +18,7 @@ import time
 
 from .mjpeg import iter_multipart
 from .ring_buffer import Frame
+from .states import classify_probe_failure
 
 log = logging.getLogger(__name__)
 
@@ -104,7 +105,9 @@ class Ingestor:
             try:
                 self._stream_once()
                 if not self._stop.is_set() and self._frames == 0:
-                    self._set_state("unreachable", "stream ended without a frame")
+                    # It accepted the connection and then gave nothing, so this
+                    # is not a backgrounded app refusing: something is wrong.
+                    self._set_state("unavailable", "stream ended without a frame")
             except Exception as e:  # refused, reset, timed out, bad status, malformed
                 if self._stop.is_set():
                     break
@@ -149,6 +152,11 @@ class Ingestor:
         if isinstance(e, _HttpStatus) and e.status == 503:
             self._set_state("streaming_off", "the app answered 503: streaming is off")
         elif isinstance(e, _HttpStatus):
-            self._set_state("unreachable", f"the app answered HTTP {e.status}")
+            # It answered, so it is reachable; it just said something unusable.
+            self._set_state("unavailable", f"the app answered HTTP {e.status}")
         else:
-            self._set_state("unreachable", f"{type(e).__name__}: {e}")
+            # Same classification the idle probe uses, so a backgrounded app
+            # reads the same whether it was the probe or a session that found
+            # it. Sharing the function is the point: these two paths reporting
+            # different names for one condition is how the state model drifts.
+            self._set_state(classify_probe_failure(e), f"{type(e).__name__}: {e}")

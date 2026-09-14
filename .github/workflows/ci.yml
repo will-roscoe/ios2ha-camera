@@ -7,7 +7,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # develop is the integration branch that work merges into; main only receives
+    # develop. Without develop here, a merge into it would go unverified, since
+    # pull_request checks the merge preview rather than the branch afterwards.
+    branches: [main, develop]
   pull_request:
   workflow_call:
 
