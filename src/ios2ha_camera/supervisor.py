@@ -474,9 +474,20 @@ class Supervisor:
 
     def on_stream_state(self, state):
         """Ingest calls this on every change; published at once, not at the
-        next interval, so an outage is visible within the health tick."""
+        next interval, so an outage is visible within the health tick.
+
+        The whole health reading goes with it, not just this one value:
+        camera_online, the booleans and last_frame are all derived from the same
+        state, and publishing only this left them contradicting it until the next
+        health tick -- up to 30 s, and after every restart, because the first
+        tick runs before the first probe has put a frame in the buffer.
+        """
         self.stream_state = state
-        self.publish_state({"stream_state": state})
+        d = self.health_state()
+        # The value we were told, not a re-read: Upstream decides what changed and
+        # in what order, and a newer state will arrive through here on its own.
+        d["stream_state"] = state
+        self.publish_state(d)
 
     def health_state(self, now=None):
         now = time.time() if now is None else now
