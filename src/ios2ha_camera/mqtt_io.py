@@ -6,6 +6,7 @@ import logging
 import paho.mqtt.client as mqtt
 
 from . import version
+from .settings import mqtt_endpoints
 from .states import STREAM_STATES
 
 log = logging.getLogger(__name__)
@@ -307,12 +308,24 @@ class MqttIO:
         self.s = settings
         self.on_control = on_control
         self.on_connected = on_connected
-        self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        # Resolved once, here: a malformed MQTT_URL fails at startup with a message
+        # naming the problem, rather than as a connection that never comes up.
+        self._endpoints = mqtt_endpoints(settings)
+        self._endpoint = 0
+        first = self._endpoints[0]
+        # Transport and TLS are fixed per client, which is why a fallback list must
+        # share one scheme (parse_mqtt_urls enforces it).
+        self.c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport=first.transport)
+        if first.tls:
+            self.c.tls_set()
+        if first.transport == "websockets":
+            self.c.ws_set_options(path=first.path)
         if settings.mqtt_user:
             self.c.username_pw_set(settings.mqtt_user, settings.mqtt_password)
         self.c.will_set(f"{settings.mqtt_prefix}/available", "offline", retain=True)
         self.c.on_connect = self._on_connect
         self.c.on_message = self._on_message
+        self.c.on_connect_fail = self._on_connect_fail
 
     def _on_connect(self, c, u, flags, rc, props=None):
         c.subscribe(f"{self.s.mqtt_prefix}/set/#")
@@ -351,7 +364,22 @@ class MqttIO:
         # Asynchronous so a broker that is down at startup does not abort the
         # process; paho retries in the background once the loop is running,
         # while capture and archiving carry on.
-        self.c.connect_async(self.s.mqtt_host, self.s.mqtt_port, keepalive=30)
+        ep = self._endpoints[self._endpoint]
+        self.c.connect_async(ep.host, ep.port, keepalive=30)
+
+    def _on_connect_fail(self, client, userdata):
+        """paho calls this after each failed attempt, before it retries. With more
+        than one broker in MQTT_URL, aim the retry at the next one, wrapping round."""
+        if len(self._endpoints) < 2:
+            return
+        self._endpoint = (self._endpoint + 1) % len(self._endpoints)
+        ep = self._endpoints[self._endpoint]
+        # host and port may only be changed while disconnected, which is exactly
+        # when this runs; reconnect() then reads them back.
+        client.host, client.port = ep.host, ep.port
+        if ep.transport == "websockets":
+            client.ws_set_options(path=ep.path)
+        log.info("MQTT broker unreachable; trying %s://%s:%s next", ep.scheme, ep.host, ep.port)
 
     def loop_start(self):
         self.c.loop_start()

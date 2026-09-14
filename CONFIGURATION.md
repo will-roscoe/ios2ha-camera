@@ -13,7 +13,8 @@ Read by `Settings.from_env`, and coerced to the type of each field's default.
 | `PHONE_PORT` | `8080` | |
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
-| `MQTT_HOST` / `MQTT_PORT` | `192.168.1.5` / `1883` | |
+| `MQTT_URL` | unset | The broker, as one or more space-separated URLs tried in order when a connection fails. The scheme sets transport, TLS and default port together: `mqtt://` (1883), `mqtts://` (8883, TLS), `ws://` (80, websockets), `wss://` (443, websockets over TLS). A websocket path comes from the URL, `/mqtt` if none. Every entry must use the same scheme, because the transport is fixed when the client starts. Credentials go in `MQTT_USER` / `MQTT_PASSWORD`, never in the URL: a URL containing them is refused at startup so it cannot end up in a log. Example: `mqtts://broker.lan mqtts://broker-2.lan` |
+| `MQTT_HOST` / `MQTT_PORT` | `192.168.1.5` / `1883` | **Deprecated**, the older way to say `mqtt://host:port`. Still used when `MQTT_URL` is unset; when both are set, `MQTT_URL` wins and a warning names what was ignored |
 | `MQTT_USER` / `MQTT_PASSWORD` | — | A broker-local login, such as the Mosquitto add-on's `logins` option. No Home Assistant account is needed; see OPERATIONS.md |
 | `MQTT_PREFIX` | `ios2ha_camera` | Root of every topic |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
