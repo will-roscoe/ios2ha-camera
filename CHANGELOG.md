@@ -18,6 +18,34 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.2.0 — 2026-09-14
+
+**`MQTT_URL`: one setting for the broker, with fallbacks.** The scheme carries the transport, TLS and
+default port together, so there is no matrix of port, TLS and transport variables to keep consistent:
+
+```
+MQTT_URL='mqtt://192.168.1.5'                    # plain TCP, port 1883
+MQTT_URL='mqtts://broker.lan'                    # TLS, port 8883
+MQTT_URL='ws://192.168.1.5:1884'                 # websockets
+MQTT_URL='wss://broker.example/mqtt'             # websockets over TLS
+MQTT_URL='mqtts://broker.lan mqtts://backup.lan' # tried in order
+```
+
+When a connection attempt fails, the next broker in the list is tried, wrapping round. That uses
+paho's own `on_connect_fail` hook and its host and port setters, which are only permitted while
+disconnected — exactly when the hook runs.
+
+Two things are refused at startup rather than failing later and more confusingly:
+
+- **Credentials in the URL.** They belong in `MQTT_USER` and `MQTT_PASSWORD`. A URL carrying them would
+  be quoted by any error or log line about it, so the error names the entry by position instead.
+- **A list that mixes schemes**, such as `mqtt://` with `wss://`. paho fixes the transport when the
+  client is created and TLS before it connects, so a fallback cannot move between them.
+
+**Nothing breaks.** `MQTT_HOST` and `MQTT_PORT` are deprecated but keep working when `MQTT_URL` is unset,
+without logging anything, since a deployment that has not migrated is not a fault. Setting both is the
+only case that warns, naming the variables `MQTT_URL` overrode.
+
 ## 2.1.0 — 2026-09-14
 
 **The phone now charges instead of merely holding station.** When the battery is low the

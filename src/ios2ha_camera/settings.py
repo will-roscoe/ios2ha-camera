@@ -1,6 +1,10 @@
 """Runtime settings: defaults, environment overrides, and Home Assistant control writes."""
 
+import logging
 from dataclasses import dataclass
+from urllib.parse import urlsplit
+
+log = logging.getLogger(__name__)
 
 # Control names Home Assistant may write. Each must name a real Settings field;
 # tests/test_settings.py enforces that, because a control naming no field would
@@ -24,6 +28,7 @@ _ENV_MAP = {
     "PHONE_HOST": "phone_host",
     "PHONE_PORT": "phone_port",
     "PHONE_PASSWORD": "phone_password",
+    "MQTT_URL": "mqtt_url",
     "MQTT_HOST": "mqtt_host",
     "MQTT_PORT": "mqtt_port",
     "MQTT_USER": "mqtt_user",
@@ -51,6 +56,9 @@ class Settings:
     phone_port: int = 8080
     phone_user: str = "root"
     phone_password: str = ""
+    # One or more space-separated broker URLs; see parse_mqtt_urls. When empty,
+    # the deprecated mqtt_host / mqtt_port below say the same thing.
+    mqtt_url: str = ""
     mqtt_host: str = "192.168.1.5"
     mqtt_port: int = 1883
     mqtt_user: str = "ios2ha"
@@ -96,6 +104,9 @@ class Settings:
             if key not in env:
                 continue
             setattr(s, attr, _coerce_like(getattr(s, attr), env[key]))
+        # Remembered so mqtt_endpoints() can name which deprecated variables an
+        # MQTT_URL overrode. Not a dataclass field: it is provenance, not a setting.
+        s._mqtt_alias_env = tuple(k for k in ("MQTT_HOST", "MQTT_PORT") if k in env)
         return s
 
     def apply_control(self, name, value):
@@ -115,6 +126,81 @@ class Settings:
             value = tuple(float(v) for v in value)
         setattr(self, name, value)
         return True
+
+
+@dataclass(frozen=True)
+class MqttEndpoint:
+    """One broker address, with what its scheme implies about how to reach it."""
+
+    scheme: str
+    host: str
+    port: int
+    transport: str      # "tcp" or "websockets", as paho's Client(transport=...) takes it
+    tls: bool
+    path: str           # the websocket path; unused over tcp
+
+
+# scheme -> (default port, paho transport, TLS). The scheme carries all three, so there
+# is no matrix of MQTT_PORT / MQTT_TLS / MQTT_TRANSPORT variables to keep consistent.
+_MQTT_SCHEMES = {
+    "mqtt": (1883, "tcp", False),
+    "mqtts": (8883, "tcp", True),
+    "ws": (80, "websockets", False),
+    "wss": (443, "websockets", True),
+}
+
+
+def parse_mqtt_urls(value):
+    """Parse MQTT_URL: one or more space-separated broker URLs, tried in order.
+
+    Credentials in a URL are refused: anything that quotes the URL, an error or a
+    log line, would print the password, so they belong in MQTT_USER and
+    MQTT_PASSWORD. A list mixing schemes is refused too: paho fixes the transport
+    when the client is built and TLS before connecting, so a fallback cannot move
+    between them. Errors name the entry by position, never by its text.
+    """
+    entries = value.split()
+    if not entries:
+        raise ValueError("MQTT_URL is set but empty")
+    endpoints = []
+    for n, raw in enumerate(entries, 1):
+        try:
+            u = urlsplit(raw)
+            port = u.port
+        except ValueError:
+            raise ValueError(f"MQTT_URL entry {n} is not a valid URL") from None
+        if u.scheme not in _MQTT_SCHEMES:
+            raise ValueError(f"MQTT_URL entry {n} must use one of "
+                             f"{', '.join(s + '://' for s in _MQTT_SCHEMES)}")
+        if u.username is not None or u.password is not None:
+            raise ValueError(f"MQTT_URL entry {n} embeds credentials; put them in "
+                             "MQTT_USER and MQTT_PASSWORD instead")
+        if not u.hostname:
+            raise ValueError(f"MQTT_URL entry {n} has no host")
+        default_port, transport, tls = _MQTT_SCHEMES[u.scheme]
+        endpoints.append(MqttEndpoint(u.scheme, u.hostname, port or default_port,
+                                      transport, tls, u.path or "/mqtt"))
+    if len({e.scheme for e in endpoints}) > 1:
+        raise ValueError("MQTT_URL entries must all use the same scheme: paho fixes the "
+                         "transport and TLS when the client is created")
+    return endpoints
+
+
+def mqtt_endpoints(settings):
+    """The brokers to try, in order.
+
+    MQTT_URL wins. MQTT_HOST and MQTT_PORT are the deprecated way to say the same
+    thing and keep working on their own without complaint, since a deployment that
+    has not migrated is not a fault; a warning appears only when both are set and
+    one is being ignored.
+    """
+    if settings.mqtt_url:
+        ignored = getattr(settings, "_mqtt_alias_env", ())
+        if ignored:
+            log.warning("MQTT_URL is set, so %s %s ignored", " and ".join(ignored),
+                        "is" if len(ignored) == 1 else "are")
+        return parse_mqtt_urls(settings.mqtt_url)
+    return [MqttEndpoint("mqtt", settings.mqtt_host, settings.mqtt_port, "tcp", False, "/mqtt")]
 
 
 def _coerce_like(default, raw):
