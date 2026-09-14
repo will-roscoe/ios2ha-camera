@@ -32,6 +32,10 @@ _BINARY_SENSORS = [
     # Who the frames are for. Both can be true at once.
     ("capturing_stills", "Capturing stills", None),
     ("being_viewed", "Being viewed", None),
+    # Whether the power-saving policy is currently engaged. Distinct from the
+    # `backgrounding` switch, which only says whether it is *allowed* to engage:
+    # with a full battery the switch is on and this is off.
+    ("backgrounding_active", "Backgrounding active", None),
 ]
 
 
@@ -174,6 +178,13 @@ _SENSORS += [
 _NUMBERS = [
     dict(obj="interval_s", name="Capture interval", lo=30, hi=3600, step=1, unit="s",
          device_class="duration", icon="mdi:timer-outline"),
+    # The hysteresis band for backgrounding. Two numbers rather than one so a
+    # phone sitting at the threshold cannot thrash: it engages low and only
+    # stops once the battery has recovered a real margin.
+    dict(obj="background_below_pct", name="Background below", lo=0, hi=100, step=1,
+         unit="%", device_class="battery", icon="mdi:battery-arrow-down"),
+    dict(obj="resume_above_pct", name="Resume above", lo=0, hi=100, step=1,
+         unit="%", device_class="battery", icon="mdi:battery-arrow-up"),
     dict(obj="fixed_depth", name="Fixed depth", lo=1, hi=1000, step=1, unit="frames",
          icon="mdi:layers-triple"),
     dict(obj="target_level", name="Target subject level", lo=1, hi=255, step=1,
@@ -254,7 +265,8 @@ def discovery_payloads(s):
                      "entity_category": "config"}))
     for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
                               ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong"),
-                              ("on_demand", "On demand", "mdi:power-plug-off-outline")):
+                              ("on_demand", "On demand", "mdi:power-plug-off-outline"),
+                              ("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down")):
         out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
                      "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
                      "entity_category": "config", "icon": icon}))

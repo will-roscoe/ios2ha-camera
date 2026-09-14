@@ -18,6 +18,53 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 1.3.0 — 2026-09-14
+
+**The phone now charges instead of merely holding station.** When the battery is low the
+supervisor backgrounds the camera app between captures and wakes it again when something
+needs frames. Measured on the device: backgrounded, the phone went from **30% to 96% in
+under three hours**, where streaming on the same 3 W port barely breaks even.
+
+iOS suspends a backgrounded app's listening socket while leaving the process running, so
+this is a pause rather than a stop. Verified on the device across a full round trip, with
+the process id unchanged at every step and the stream resuming with no tap:
+
+| Step | pid | Stream |
+|---|---|---|
+| before | 22711 | streaming, 186,939 B |
+| backgrounded | 22711 | connection refused within 3 s |
+| foregrounded | 22711 | streaming, 185,601 B |
+
+**Hysteresis, not a threshold.** It engages below `background_below_pct` (default 50%) and
+releases above `resume_above_pct` (default 80%), holding whatever it was doing in between.
+One threshold would let a phone resting near it flip on every reading, and each flip costs a
+usbmux round trip and drops the WiFi radio into power save. If the two numbers are set the
+wrong way round the feature disables itself and says so, rather than thrashing.
+
+**New controls:** `switch.ios2ha_camera_backgrounding` (default on),
+`number.ios2ha_camera_background_below_pct`, `number.ios2ha_camera_resume_above_pct`.
+
+**New sensor:** `binary_sensor.ios2ha_camera_backgrounding_active` — whether the policy is
+currently engaged, which is not the same as the switch being on. With a full battery the
+switch is on and this is off.
+
+**The offline alert had to change with it**, and this is the reason 1.2.0 came first. A
+backgrounded app reports `stream_state: backgrounded`, which is offline as far as
+`camera_online` is concerned — correct for a phone that wandered into the background on its
+own, since nothing will bring it back. But a backgrounding *this service performed* is not a
+fault: the app wakes for the next capture by itself. So `camera_online` now stays true in
+that one case, and only that one — a phone somebody else backgrounded still alerts, and so
+does a genuine outage while the policy is engaged.
+
+Turning the switch off while the app is backgrounded foregrounds it immediately, rather than
+leaving the camera dark until the battery happened to recover.
+
+Also fixed: `PhoneManager.launch` never passed `kill_existing`, and pymobiledevice3 defaults
+it to `True`. Every "launch" therefore killed the running app and cold-started a new one, and
+a cold start leaves streaming off until somebody taps Start streaming in the app. That is
+right for the relaunch button, which exists to revive a dead app, so `launch()` keeps it;
+`foreground()` and `background()` are new and do not.
+
 ## 1.2.0 — 2026-09-13
 
 **`stream_state`'s values have changed. Automations and templates that match them by

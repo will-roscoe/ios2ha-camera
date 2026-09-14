@@ -95,11 +95,19 @@ class Hold:
 
 class Upstream:
     def __init__(self, ingestor, buffer, settings, on_state=lambda s: None,
-                 *, probe=None, clock=None):
+                 *, probe=None, clock=None,
+                 on_session_open=lambda: None, on_session_close=lambda: None):
         self.ing = ingestor
         self.buffer = buffer
         self.s = settings
         self.on_state = on_state
+        # Called as a session opens and closes, so something else can prepare the
+        # phone -- 1.3.0 uses them to foreground and background the app. They must
+        # not block: this is the tick thread, and a usbmux round trip here would
+        # stall every hold, probe and state publication behind it. The supervisor
+        # hands them to its device worker.
+        self.on_session_open = on_session_open
+        self.on_session_close = on_session_close
         self.probe = probe if probe is not None else (lambda: http_probe(self.s))
         self._clock = clock if clock is not None else time.time
         self._lock = threading.Lock()
@@ -277,11 +285,29 @@ class Upstream:
         stack them alongside its own."""
         return self._opened_at
 
+    @staticmethod
+    def _safely(fn, what):
+        """Run a session callback without letting it break the tick.
+
+        These belong to someone else, and the connection lifecycle must not stop
+        because a power-saving hook raised. `_run` would swallow it anyway, but
+        that would skip the rest of this tick -- including publishing state.
+        """
+        try:
+            fn()
+        except Exception:
+            log.exception("%s failed", what)
+
     def tick(self, now=None):
         now = self._clock() if now is None else now
         self._last_tick = now
         want = self._wanted(now)
         if want and not self._open:
+            # Before ingest, not after: if the app is backgrounded its socket is
+            # suspended, so connecting first would just fail. Waking it is
+            # asynchronous, and the caller's existing wait for frames
+            # (CAPTURE_OPEN_TIMEOUT_S) is what absorbs the latency.
+            self._safely(self.on_session_open, "on_session_open")
             self.ing.start()
             self._open, self._opened_at = True, now
         elif self._open and (not want or self._stop_failed):
@@ -296,6 +322,9 @@ class Upstream:
                     self._sessions.popleft()
                 self._open, self._opened_at = False, None
                 self._next_probe_at = now + PROBE_INTERVAL_S
+                # After the connection is really closed, so the app is never put
+                # to sleep with a client still attached.
+                self._safely(self.on_session_close, "on_session_close")
             else:
                 self._stop_failed = True
                 log.warning("ingest thread did not stop; retrying before it can be started again")

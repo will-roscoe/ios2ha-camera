@@ -67,6 +67,8 @@ All are `entity_category: config`, so Home Assistant files them under Configurat
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | auto |
 | `number.ios2ha_camera_black_level_2` | Black level override B | 0–32 step 0.1 | | auto |
 | `number.ios2ha_camera_live_max_window_s` | Stacked feed window | 0.5–15 step 0.5 | s | `3.0` |
+| `number.ios2ha_camera_background_below_pct` | Background below | 0–100 step 1 | % | `50` |
+| `number.ios2ha_camera_resume_above_pct` | Resume above | 0–100 step 1 | % | `80` |
 
 What the less obvious ones do:
 
@@ -81,6 +83,11 @@ What the less obvious ones do:
   0.24/0.46/0.21). Blank is not zero; setting one to 0 pins it to zero.
 - **Denoise strength** is conservative on purpose: at higher strengths it sharpens text but paints
   flat areas into mottling.
+- **Background below / Resume above** are a hysteresis band, not two independent settings. The app
+  is backgrounded between captures once the battery falls below the first, and left alone once it
+  rises above the second; in between, whatever it was doing continues. A single threshold would let
+  a phone resting near it flip on every reading, and each flip costs a usbmux round trip. Set the
+  wrong way round (resume below background) the feature disables itself and logs a warning.
 - **Stacked feed window** caps how many seconds of frames `/live/stacked` may blend into its running
   average — a smear budget, not a frame count, so it means the same thing whatever the phone's frame
   rate happens to be. It follows the same brightness law as the stills, just capped lower.
@@ -95,6 +102,7 @@ What the less obvious ones do:
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | **Leave this on** | on |
 | `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
+| `switch.ios2ha_camera_backgrounding` | Allows the app to be backgrounded between captures when the battery is low, which is what lets the phone actually charge. Turning it off while the app is backgrounded foregrounds it immediately | on |
 
 `grey-world` is offered but not recommended: a frame dominated by one colour pushes it into a false
 cast. `brightest-patch` is the closest alternative to as-shot for object colour.
@@ -149,6 +157,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `binary_sensor.ios2ha_camera_app_streaming` | | Reachable *and* willing to send. False for `backgrounded` and for `streaming_off` |
 | `binary_sensor.ios2ha_camera_capturing_stills` | | A capture is holding the connection |
 | `binary_sensor.ios2ha_camera_being_viewed` | | A viewer is holding it, including during the 30 s linger — the connection is still open and still costing battery |
+| `binary_sensor.ios2ha_camera_backgrounding_active` | | The power-saving policy is engaged, i.e. the battery is below the threshold and the app is being backgrounded between captures. Not the same as the `backgrounding` switch, which only says it is *allowed*: with a full battery the switch is on and this is off |
 | `sensor.ios2ha_camera_stream_state` | | What the camera is doing, in one value. `unavailable` (nothing answers: off the network, or timed out); `backgrounded` (the port refuses, so the phone answers but the app is not listening); `streaming_off` (the app answered 503 — open, but Start streaming was never tapped); `ready` (reachable and willing, just not connected to); `capturing` (frames flowing for a still); `in_use` (frames flowing for a viewer, which wins when both apply); `streaming` (frames flowing with nobody holding, only reachable with `on_demand` off) |
 | `sensor.ios2ha_camera_cable_state` | | The USB side, independent of the WiFi stream above. `ok`; `no_device` (usbmuxd is answering, the cable is out — ordinary); `usbmuxd_down` (the daemon is unreachable and the socket mount is presumed orphaned — a fault, and the one worth alerting on). See OPERATIONS.md |
 | `sensor.ios2ha_camera_last_frame` | | Timestamp, rendered as a live relative age |

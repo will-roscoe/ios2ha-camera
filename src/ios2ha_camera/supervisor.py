@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from . import measure, render, stack
+from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
 from .states import ACTIVE_STATES
@@ -150,6 +151,14 @@ class Supervisor:
         # spend the cable on a question whose answer changes rarely.
         self._app_running = None
         self.s = settings
+        # Reads the switch and both thresholds live, because all three are Home
+        # Assistant controls that can change between one capture and the next.
+        self.backgrounding = BackgroundingPolicy(
+            phone,
+            lambda: bool(getattr(self.s, "backgrounding", False)),
+            lambda: float(getattr(self.s, "background_below_pct", 50.0)),
+            lambda: float(getattr(self.s, "resume_above_pct", 80.0)),
+        )
         self.buffer = buffer
         self.mqtt = mqtt
         self.archive = archive
@@ -479,9 +488,7 @@ class Supervisor:
             # published age is stale the moment it lands.
             "last_frame": (None if newest is None else
                            datetime.fromtimestamp(newest, tz=UTC).isoformat()),
-            "camera_online": (self.upstream.camera_online(now) if self.upstream else
-                              (self.stream_state == "streaming"
-                               and newest is not None and now - newest < self.fresh_s)),
+            "camera_online": self._camera_online(state, now, newest),
             # Published so the orphaned-socket case can be alerted on well before
             # the self-restart is reached, and so a plain unplugged cable is
             # visibly different from a broken daemon.
@@ -534,11 +541,54 @@ class Supervisor:
         except PhoneUnavailable as e:
             log.info("app state unavailable: %s", e)
             self._app_running = None
+        # Already on the health thread, and the policy only decides -- any phone
+        # call it makes here is the release path, which must happen promptly or
+        # the app stays asleep.
+        self.backgrounding.on_battery(b.get("level"))
         return {"battery": b.get("level"), "battery_temperature": b.get("temperature"),
                 "charging": bool(b.get("charging")),
                 "battery_current_ma": b.get("current_ma"),
                 "charger_watts": b.get("charger_watts"),
                 "battery_health_pct": b.get("health_pct")}
+
+    def _camera_online(self, state, now, newest):
+        """Whether the camera is working, which is not the same as sending frames.
+
+        Upstream reports `backgrounded` as offline, and for a phone that wandered
+        into the background on its own that is right: nothing will bring it back.
+
+        But when this service backgrounded the app *deliberately* to save
+        battery, the camera is fine -- it wakes for the next capture on its own,
+        proven on the device. Calling that offline would fire the five-minute
+        offline alert every night the battery ran low, and an alert that cries
+        wolf nightly is one nobody reads.
+
+        Only a backgrounding this service performed counts: `backgrounded` is
+        set by our own successful call, so a phone somebody else backgrounded
+        still reads offline.
+        """
+        if state == "backgrounded" and self.backgrounding.backgrounded:
+            return True
+        if self.upstream is not None:
+            return self.upstream.camera_online(now)
+        return (self.stream_state == "streaming"
+                and newest is not None and now - newest < self.fresh_s)
+
+    # -- session hooks, for Upstream ------------------------------------------
+    #
+    # Upstream calls these on its tick thread, which must never block: a usbmux
+    # round trip there would stall every hold, probe and state publication behind
+    # it. They hand the work to the device worker, the same single thread that
+    # already serialises MQTT-driven device actions, so two phone calls can never
+    # overlap on the cable.
+
+    def on_session_open(self):
+        if self.backgrounding.backgrounded:
+            self._device_executor.submit(self.backgrounding.on_session_open)
+
+    def on_session_close(self):
+        if self.backgrounding.active:
+            self._device_executor.submit(self.backgrounding.on_session_close)
 
     def _boolean_state(self, state, held):
         """The independent axes behind `stream_state`, as plain booleans.
@@ -563,6 +613,10 @@ class Supervisor:
             "app_streaming": state in ACTIVE_STATES + ("ready",),
             "capturing_stills": any(h.startswith("capture") for h in held),
             "being_viewed": any(h.startswith("viewer") for h in held),
+            # Whether the power-saving policy is engaged, which is not the same
+            # as the switch being on: with a full battery the switch is on and
+            # this is off.
+            "backgrounding_active": self.backgrounding.active,
         }
 
     # -- cable self-heal ------------------------------------------------------
