@@ -17,7 +17,7 @@ import time
 
 from .phone import PhoneManager
 from .settings import Settings
-from .upstream import ProbeStreamingOff, http_probe
+from .upstream import ProbeStalled, ProbeStreamingOff, http_probe
 
 DEFAULT_BUNDLE_ID = "com.guardianeye.webcam.ios"
 
@@ -58,8 +58,13 @@ def main(argv=None):
             # like one still waiting for the tap.
             if type(e) is not last:
                 last = type(e)
-                why = ("the app is running but streaming is off (HTTP 503)"
-                       if isinstance(e, ProbeStreamingOff) else f"{type(e).__name__}: {e}")
+                if isinstance(e, ProbeStreamingOff):
+                    why = "the app is running but streaming is off (HTTP 503)"
+                elif isinstance(e, ProbeStalled):
+                    why = ("the app is streaming but its picture has frozen: "
+                           "stop and start streaming in the app")
+                else:
+                    why = f"{type(e).__name__}: {e}"
                 print(f"still waiting: {why}")
         else:
             print("frames are flowing")

@@ -18,6 +18,31 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.3.0 — 2026-09-14
+
+**`stream_state` has a new value, `stalled`: the app's picture froze while it still answers.** On
+14 September Guardian Eye's capture hung with its HTTP server still up — a black screen and a loading
+ring in the app — so every connection got one frame and then silence. For ten minutes Home Assistant
+showed nothing wrong at all: `stream_state` read `ready` and `capturing`, `camera_online` stayed on,
+and stills were stacked from 5 and then 2 frames instead of 600. Two checks were each fooled by the
+single frame:
+
+- **The idle probe read one frame and closed**, so it passed every minute and kept `ready` fed. It now
+  reads two, which costs one more frame interval (about 70 ms).
+- **A session counted any frame under 30 s old as streaming**, and reconnecting every ~10 s always
+  produced one. The stall is now checked first, and the stream only reports `streaming` once a
+  connection delivers its second frame.
+
+`stalled` makes `camera_online` false, so the existing offline alert fires. `reachable_over_wifi`
+stays true and `app_streaming` is false. Prepare phone no longer says "frames are flowing" for a
+frozen app. A stalled connection also no longer resets the reconnect backoff, which had been knocking
+on the hung app every ten seconds.
+
+**Add a `stalled` branch to the offline alert's message** if you use the template: the fix is to stop
+and start streaming in the app, which is not what `unavailable` tells you to do. OPERATIONS.md has the
+updated template. Nothing else changes, so this is a minor release; see OPERATIONS.md for the one
+downgrade step a new enum option needs.
+
 ## 2.2.0 — 2026-09-14
 
 **`MQTT_URL`: one setting for the broker, with fallbacks.** The scheme carries the transport, TLS and

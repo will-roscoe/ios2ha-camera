@@ -127,6 +127,9 @@ tick republishes its own real state within 30 seconds regardless, which clears t
 to fix it immediately, clear or republish the retained `ios2ha_camera/state/stream_state` topic by
 hand after the downgrade.
 
+The same applies to `stalled`, added in 2.3.0: a version before it does not list the option, and a
+retained `stalled` makes the sensor unavailable until the older version's first health tick.
+
 ## Reading the logs
 
 A healthy run is quiet. One line per still, one per state change, nothing else:
@@ -203,6 +206,9 @@ need anyone to get up.
 {% if s == 'streaming_off' %}
   The app is running but not streaming. Open Guardian Eye and tap Start streaming —
   nothing else can do this.
+{% elif s == 'stalled' %}
+  The app's picture has frozen: it still answers but sends nothing. Open Guardian
+  Eye, stop streaming and start it again. If that does not help, press Relaunch app.
 {% elif s == 'backgrounded' %}
   {% if is_state('binary_sensor.ios2ha_camera_app_running', 'off') %}
   iOS has killed the app. Press Relaunch app, then tap Start streaming.
@@ -376,6 +382,12 @@ The battery current sensor is the one to watch. `charging` only means "connected
 
 **No stills, `stream_state` is `streaming_off`.** The app answered 503: streaming is off. Open
 Guardian Eye and tap Start streaming.
+
+**`stream_state` is `stalled`.** The app's capture has hung while its HTTP server stayed up: every
+connection gets one frame and then silence. In the app this looks like streaming with a black
+screen and a loading ring. Stop and start streaming in the app, or relaunch it. Stills taken
+meanwhile are stacked from a handful of frames, so expect `short: true`. It was seen once, on
+2026-09-14, after a healthy night; the app turned streaming off by itself about ten minutes later.
 
 **No stills, `stream_state` is `unavailable`.** The phone is not answering at all — check it is
 awake, on the network, and that the app is running. The relaunch button can start the app but

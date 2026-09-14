@@ -150,6 +150,8 @@ def _health(state, holders=(), cable="ok", app_running=None):
     # the app is not listening. This is the distinction the release exists for.
     ("backgrounded", True),
     ("streaming_off", True),
+    # It answered and sent a frame before going quiet, so the network is fine.
+    ("stalled", True),
     ("unavailable", False),
 ])
 def test_reachable_over_wifi(state, expected):
@@ -169,6 +171,8 @@ def test_reachable_over_cable_follows_cable_state(cable, expected):
     # never tapped. Neither can be fixed by connecting harder.
     ("backgrounded", False),
     ("streaming_off", False),
+    # The app believes it is streaming, but its capture pipeline has hung.
+    ("stalled", False),
     ("unavailable", False),
 ])
 def test_app_streaming(state, expected):
@@ -215,6 +219,14 @@ def test_every_boolean_is_declared_to_home_assistant():
                  "app_streaming", "capturing_stills", "being_viewed"):
         assert name in binaries, f"{name} has no discovery payload"
         assert name in published, f"{name} is declared but never published"
+
+
+def test_stalled_is_declared_to_home_assistant():
+    """Named explicitly, because the test below iterates STREAM_STATES and so
+    cannot notice a state the code produces going missing from that tuple."""
+    cfg = next(c for _, c in discovery_payloads(Settings())
+               if c["default_entity_id"] == "sensor.ios2ha_camera_stream_state")
+    assert "stalled" in cfg["options"]
 
 
 @pytest.mark.parametrize("state", STREAM_STATES)
