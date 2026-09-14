@@ -102,7 +102,7 @@ class Upstream:
         self.s = settings
         self.on_state = on_state
         # Called as a session opens and closes, so something else can prepare the
-        # phone -- 1.3.0 uses them to foreground and background the app. They must
+        # phone -- 2.1.0 uses them to foreground and background the app. They must
         # not block: this is the tick thread, and a usbmux round trip here would
         # stall every hold, probe and state publication behind it. The supervisor
         # hands them to its device worker.
@@ -218,7 +218,7 @@ class Upstream:
         if self.tick_age(now) > TICK_STALE_S:
             return False
         # "backgrounded" is deliberately absent. The phone answers and the app is
-        # alive, but nothing in 1.2.0 brings it back to the foreground, so frames
+        # alive, but nothing in 2.0.0 brings it back to the foreground, so frames
         # are genuinely unavailable and the offline alert should still fire. A
         # refusal also cannot tell a suspended app from a killed one; the
         # `app_running` boolean, read over the cable, is what separates those.

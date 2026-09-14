@@ -1,4 +1,4 @@
-"""1.3.0: backgrounding the camera app between captures to save battery.
+"""2.1.0: backgrounding the camera app between captures to save battery.
 
 Worth roughly 370 mA. Measured 2026-09-13: backgrounded, the phone went from 30%
 to 96% in under three hours, where streaming on the same 3 W port barely breaks

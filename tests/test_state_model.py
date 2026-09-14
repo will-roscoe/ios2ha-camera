@@ -1,4 +1,4 @@
-"""The 1.2.0 state model: renamed states, active sub-states, and the booleans.
+"""The 2.0.0 state model: renamed states, active sub-states, and the booleans.
 
 The point of the release is that "the camera is not sending frames" was one word
 covering four unrelated situations — a dead cable, a phone off the network, an app

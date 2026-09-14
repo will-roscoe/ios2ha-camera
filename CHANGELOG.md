@@ -18,7 +18,7 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
-## 1.3.0 — 2026-09-14
+## 2.1.0 — 2026-09-14
 
 **The phone now charges instead of merely holding station.** When the battery is low the
 supervisor backgrounds the camera app between captures and wakes it again when something
@@ -48,7 +48,7 @@ wrong way round the feature disables itself and says so, rather than thrashing.
 currently engaged, which is not the same as the switch being on. With a full battery the
 switch is on and this is off.
 
-**The offline alert had to change with it**, and this is the reason 1.2.0 came first. A
+**The offline alert had to change with it**, and this is the reason 2.0.0 came first. A
 backgrounded app reports `stream_state: backgrounded`, which is offline as far as
 `camera_online` is concerned — correct for a phone that wandered into the background on its
 own, since nothing will bring it back. But a backgrounding *this service performed* is not a
@@ -65,12 +65,11 @@ a cold start leaves streaming off until somebody taps Start streaming in the app
 right for the relaunch button, which exists to revive a dead app, so `launch()` keeps it;
 `foreground()` and `background()` are new and do not.
 
-## 1.2.0 — 2026-09-13
+## 2.0.0 — 2026-09-13
 
 **`stream_state`'s values have changed. Automations and templates that match them by
-name need editing.** By the rule at the top of this file that is a major change, and it is
-released as a minor one deliberately: nothing has shipped a release yet, so nobody is
-depending on the old names. Migration table below.
+name need editing.** An existing payload's shape changed, which by the rule at the top of
+this file is a major version, so this is 2.0.0. Migration table below.
 
 "The camera is not sending frames" used to be one word covering four unrelated situations:
 a dead cable, a phone off the network, an app iOS had suspended, and an app whose Start
@@ -108,7 +107,7 @@ running" would send someone to relaunch a perfectly healthy app.
 
 **The offline alert needs updating**, and OPERATIONS.md carries the new template.
 `camera_online` deliberately stays false while backgrounded: nothing in this release brings
-the app back to the foreground, so frames really are unavailable. 1.3.0, which backgrounds
+the app back to the foreground, so frames really are unavailable. 2.1.0, which backgrounds
 the app on purpose, is what makes that alert need to change — which is why this release
 comes first.
 
