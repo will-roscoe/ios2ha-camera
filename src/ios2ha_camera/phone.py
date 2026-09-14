@@ -39,6 +39,13 @@ TIMEOUT_S = 15  # finite and short: a hung call must never stall the supervisor'
 DDI_TIMEOUT_S = 120
 
 
+# The app foregrounded in order to background the camera app. Settings is the
+# safest choice available on every iPhone: it is already installed, does nothing
+# on its own, uses no camera or network, and is harmless to leave on screen --
+# especially with Screen Curtain on, which is how this phone runs.
+BACKGROUND_BUNDLE_ID = "com.apple.Preferences"
+
+
 class PhoneUnavailable(Exception):
     pass
 
@@ -168,7 +175,9 @@ class PhoneManager:
         needle = self.bundle_id.split(".")[-1].lower()
         return any(needle in p.get("name", "").lower() for p in procs)
 
-    def _launch(self):
+    def _launch(self, bundle_id=None, kill_existing=True):
+        bundle_id = bundle_id or self.bundle_id
+
         async def go():
             from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
             from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
@@ -177,14 +186,52 @@ class PhoneManager:
                 async with DvtProvider(lockdown) as provider:
                     process_control = ProcessControl(provider)
                     await process_control.connect()
-                    return await process_control.launch(self.bundle_id)
+                    return await process_control.launch(bundle_id, kill_existing=kill_existing)
             finally:
                 await lockdown.close()
         return self._run(go())
 
     def launch(self):
+        """Cold-start the app, killing any running copy.
+
+        Note what this costs: a cold start always leaves **streaming off**, and
+        only a person tapping Start streaming can turn it back on. That is the
+        right behaviour for the relaunch button, whose whole purpose is reviving
+        a dead app, and the wrong behaviour for merely bringing a running app
+        back to the front -- use `foreground()` for that.
+        """
         self._call(self._mount_ddi)
-        pid = self._call(self._launch)
+        pid = self._call(lambda: self._launch(kill_existing=True))
+        return bool(pid)
+
+    def foreground(self):
+        """Bring the app to the front **without restarting it**.
+
+        `kill_existing=False` is the whole point. pymobiledevice3 defaults it to
+        True, which kills the running copy and cold-starts a new one -- and a
+        cold start leaves streaming off, needing someone to tap Start streaming.
+        Measured on 2026-09-13: calling launch() with the default on a
+        backgrounded-but-streaming app opened its port within 2 s and then
+        answered 503, having silently thrown the stream away.
+        """
+        self._call(self._mount_ddi)
+        pid = self._call(lambda: self._launch(kill_existing=False))
+        return bool(pid)
+
+    def background(self, bundle_id=BACKGROUND_BUNDLE_ID):
+        """Send the app to the background by foregrounding something else.
+
+        There is no "go home" over usbmux: SpringBoardServicesService exposes
+        only icon and wallpaper state, and killing the app would need a manual
+        tap to recover. Foregrounding another app is what remains, and iOS then
+        suspends this one's listening socket while leaving the process alive --
+        which is the pause worth roughly 370 mA.
+
+        `kill_existing=False` here too, so the decoy app is merely raised rather
+        than restarted each time.
+        """
+        self._call(self._mount_ddi)
+        pid = self._call(lambda: self._launch(bundle_id, kill_existing=False))
         return bool(pid)
 
     def _take_screenshot(self):

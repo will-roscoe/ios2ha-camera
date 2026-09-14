@@ -5,7 +5,12 @@ import types
 import pytest
 
 from ios2ha_camera import phone, phone_setup
-from ios2ha_camera.phone import PhoneManager, PhoneManagerMisuseError, PhoneUnavailable
+from ios2ha_camera.phone import (
+    BACKGROUND_BUNDLE_ID,
+    PhoneManager,
+    PhoneManagerMisuseError,
+    PhoneUnavailable,
+)
 from ios2ha_camera.upstream import ProbeStreamingOff
 
 
@@ -53,7 +58,7 @@ def test_is_running_raises_when_no_device(monkeypatch):
 def test_launch_true_when_pid_returned(monkeypatch):
     pm = PhoneManager("com.example")
     monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
-    monkeypatch.setattr(pm, "_launch", lambda: 4242)
+    monkeypatch.setattr(pm, "_launch", lambda *a, **k: 4242)
     assert pm.launch() is True
 
 def test_launch_raises_when_no_device(monkeypatch):
@@ -92,7 +97,7 @@ def test_launch_triggers_mount(monkeypatch):
     pm = PhoneManager("com.example")
     mounted = []
     monkeypatch.setattr(pm, "_mount_ddi", lambda: mounted.append(1))
-    monkeypatch.setattr(pm, "_launch", lambda: 4242)
+    monkeypatch.setattr(pm, "_launch", lambda *a, **k: 4242)
     assert pm.launch() is True
     assert mounted == [1]
 
@@ -397,3 +402,53 @@ def test_the_wait_prints_each_new_kind_of_probe_failure_once(monkeypatch, capsys
     assert "ConnectionRefusedError" in waiting[0]
     assert "503" in waiting[1]
     assert "frames are flowing" in out
+
+
+# -- foreground vs relaunch, which is not a cosmetic distinction ----------------
+
+def _record_launch(monkeypatch, pm):
+    """Capture what launch() is actually asked to do."""
+    calls = []
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    monkeypatch.setattr(pm, "_launch",
+                        lambda bundle_id=None, kill_existing=True:
+                        (calls.append((bundle_id, kill_existing)), 4242)[1])
+    return calls
+
+
+def test_foreground_does_not_kill_the_running_app(monkeypatch):
+    """The whole point of foreground(). pymobiledevice3 defaults kill_existing
+    to True, which cold-starts the app -- and a cold start leaves streaming off,
+    needing someone to tap Start streaming. Measured on the device 2026-09-13:
+    the default silently threw a live stream away."""
+    pm = PhoneManager("com.example")
+    calls = _record_launch(monkeypatch, pm)
+    assert pm.foreground() is True
+    assert calls == [(None, False)], "foreground must not kill the running app"
+
+
+def test_launch_still_cold_starts(monkeypatch):
+    """The relaunch button revives a dead app, so it must kill any zombie copy."""
+    pm = PhoneManager("com.example")
+    calls = _record_launch(monkeypatch, pm)
+    assert pm.launch() is True
+    assert calls == [(None, True)]
+
+
+def test_background_foregrounds_a_different_app(monkeypatch):
+    """There is no "go home" over usbmux, so backgrounding means raising
+    something else. It must not be the camera app, or nothing happens."""
+    pm = PhoneManager("com.example")
+    calls = _record_launch(monkeypatch, pm)
+    assert pm.background() is True
+    (bundle, kill_existing), = calls
+    assert bundle == BACKGROUND_BUNDLE_ID
+    assert bundle != pm.bundle_id
+    assert kill_existing is False
+
+
+def test_background_accepts_a_different_decoy(monkeypatch):
+    pm = PhoneManager("com.example")
+    calls = _record_launch(monkeypatch, pm)
+    pm.background("com.apple.mobiletimer")
+    assert calls == [("com.apple.mobiletimer", False)]
