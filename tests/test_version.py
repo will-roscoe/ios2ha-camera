@@ -15,6 +15,19 @@ def test_the_package_exports_one_version_not_a_second_copy():
     assert __version__ == version.VERSION
 
 
+def test_the_newest_changelog_entry_is_the_packaged_version():
+    """2.3.0 was tagged and deployed with pyproject.toml still at 2.2.0, so the
+    device page read "2.2.0 (v2.3.0)". Read from the file rather than the
+    installed metadata, which an editable install leaves stale until reinstalled."""
+    import pathlib
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    packaged = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    newest = re.search(r"^## (\d+\.\d+\.\d+)", (root / "CHANGELOG.md").read_text(), re.M)
+    assert newest and newest.group(1) == packaged, (newest and newest.group(1), packaged)
+
+
 def test_provenance_falls_back_to_source_outside_a_built_image():
     # The build args are only set by the Dockerfile, so a source run says so
     # rather than claiming a commit it cannot know.
