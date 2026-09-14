@@ -206,6 +206,10 @@ need anyone to get up.
 {% elif s == 'backgrounded' %}
   {% if is_state('binary_sensor.ios2ha_camera_app_running', 'off') %}
   iOS has killed the app. Press Relaunch app, then tap Start streaming.
+  {% elif is_state('binary_sensor.ios2ha_camera_backgrounding_active', 'on') %}
+  Backgrounded on purpose to save battery. Nothing to do -- it wakes for the
+  next capture. (This branch should not normally alert: camera_online stays on
+  for a deliberate backgrounding.)
   {% else %}
   The app is backgrounded, so its socket is suspended. Foreground it to resume.
   {% endif %}
@@ -224,6 +228,37 @@ look identical over WiFi — both refuse the connection — and only the cable c
 apart. One resumes by itself when foregrounded; the other needs relaunching. Note that
 `app_running` is **unknown**, not `off`, when the cable cannot answer, so
 `is_state(..., 'off')` correctly declines to claim the app is dead on no evidence.
+
+### Backgrounding to charge the phone
+
+Streaming costs roughly 300 mA and this installation runs from a 3 W port, so a phone that
+streams continuously never recovers. Backgrounding the camera app pauses the stream without
+stopping it — iOS suspends the listening socket and leaves the process running — and that is
+worth around 370 mA. Measured on the device: **30% to 96% in under three hours**.
+
+Below `background_below_pct` (50% by default) the supervisor backgrounds the app whenever
+nothing needs frames, and foregrounds it again the moment something does. Above
+`resume_above_pct` (80%) it stops. In between it carries on with whatever it was doing, which
+is what stops a phone resting near the threshold flipping back and forth.
+
+While this is happening:
+
+- `binary_sensor.ios2ha_camera_backgrounding_active` is **on**.
+- `sensor.ios2ha_camera_stream_state` reads `backgrounded` between captures.
+- **`camera_online` stays on**, so the offline alert does not fire. That exemption applies
+  only to a backgrounding this service performed; a phone backgrounded by anything else still
+  alerts, and so does a real outage while the policy is engaged.
+- Captures take a few seconds longer, while the app comes back to the foreground.
+
+Turning `switch.ios2ha_camera_backgrounding` off foregrounds the app immediately rather than
+waiting for the battery to recover.
+
+One thing to expect on the phone itself: backgrounding works by foregrounding **Settings**,
+because there is no "go home" over usbmux and killing the app would need someone to tap Start
+streaming afterwards. So the phone's screen shows Settings rather than the camera preview
+between captures. Harmless with Screen Curtain on, but it does mean you cannot tell at a
+glance whether the camera app is alive — `binary_sensor.ios2ha_camera_app_running` answers
+that instead.
 
 ### When the cable stops working
 

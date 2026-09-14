@@ -42,7 +42,11 @@ def main():
                   on_control=lambda n, v: sup.handle_control(n, v),
                   on_connected=lambda: sup.publish_controls())
     ing = Ingestor(s.phone_host, s.phone_port, s.phone_user, s.phone_password, buf)
-    up = Upstream(ing, buf, s, on_state=lambda st: sup.on_stream_state(st))
+    # Lambdas, not bound methods: `sup` does not exist yet (see the note above),
+    # and a bound method would be looked up now rather than at call time.
+    up = Upstream(ing, buf, s, on_state=lambda st: sup.on_stream_state(st),
+                  on_session_open=lambda: sup.on_session_open(),
+                  on_session_close=lambda: sup.on_session_close())
     ing.on_state = up.on_ingest_state
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
     stacker = LiveStacker(buf, s)
