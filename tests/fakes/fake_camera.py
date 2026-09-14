@@ -11,6 +11,7 @@ import http.server
 import io
 import socket
 import threading
+import time
 
 import numpy as np
 from PIL import Image
@@ -42,7 +43,10 @@ def _jpeg(seed, thumbnail=False):
 
 class FakeCamera:
     """Modes: 'stream' serves frames, 'off' answers 503 as the app does when
-    streaming is not running, 'drop' cuts the connection before any response.
+    streaming is not running, 'drop' cuts the connection before any response,
+    'freeze' sends one frame per connection and then nothing, as Guardian Eye did
+    on 2026-09-14 when its capture pipeline hung with the HTTP server still up,
+    'cut' sends one frame and then drops the connection.
 
     chunked=True (the default) matches the real app's transfer encoding."""
 
@@ -54,6 +58,7 @@ class FakeCamera:
         self.chunked = chunked
         self.requests = 0
         self._seed = 0
+        self._closed = False
 
     def set_mode(self, mode):
         self.mode = mode
@@ -120,8 +125,18 @@ class FakeCamera:
                 self.close_connection = True
                 write = self._chunk if cam.chunked else self.wfile.write
                 try:
-                    for _ in range(cam.frames):
-                        if cam.mode != "stream":
+                    for i in range(cam.frames):
+                        if cam.mode == "cut" and i == 1:
+                            # Gone mid-stream: the network or the app going away.
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                            return
+                        if cam.mode == "freeze" and i == 1:
+                            # Hold the connection open and silent, as the hung app
+                            # does, until the test moves on or the client gives up.
+                            while cam.mode == "freeze" and not cam._closed:
+                                time.sleep(0.02)
+                            return
+                        if cam.mode not in ("stream", "freeze", "cut"):
                             break
                         b = _jpeg(cam._seed, cam.thumbnails)
                         cam._seed += 1
@@ -140,6 +155,7 @@ class FakeCamera:
         return self
 
     def __exit__(self, *a):
+        self._closed = True
         self._srv.shutdown()
         self._srv.server_close()  # without this the listening socket leaks per test
         self._thread.join(timeout=5)

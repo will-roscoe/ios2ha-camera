@@ -176,6 +176,62 @@ def test_recovers_when_streaming_is_switched_back_on():
     assert states == ["streaming_off", "streaming"]
 
 
+def test_a_stream_that_freezes_after_a_frame_reports_stalled():
+    """Guardian Eye on 2026-09-14: the capture pipeline hung while the HTTP server
+    stayed up, so every connection got one frame and then silence. That is not a
+    phone off the network, and the fix is a person restarting streaming in the
+    app, so it must not be flattened into `unavailable`. And one frame is not
+    proof of a working stream, so `streaming` must not be claimed on the way."""
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        cam.set_mode("freeze")
+        ing = _cam_ing(cam, buf, states, read_timeout=0.3); ing.start()
+        assert _wait_for(lambda: cam.requests >= 2)
+        ing.stop()
+    assert states == ["stalled"]
+
+
+def test_a_stalled_stream_reports_streaming_once_frames_flow_again():
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        cam.set_mode("freeze")
+        ing = _cam_ing(cam, buf, states, read_timeout=0.3); ing.start()
+        assert _wait_for(lambda: "stalled" in states)
+        cam.set_mode("stream")
+        assert _wait_for(lambda: states[-1] == "streaming")
+        ing.stop()
+    assert states == ["stalled", "streaming"]
+
+
+def test_a_stream_that_drops_after_frames_is_not_stalled():
+    """Only a read that times out means the app went quiet. A connection that is
+    cut or ends is the network or the app going away, as before."""
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        cam.set_mode("cut")
+        ing = _cam_ing(cam, buf, states, read_timeout=0.3); ing.start()
+        assert _wait_for(lambda: "unavailable" in states)
+        ing.stop()
+    assert "stalled" not in states
+
+
+def test_a_stalled_connection_does_not_earn_a_fast_reconnect():
+    """A frozen connection can stay open past healthy_after_s while delivering a
+    single frame. Counting that as healthy reset the backoff and knocked on the
+    hung app every read_timeout, and rapid reconnects are what wedge it."""
+    buf = RingBuffer(5_000_000); states = []
+    with FakeCamera() as cam:
+        cam.set_mode("freeze")
+        ing = _cam_ing(cam, buf, states, read_timeout=0.1, healthy_after_s=0.05,
+                       backoff_initial=0.05, backoff_max=1.0); ing.start()
+        time.sleep(2.0)
+        ing.stop()
+        requests = cam.requests
+    # Escalating sleeps (0.05, 0.1, 0.2, 0.4, 0.8) plus 0.1 s reads fit about five
+    # attempts into 2 s; resetting the backoff every time makes about thirteen.
+    assert requests <= 8, requests
+
+
 def test_stalled_stream_is_detected_as_unavailable():
     buf = RingBuffer(5_000_000); states = []
     with _StallingServer() as srv:

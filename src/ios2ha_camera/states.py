@@ -22,13 +22,17 @@ ACTIVE_STATES = ("streaming", "capturing", "in_use")
 #                  leaving the process alive
 #   streaming_off  the app answered 503: it is open, but Start streaming has not
 #                  been tapped, and only a person can fix that
+#   stalled        the app answered and sent a frame, then nothing: its capture
+#                  has hung while its HTTP server stays up (seen 2026-09-14, a
+#                  black screen and a loading ring in the app). Also needs a
+#                  person, to stop and start streaming in the app
 #   ready          reachable and willing, just not connected to at the moment
 #   streaming      frames flowing with nobody holding the connection, which
 #                  happens when `on_demand` is off and it is simply always open
 #   capturing      frames flowing for a still
 #   in_use         frames flowing for a viewer; wins over capturing when both
 #                  apply, because a viewer is a person waiting on the picture
-STREAM_STATES = ("unavailable", "backgrounded", "streaming_off", "ready") + ACTIVE_STATES
+STREAM_STATES = ("unavailable", "backgrounded", "streaming_off", "stalled", "ready") + ACTIVE_STATES
 
 
 def classify_probe_failure(exc):
