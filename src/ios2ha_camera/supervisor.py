@@ -599,8 +599,10 @@ class Supervisor:
         on a phone that is sending nothing.
         """
         # A refusal proves the phone's IP stack answered: something is listening
-        # on the network even though the app's port is not. A timeout does not.
-        reachable_wifi = state in ACTIVE_STATES + ("ready", "streaming_off", "backgrounded")
+        # on the network even though the app's port is not. A timeout does not,
+        # unless a frame came first, which is what `stalled` means.
+        reachable_wifi = state in ACTIVE_STATES + ("ready", "streaming_off", "stalled",
+                                                   "backgrounded")
         return {
             "reachable_over_wifi": reachable_wifi,
             "reachable_over_cable": self._cable_state == "ok",

@@ -108,14 +108,19 @@ buffered rather than waiting for a fresh session. The hold is released — and t
 close — before stacking and rendering run, which is 10–20 s of CPU the phone no longer has to stay
 connected for.
 
-**The state model.** `state()` returns one of four values, most specific first:
+**The state model.** `state()` returns one of these, most specific first (the full list of values
+and what each means lives in `states.py`):
 
-- `streaming` — the *current* session has produced a frame no older than `FRESH_S` (30 s), and that
+- `stalled` — the last session or probe got a frame and then timed out: the app's capture has hung
+  with its HTTP server still up. Checked before freshness, because a hung app hands every reconnect
+  one frame, so there is always a frame younger than `FRESH_S`. Ingest only reports `streaming` on a
+  connection's *second* frame and the probe reads two, for the same reason.
+- `streaming` (or `capturing` / `in_use`, by who holds it) — the *current* session has produced a frame no older than `FRESH_S` (30 s), and that
   frame is newer than the session's own start. A stale probe frame from before the session opened
   cannot satisfy this, so a session that has only ever failed cannot read as streaming on the
   strength of someone else's frame.
-- `streaming_off` / `unreachable` — the last session or probe ended in that failure.
-- `idle` — no failure, and *some* frame (a probe's, most likely) is newer than `ONLINE_IDLE_S`
+- `streaming_off` / `backgrounded` / `unavailable` — the last session or probe ended in that failure.
+- `ready` — no failure, and *some* frame (a probe's, most likely) is newer than `ONLINE_IDLE_S`
   (150 s — roughly two probe intervals plus the probe's own read timeout, so one missed probe does
   not flip this early).
 - `unreachable` — otherwise.

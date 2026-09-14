@@ -3,10 +3,12 @@
 The phone app wedges under rapid connect/close, and a frozen app can answer 200
 and then send nothing. So this client:
 
-- reports `streaming` only once a frame has actually arrived;
+- reports `streaming` only once a second frame has arrived on the connection,
+  because one frame and then silence is what a hung app sends;
 - backs off before every reconnect, including after a stream that ended
   cleanly, and resets the backoff only after a connection that stayed healthy;
-- times out a stalled read, which surfaces a frozen app as `unreachable`.
+- times out a stalled read, which surfaces a frozen app as `unavailable` when
+  no frame came at all, and as `stalled` when one did.
 """
 
 import base64
@@ -102,6 +104,7 @@ class Ingestor:
         while not self._stop.is_set():
             started = time.monotonic()
             self._frames = 0
+            stalled = False
             try:
                 self._stream_once()
                 if not self._stop.is_set() and self._frames == 0:
@@ -111,12 +114,17 @@ class Ingestor:
             except Exception as e:  # refused, reset, timed out, bad status, malformed
                 if self._stop.is_set():
                     break
-                self._report_failure(e)
+                # Only a read timeout: a connection that was cut or refused after
+                # frames is the network or the app going away, not the app hanging.
+                stalled = self._frames > 0 and isinstance(e, TimeoutError)
+                self._report_failure(e, stalled)
             if self._stop.is_set():
                 break
             # Only a connection that stayed up earns a fast reconnect. One that
             # keeps ending quickly escalates instead of cycling at a fixed rate.
-            if self._frames and time.monotonic() - started >= self.healthy_after_s:
+            # A stalled one can outlast healthy_after_s on a single frame, and
+            # resetting then would knock on a hung app every read_timeout.
+            if self._frames and not stalled and time.monotonic() - started >= self.healthy_after_s:
                 backoff = self.backoff_initial
             self._stop.wait(backoff)
             backoff = min(backoff * 2, self.backoff_max)
@@ -141,15 +149,20 @@ class Ingestor:
                     return
                 self.buffer.append(Frame(jpeg, time.time()))
                 self._frames += 1
-                if self._frames == 1:
+                # The second frame, not the first: a hung app still hands every
+                # connection one, so a first frame proves nothing about the stream.
+                if self._frames == 2:
                     self._set_state("streaming")
         finally:
             with self._sock_lock:
                 self._sock = None
             conn.close()
 
-    def _report_failure(self, e):
-        if isinstance(e, _HttpStatus) and e.status == 503:
+    def _report_failure(self, e, stalled=False):
+        if stalled:
+            self._set_state("stalled", f"a frame, then nothing for {self.read_timeout:g} s: "
+                                       "the app's capture has hung")
+        elif isinstance(e, _HttpStatus) and e.status == 503:
             self._set_state("streaming_off", "the app answered 503: streaming is off")
         elif isinstance(e, _HttpStatus):
             # It answered, so it is reachable; it just said something unusable.

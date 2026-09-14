@@ -45,10 +45,16 @@ class ProbeStreamingOff(Exception):
     """The app answered 503: it is running but not streaming."""
 
 
+class ProbeStalled(Exception):
+    """The app sent a frame and then nothing: its capture has hung while its
+    HTTP server stays up."""
+
+
 def http_probe(settings):
-    """One frame, then close. The cheapest question that distinguishes
-    'streaming', 'running but not streaming' (503) and 'gone'. Measured at
-    82-387 ms and about 2-3 mA a minute."""
+    """Two frames, then close. The cheapest question that distinguishes
+    'streaming', 'running but not streaming' (503), 'hung' and 'gone'. Measured
+    at 82-387 ms and about 2-3 mA a minute when it read one frame; the second
+    adds one frame interval, about 70 ms at 14 fps."""
     auth = "Basic " + base64.b64encode(
         f"{settings.phone_user}:{settings.phone_password}".encode()).decode()
     conn = http.client.HTTPConnection(settings.phone_host, settings.phone_port,
@@ -65,7 +71,15 @@ def http_probe(settings):
             raise ProbeStreamingOff()
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
-        return Frame(next(iter_multipart(resp, BOUNDARY)), time.time())
+        frames = iter_multipart(resp, BOUNDARY)
+        next(frames)
+        # One frame and then silence is what a hung app sends, so the first
+        # proves nothing. A one-frame probe passed a hung app every minute on
+        # 2026-09-14 and kept `ready` fed for ten minutes.
+        try:
+            return Frame(next(frames), time.time())
+        except TimeoutError as e:
+            raise ProbeStalled() from e
     finally:
         conn.close()
 
@@ -117,7 +131,7 @@ class Upstream:
         self._open = False
         self._opened_at = None
         self._stop_failed = False
-        # None | "streaming_off" | "backgrounded" | "unavailable"
+        # None | "streaming_off" | "stalled" | "backgrounded" | "unavailable"
         self._failure = None
         self._probe_failures = 0
         self._next_probe_at = 0.0
@@ -184,6 +198,11 @@ class Upstream:
         # call a session that has only ever failed "streaming", ahead of the
         # failure it reported.
         opened_at = self._opened_at
+        # Before freshness: a hung app hands every reconnect one frame, about
+        # every read timeout, so there is always a frame younger than FRESH_S.
+        # Checking freshness first reported ten minutes of it as `capturing`.
+        if self._failure == "stalled":
+            return "stalled"
         if (self._open and opened_at is not None and newest is not None
                 and newest >= opened_at and now - newest < FRESH_S):
             return self._active_substate(now)
@@ -260,6 +279,11 @@ class Upstream:
         except ProbeStreamingOff:
             with self._wake:
                 self._failure = "streaming_off"
+                self._probe_failures += 1
+        except ProbeStalled:
+            log.info("probe stalled: a frame, then nothing")
+            with self._wake:
+                self._failure = "stalled"
                 self._probe_failures += 1
         except Exception as e:
             log.info("probe failed: %s: %s", type(e).__name__, e)

@@ -7,14 +7,17 @@ from urllib.parse import urlparse
 import pytest
 from tests.fakes.fake_camera import CREDENTIALS, FakeCamera
 
+from ios2ha_camera import upstream as upstream_mod
 from ios2ha_camera.ingest import Ingestor
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 from ios2ha_camera.upstream import (
     ONLINE_IDLE_S,
     PROBE_INTERVAL_S,
     TICK_STALE_S,
+    ProbeStalled,
     ProbeStreamingOff,
     Upstream,
+    http_probe,
 )
 
 
@@ -245,6 +248,55 @@ def test_a_503_probe_reports_streaming_off_and_backs_off():
     assert up._probe_failures == 2
 
 
+def test_a_stall_beats_the_freshness_of_the_frames_it_let_through():
+    """A hung app gives each reconnect one frame, about every read_timeout, so
+    there is always a frame younger than FRESH_S. Checking freshness first hid
+    ten minutes of this on 2026-09-14 behind `capturing` and `camera_online` on."""
+    up, _, buf, _ = _up()
+    h = up.hold("capture")
+    try:
+        up.tick(now=1000.0)
+        buf.append(Frame(b"one", 1001.0))
+        up.on_ingest_state("stalled")
+        assert up.state(now=1002.0) == "stalled"
+        assert up.camera_online(now=1002.0) is False
+    finally:
+        h.release()
+
+
+def test_a_stalled_probe_reports_stalled_and_backs_off():
+    ing, buf = FakeIngestor(), RingBuffer(1 << 20)
+
+    def probe():
+        raise ProbeStalled()
+
+    up = Upstream(ing, buf, _settings(), probe=probe)
+    up.tick(now=1000.0)
+    assert up.state(now=1000.0) == "stalled"
+    assert up.camera_online(now=1000.0) is False
+    up.tick(now=1000.0 + PROBE_INTERVAL_S + 1)          # second failure
+    up.tick(now=1000.0 + PROBE_INTERVAL_S + 2)          # too soon: backed off
+    assert up._probe_failures == 2
+
+
+def _probe_settings(cam):
+    u = urlparse(cam.url)
+    return _settings(phone_host=u.hostname, phone_port=u.port,
+                     phone_user=CREDENTIALS[0], phone_password=CREDENTIALS[1])
+
+
+def test_the_probe_needs_a_second_frame_to_call_the_app_streaming(monkeypatch):
+    """One frame and then silence is exactly what a hung app sends, so a
+    one-frame probe passed it every minute and kept `ready` fed."""
+    monkeypatch.setattr(upstream_mod, "PROBE_READ_TIMEOUT_S", 0.3)
+    with FakeCamera() as cam:
+        s = _probe_settings(cam)
+        assert http_probe(s) is not None
+        cam.set_mode("freeze")
+        with pytest.raises(ProbeStalled):
+            http_probe(s)
+
+
 def test_camera_online_goes_false_when_the_thread_stops_ticking():
     ing, buf = FakeIngestor(), RingBuffer(1 << 20)
     up = Upstream(ing, buf, _settings(), probe=lambda: Frame(b"jpeg", 1000.0))
@@ -379,5 +431,27 @@ def test_against_the_fake_camera_it_opens_lingers_and_probes():
             with up.hold("viewer", linger_s=0.2):
                 assert _wait_for(lambda: up.state() == "in_use", timeout=5.0)
             assert _wait_for(lambda: up.state() == "ready", timeout=5.0)
+        finally:
+            up.stop()
+
+
+def test_against_a_frozen_fake_camera_the_stall_is_reported_until_frames_flow(monkeypatch):
+    monkeypatch.setattr(upstream_mod, "PROBE_READ_TIMEOUT_S", 0.3)
+    buf = RingBuffer(1 << 22)
+    with FakeCamera() as cam:
+        cam.set_mode("freeze")
+        s = _probe_settings(cam)
+        ing = Ingestor(s.phone_host, s.phone_port, CREDENTIALS[0], CREDENTIALS[1], buf,
+                       backoff_initial=0.05, backoff_max=0.2, read_timeout=0.3)
+        up = Upstream(ing, buf, s)
+        ing.on_state = up.on_ingest_state
+        up.start()
+        try:
+            assert _wait_for(lambda: up.state() == "stalled")        # the probe alone
+            with up.hold("capture"):
+                assert _wait_for(lambda: ing.state == "stalled", timeout=5.0)
+                assert up.state() == "stalled"
+                cam.set_mode("stream")
+                assert _wait_for(lambda: up.state() == "capturing", timeout=5.0)
         finally:
             up.stop()

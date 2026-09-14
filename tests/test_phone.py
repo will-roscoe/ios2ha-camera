@@ -11,7 +11,7 @@ from ios2ha_camera.phone import (
     PhoneManagerMisuseError,
     PhoneUnavailable,
 )
-from ios2ha_camera.upstream import ProbeStreamingOff
+from ios2ha_camera.upstream import ProbeStalled, ProbeStreamingOff
 
 
 def test_battery_returns_dict_shape(monkeypatch):
@@ -384,7 +384,8 @@ def test_the_wait_prints_each_new_kind_of_probe_failure_once(monkeypatch, capsys
     well (a wrong password, the app gone) looked just like one waiting for a tap."""
     outcomes = [ConnectionRefusedError(111, "Connection refused"),
                 ConnectionRefusedError(111, "Connection refused"),
-                ProbeStreamingOff(), ProbeStreamingOff()]
+                ProbeStreamingOff(), ProbeStreamingOff(),
+                ProbeStalled(), ProbeStalled()]
 
     def probe(settings):
         if outcomes:
@@ -398,9 +399,11 @@ def test_the_wait_prints_each_new_kind_of_probe_failure_once(monkeypatch, capsys
     assert phone_setup.main(["--timeout", "5"]) == 0
     out = capsys.readouterr().out
     waiting = [line for line in out.splitlines() if line.startswith("still waiting")]
-    assert len(waiting) == 2, out
+    assert len(waiting) == 3, out
     assert "ConnectionRefusedError" in waiting[0]
     assert "503" in waiting[1]
+    # A hung app used to pass the one-frame probe and read as "frames are flowing".
+    assert "frozen" in waiting[2]
     assert "frames are flowing" in out
 
 
