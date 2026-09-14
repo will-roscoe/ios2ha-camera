@@ -112,8 +112,8 @@ Two different things can be meant by "roll back", and they fix different problem
 - **Redeploy an older tag** with `./deploy.sh` from that tag's commit, if the fault is in the code
   itself rather than in the connection policy.
 
-**A downgrade from 1.2.0 needs your automations edited back**, not just the container rolled
-back. 1.2.0 renamed every `stream_state` value: `unreachable` split into `unavailable` and
+**A downgrade from 2.0.0 needs your automations edited back**, not just the container rolled
+back. 2.0.0 renamed every `stream_state` value: `unreachable` split into `unavailable` and
 `backgrounded`, `idle` became `ready`, and `streaming` split into `capturing`, `in_use` and
 `streaming`. Anything matching those by name — the offline alert's template especially — was
 edited to the new names when you upgraded and will silently stop matching on the way back.
@@ -193,7 +193,7 @@ Test the whole path occasionally rather than trusting that an alert exists.
 
 ### Making the offline alert say what is wrong
 
-Before 1.2.0 the offline alert could only say "the camera is offline", because
+Before 2.0.0 the offline alert could only say "the camera is offline", because
 `stream_state` had one word for four unrelated situations. It now distinguishes them, and
 the message should too — the fix is different in every case, and three of the four do not
 need anyone to get up.
