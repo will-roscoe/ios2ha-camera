@@ -18,6 +18,15 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.3.1 — 2026-09-14
+
+**`camera_online` no longer contradicts `stream_state` after a change.** A stream state change
+published `stream_state` alone, leaving `camera_online`, the booleans and `last_frame` at whatever
+the previous health tick computed, for up to 30 seconds. It showed after every restart: the first
+health tick runs before the first probe, so for about 35 seconds Home Assistant read `ready`
+alongside `camera_online` off and `last_frame` unknown. A state change now publishes the whole
+health reading with it. No entity or payload changes.
+
 ## 2.3.0 — 2026-09-14
 
 **`stream_state` has a new value, `stalled`: the app's picture froze while it still answers.** On
