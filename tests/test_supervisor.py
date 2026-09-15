@@ -447,6 +447,71 @@ def test_the_whole_health_reading_follows_a_stream_state_change_at_once():
     assert pub["last_frame"] is not None
 
 
+class FakeStarter:
+    def __init__(self, result="started"):
+        self.calls = []
+        self.result = result
+        self.state = "idle"
+        self.attempts_last_hour = 0
+
+    def attempt(self, manual=False):
+        self.calls.append(manual)
+        self.state = self.result
+        return self.result
+
+
+class FakeKeyboard:
+    def __init__(self, connected=True):
+        self._connected = connected
+
+    def connected(self):
+        return self._connected
+
+    def state(self):
+        return "connected" if self._connected else "advertising"
+
+
+def test_streaming_off_runs_the_start_step_once():
+    st = FakeStarter()
+    sup = _sup(starter=st)
+    sup.on_stream_state("streaming_off")
+    assert st.calls == [False]
+
+
+def test_a_state_that_is_not_streaming_off_does_not_run_it():
+    """`backgrounded` is a deliberate pause, `unavailable` means the phone is
+    gone, and the active states are already streaming. None is fixed by keys."""
+    st = FakeStarter()
+    sup = _sup(starter=st)
+    for state in ("backgrounded", "unavailable", "ready", "in_use", "capturing", "stalled"):
+        sup.on_stream_state(state)
+    assert st.calls == []
+
+
+def test_the_button_runs_it_as_a_manual_attempt():
+    st = FakeStarter()
+    sup = _sup(starter=st)
+    sup.handle_control("start_streaming", None)
+    assert st.calls == [True]
+
+
+def test_the_start_state_and_keyboard_are_published():
+    sup = _sup(starter=FakeStarter(), keyboard=FakeKeyboard())
+    d = sup.health_state()
+    assert d["stream_start"] == "idle"
+    assert d["stream_start_attempts"] == 0
+    assert d["keyboard_connected"] is True
+
+
+def test_without_a_keyboard_the_values_are_still_published():
+    """Every declared entity carries a value, so a missing keyboard reads as
+    "no host attached" rather than leaving the entity unknown forever."""
+    d = _sup().health_state()
+    assert d["keyboard_connected"] is False
+    assert d["stream_start"] == "idle"
+    assert d["stream_start_attempts"] == 0
+
+
 def test_phone_state_is_empty_when_the_cable_is_out():
     sup = _sup(phone=FakePhone(error=PhoneUnavailable("no device")))
     assert sup.phone_state() == {}

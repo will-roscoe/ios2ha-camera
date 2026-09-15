@@ -136,7 +136,8 @@ def _dark_noise(rgb):
 class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
-                 device_executor=None, request_restart=None, clock=None):
+                 device_executor=None, request_restart=None, clock=None,
+                 starter=None, keyboard=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -177,6 +178,10 @@ class Supervisor:
         self._last_state = {}
         self._state_lock = threading.Lock()
         self._last_jpeg = None
+        # Both optional: without them the supervisor behaves exactly as before,
+        # which is what happens when the D-Bus proxy or BlueZ is missing.
+        self.starter = starter
+        self.keyboard = keyboard
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
 
@@ -387,6 +392,12 @@ class Supervisor:
                 self._submit(name, self._relaunch)
             elif name == "prepare_phone":
                 self._submit(name, self._prepare_phone)
+            elif name == "start_streaming":
+                if self.starter is None:
+                    raise RuntimeError("the keyboard is not configured")
+                # manual=True: a person asking overrides the pause switch and
+                # the rate limit, though never the guards around the keys.
+                self._submit(name, lambda: self.starter.attempt(True))
             elif name == "autofocus":
                 self._submit(name, lambda: self._autofocus(bool(value)))
             else:
@@ -488,6 +499,12 @@ class Supervisor:
         # in what order, and a newer state will arrive through here on its own.
         d["stream_state"] = state
         self.publish_state(d)
+        # Only streaming_off can be fixed by keys: the app is open and idle. A
+        # refusal means backgrounded, locked or not in front, which is another
+        # flow's job, and the active states are already streaming. The starter
+        # re-checks all of it anyway; this is only the trigger.
+        if state == "streaming_off" and self.starter is not None:
+            self._submit("start_streaming", lambda: self.starter.attempt(False))
 
     def health_state(self, now=None):
         now = time.time() if now is None else now
@@ -513,6 +530,13 @@ class Supervisor:
             d["duty_1h"] = self.upstream.duty_1h(now)
             d["tick_age"] = round(self.upstream.tick_age(now), 1)
             d.update(self._boolean_state(state, held))
+        # Published even without a keyboard, because every declared entity must
+        # carry a value: one that is never published shows as unknown forever,
+        # and "unknown" reads as a fault rather than as "not fitted".
+        d["stream_start"] = self.starter.state if self.starter is not None else "idle"
+        d["stream_start_attempts"] = (self.starter.attempts_last_hour
+                                      if self.starter is not None else 0)
+        d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
         if getattr(self, "live_fps", None) is not None:
             d["live_fps"] = self.live_fps()
         # With an upstream, only while streaming: probe frames a minute apart
