@@ -9,6 +9,7 @@ from aiohttp import web
 from . import version
 from .archive import Archive
 from .ingest import Ingestor
+from .keyboard import Keyboard
 from .live import make_live_app
 from .live_stack import LiveStacker
 from .mqtt_io import MqttIO
@@ -16,12 +17,30 @@ from .onvif import OnvifClient
 from .phone import PhoneManager
 from .ring_buffer import RingBuffer
 from .settings import Settings
+from .stream_start import StreamStarter
 from .supervisor import Supervisor
-from .upstream import Upstream
+from .upstream import ProbeStalled, ProbeStreamingOff, Upstream, http_probe
 
 log = logging.getLogger(__name__)
 
 DEFAULT_BUNDLE_ID = "com.guardianeye.webcam.ios"
+
+
+def _stream_probe(settings):
+    """The app's own answer, in the three words StreamStarter reasons about."""
+    def probe():
+        try:
+            http_probe(settings)
+            return "streaming"          # frames are flowing
+        except ProbeStreamingOff:
+            return "off"                # 503: open, Start streaming not tapped
+        except ProbeStalled:
+            # A frame then silence: the app believes it is streaming, and keys
+            # would stop it. Not something this step can fix.
+            return "streaming"
+        except Exception:
+            return "unreachable"        # refused or timed out: backgrounded, locked, gone
+    return probe
 
 
 def main():
@@ -48,7 +67,12 @@ def main():
                   on_session_open=lambda: sup.on_session_open(),
                   on_session_close=lambda: sup.on_session_close())
     ing.on_state = up.on_ingest_state
-    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up)
+    keyboard = Keyboard()
+    log.info("keyboard: %s", keyboard.start())
+    starter = StreamStarter(_stream_probe(s), keyboard, phone.is_running,
+                            allowed=lambda: bool(getattr(s, "auto_start", True)))
+    sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
+                     starter=starter, keyboard=keyboard)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 
@@ -94,6 +118,9 @@ def main():
         # in a probe, which stop() deliberately leaves alone rather than
         # touching the ingestor from a second thread.
         up.stop(timeout=5.0)
+        # Its thread is a daemon, so this is tidiness rather than necessity: it
+        # unregisters the advertisement instead of leaving BlueZ to notice.
+        keyboard.stop(timeout=3.0)
         sup.close()
         for t in threads:
             t.join(timeout=3)

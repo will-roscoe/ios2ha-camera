@@ -8,6 +8,7 @@ import paho.mqtt.client as mqtt
 from . import version
 from .settings import mqtt_endpoints
 from .states import STREAM_STATES
+from .stream_start import STREAM_START_STATES
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ _BINARY_SENSORS = [
     # `backgrounding` switch, which only says whether it is *allowed* to engage:
     # with a full battery the switch is on and this is off.
     ("backgrounding_active", "Backgrounding active", None),
+    # Whether a phone is attached to the keyboard arcturus emulates. Without it
+    # the supervisor cannot press Start streaming, and the usual cause is
+    # Bluetooth switched off on the phone.
+    ("keyboard_connected", "Keyboard connected", "connectivity"),
 ]
 
 
@@ -140,6 +145,19 @@ _SENSORS = [
     dict(obj="battery_health_pct", name="Phone battery health", unit="%",
          state_class="measurement", precision=1, category="diagnostic",
          icon="mdi:battery-heart-variant"),
+    # How the last attempt at pressing Start streaming went. Options come from
+    # stream_start rather than a second copy, for the same reason stream_state's
+    # do: a value the code can produce but discovery does not list fails silently.
+    dict(obj="stream_start", name="Stream start", device_class="enum",
+         options=list(STREAM_START_STATES), category="diagnostic", icon="mdi:play-network"),
+    dict(obj="stream_start_attempts", name="Stream start attempts (1 h)", unit="attempts",
+         state_class="measurement", category="diagnostic", icon="mdi:counter"),
+    # Consecutive failures of calls needing the phone's developer services. Zero
+    # normally; a number that stays up means app control is wedged, which is how
+    # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
+    dict(obj="dvt_failures", name="Developer connection failures", unit="failures",
+         state_class="measurement", category="diagnostic",
+         icon="mdi:usb-flash-drive-outline"),
 ]
 def _ordinal(n):
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -267,7 +285,8 @@ def discovery_payloads(s):
     for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
                               ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong"),
                               ("on_demand", "On demand", "mdi:power-plug-off-outline"),
-                              ("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down")):
+                              ("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down"),
+                              ("auto_start", "Auto start streaming", "mdi:play-box-outline")):
         out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
                      "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
                      "entity_category": "config", "icon": icon}))
@@ -280,6 +299,10 @@ def discovery_payloads(s):
         dict(obj="relaunch_app", name="Relaunch camera app", device_class="restart",
              category="config"),
         dict(obj="prepare_phone", name="Prepare phone", icon="mdi:cellphone-cog",
+             category="config"),
+        # Presses Start streaming now, ignoring the pause switch and the rate
+        # limit: a person asking is an explicit instruction. The guards still hold.
+        dict(obj="start_streaming", name="Start streaming", icon="mdi:video-check",
              category="config"),
     ]
     for spec in buttons:

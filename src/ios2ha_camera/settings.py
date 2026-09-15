@@ -15,7 +15,7 @@ CONTROLS = {
     "window_max_s", "ramp_tau_s", "black_level_override", "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
-    "backgrounding", "background_below_pct", "resume_above_pct",
+    "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
 }
 
 # Discovery publishes one number entity per channel, so the per-channel names
@@ -96,6 +96,10 @@ class Settings:
     # and stops once it has recovered a real margin.
     background_below_pct: float = 50.0
     resume_above_pct: float = 80.0
+    # Whether the supervisor may press Start streaming itself when the app is
+    # open but idle. Off leaves a stream stopped by hand on the phone stopped;
+    # the Home Assistant button still works, because a person is asking.
+    auto_start: bool = True
 
     @classmethod
     def from_env(cls, env):

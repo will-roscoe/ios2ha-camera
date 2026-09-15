@@ -206,6 +206,10 @@ need anyone to get up.
 {% if s == 'streaming_off' %}
   The app is running but not streaming. Open Guardian Eye and tap Start streaming —
   nothing else can do this.
+{% elif s == 'streaming_off' and
+        states('sensor.ios2ha_camera_stream_start') == 'failed_keyboard_not_connected' %}
+  The app is idle and the supervisor could not press Start streaming: no phone is
+  attached to its keyboard. Check Bluetooth is on on the phone.
 {% elif s == 'stalled' %}
   The app's picture has frozen: it still answers but sends nothing. Open Guardian
   Eye, stop streaming and start it again. If that does not help, press Relaunch app.
@@ -234,6 +238,66 @@ look identical over WiFi — both refuse the connection — and only the cable c
 apart. One resumes by itself when foregrounded; the other needs relaunching. Note that
 `app_running` is **unknown**, not `off`, when the cable cannot answer, so
 `is_state(..., 'off')` correctly declines to claim the app is dead on no evidence.
+
+### Starting the stream without touching the phone
+
+Guardian Eye starts streaming from a button in the app and nothing else. After the phone restarts —
+a power cut, a flat battery — it cold-starts with streaming off, and until 2.4.0 only a person
+tapping that button could fix it. The supervisor now presses it, by being a Bluetooth keyboard: iOS
+**Full Keyboard Access** turns real key presses into focus moves and activations, and the sequence
+is Tab, Down forty times, Space. Start streaming is the last item on the page, so enough Downs
+always land on it.
+
+**Getting into the app is separate and happens over the cable.** The keyboard is used only for that
+one button, and only when the app is already open and idle.
+
+**It presses keys only when all of this holds**, each re-checked at the moment it matters:
+
+- the app's process is running, over the cable, and
+- the app answers **503**, which means open with streaming off. A refused connection means
+  backgrounded, locked or not in front, and is left to the flows that handle those, and
+- `switch.ios2ha_camera_auto_start` is on, and
+- the attempt budget allows it.
+
+The 503 check is repeated immediately before Space, because the Downs take about fifteen seconds. On
+a streaming app that last item reads **Stop streaming**, and on the lock screen the keyboard's focus
+sits on the torch, so a press at the wrong moment would do real damage.
+
+**Attempts are budgeted:** six an hour, twenty a day, at least two minutes apart. When the budget is
+spent, `sensor.ios2ha_camera_stream_start` reads `rate_limited` and the supervisor stops trying — a
+phone that keys cannot fix is not worth poking all night.
+
+| `stream_start` | What it means |
+|---|---|
+| `idle` | Nothing attempted since startup |
+| `starting` | Keys are going out now |
+| `started` | The app is streaming again |
+| `not_ready` | The app is not running, or not answering on its page. Nothing was pressed |
+| `already_streaming` | It was already up, so no keys were sent |
+| `paused` | The auto-start switch is off |
+| `rate_limited` | Budget spent; a person is needed |
+| `failed_keyboard_not_connected` | No phone is attached to the keyboard — usually Bluetooth off on the phone |
+| `failed_keys_had_no_effect` | Keys were sent and the app still is not streaming |
+
+**`button.ios2ha_camera_start_streaming`** presses now, ignoring both the switch and the budget,
+because a person asking is an explicit instruction. It still obeys every guard above.
+
+**One-time setup on the phone**, all of it needed before any of this works:
+
+1. **No passcode** (Settings → Face ID & Passcode → Turn Passcode Off). After a restart a passcode
+   blocks USB entirely, so nothing can even open the app.
+2. **Bluetooth on.** It cannot be switched on over the cable, so if it is off the supervisor can only
+   report `failed_keyboard_not_connected`.
+3. **Full Keyboard Access on** (Settings → Accessibility → Keyboards).
+4. **Pair the keyboard once**, from Settings → Bluetooth. It appears under the *host's* Bluetooth
+   name (on this network, `arcturus`), not the advertised name: iOS shows the adapter's own name.
+
+A replacement phone needs exactly these four steps and nothing else; no address or name is
+configured anywhere.
+
+**On the host**, `scripts/install-bluez-proxy.sh` installs `bluez-dbus-proxy.service`, which gives
+the container a D-Bus socket that reaches BlueZ and nothing else. Without it the keyboard reports
+`unavailable` and everything else carries on unchanged. `./deploy.sh check` says whether it is there.
 
 ### Backgrounding to charge the phone
 

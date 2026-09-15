@@ -407,6 +407,41 @@ def test_the_wait_prints_each_new_kind_of_probe_failure_once(monkeypatch, capsys
     assert "frames are flowing" in out
 
 
+def test_a_dvt_failure_clears_the_mount_cache_so_the_next_call_remounts(monkeypatch):
+    """On 2026-09-14 one ConnectionTerminatedError wedged every later developer
+    call for 24 hours: backgrounding stopped, the app stayed streaming, and the
+    battery died. The mount was cached for the life of the process and never
+    retried, so nothing could recover without restarting the container."""
+    pm = phone.PhoneManager("com.example.app")
+    mounts = []
+    monkeypatch.setattr(pm, "_mount_ddi_now", lambda: mounts.append(1))
+    monkeypatch.setattr(pm, "_proclist",
+                        lambda: (_ for _ in ()).throw(RuntimeError("ConnectionTerminatedError")))
+    with pytest.raises(phone.PhoneUnavailable):
+        pm.is_running()
+    assert pm._ddi_mounted is False
+    assert pm.dvt_failures == 1
+
+    # The name has to contain the bundle id's last part ("app"), which is what
+    # is_running matches on.
+    monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "ExampleApp", "pid": 1}])
+    assert pm.is_running() is True
+    assert len(mounts) == 2       # remounted rather than trusting the stale cache
+    assert pm.dvt_failures == 0
+
+
+def test_a_healthy_run_mounts_once(monkeypatch):
+    """The cache still earns its keep: mounting on every call would spend the
+    cable on a question whose answer almost never changes."""
+    pm = phone.PhoneManager("com.example.app")
+    mounts = []
+    monkeypatch.setattr(pm, "_mount_ddi_now", lambda: mounts.append(1))
+    monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "ExampleApp", "pid": 1}])
+    pm.is_running()
+    pm.is_running()
+    assert len(mounts) == 1
+
+
 # -- foreground vs relaunch, which is not a cosmetic distinction ----------------
 
 def _record_launch(monkeypatch, pm):
