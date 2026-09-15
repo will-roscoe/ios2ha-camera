@@ -63,6 +63,10 @@ class PhoneManager:
     def __init__(self, bundle_id):
         self.bundle_id = bundle_id
         self._ddi_mounted = False
+        # Consecutive failures of calls that need the developer services. One of
+        # these wedged every such call for 24 hours on 2026-09-14 while the
+        # supervisor kept logging and nothing recovered, so it is published.
+        self.dvt_failures = 0
 
     def _call(self, fn):
         """Run fn(), guarding against the running-event-loop misuse case and converting any
@@ -105,11 +109,36 @@ class PhoneManager:
         from pymobiledevice3.services.mobile_image_mounter import auto_mount
         await auto_mount(lockdown)
 
+    def _dvt(self, fn):
+        """Run a call that needs the developer disk image, mounting it first.
+
+        A failure clears the mount cache and counts: on 2026-09-14 one
+        ConnectionTerminatedError left every later developer call failing for
+        24 hours, because the mount was cached for the life of the process and
+        never re-checked. Backgrounding stopped, the app stayed streaming, and
+        the battery died. Whether the phone or the process was wedged is still
+        unknown, so this assumes neither -- it simply stops trusting the cache.
+        """
+        self._call(self._mount_ddi)
+        try:
+            result = self._call(fn)
+        except Exception:
+            self._ddi_mounted = False
+            self.dvt_failures += 1
+            raise
+        self.dvt_failures = 0
+        return result
+
     def _mount_ddi(self):
         """Mount the DeveloperDiskImage needed by is_running/launch/screenshot. A no-op once
         this instance has mounted successfully; battery() never calls this at all."""
         if self._ddi_mounted:
             return
+        self._mount_ddi_now()
+        self._ddi_mounted = True
+
+    def _mount_ddi_now(self):
+        """Mount it, cache or no cache."""
 
         async def go():
             from pymobiledevice3.services.mobile_image_mounter import AlreadyMountedError
@@ -123,7 +152,6 @@ class PhoneManager:
                 await lockdown.close()
 
         self._run(go(), timeout=DDI_TIMEOUT_S)
-        self._ddi_mounted = True
 
     def _diagnostics_battery(self):
         async def go():
@@ -170,8 +198,7 @@ class PhoneManager:
         return self._run(go())
 
     def is_running(self):
-        self._call(self._mount_ddi)
-        procs = self._call(self._proclist)
+        procs = self._dvt(self._proclist)
         needle = self.bundle_id.split(".")[-1].lower()
         return any(needle in p.get("name", "").lower() for p in procs)
 
@@ -200,8 +227,7 @@ class PhoneManager:
         a dead app, and the wrong behaviour for merely bringing a running app
         back to the front -- use `foreground()` for that.
         """
-        self._call(self._mount_ddi)
-        pid = self._call(lambda: self._launch(kill_existing=True))
+        pid = self._dvt(lambda: self._launch(kill_existing=True))
         return bool(pid)
 
     def foreground(self):
@@ -214,8 +240,7 @@ class PhoneManager:
         backgrounded-but-streaming app opened its port within 2 s and then
         answered 503, having silently thrown the stream away.
         """
-        self._call(self._mount_ddi)
-        pid = self._call(lambda: self._launch(kill_existing=False))
+        pid = self._dvt(lambda: self._launch(kill_existing=False))
         return bool(pid)
 
     def background(self, bundle_id=BACKGROUND_BUNDLE_ID):
@@ -230,8 +255,7 @@ class PhoneManager:
         `kill_existing=False` here too, so the decoy app is merely raised rather
         than restarted each time.
         """
-        self._call(self._mount_ddi)
-        pid = self._call(lambda: self._launch(bundle_id, kill_existing=False))
+        pid = self._dvt(lambda: self._launch(bundle_id, kill_existing=False))
         return bool(pid)
 
     def _take_screenshot(self):
@@ -245,8 +269,7 @@ class PhoneManager:
         return self._run(go())
 
     def screenshot(self):
-        self._call(self._mount_ddi)
-        return self._call(self._take_screenshot)
+        return self._dvt(self._take_screenshot)
 
     def mount_ddi(self):
         """Public form of the lazy developer-image mount, for the setup helper."""

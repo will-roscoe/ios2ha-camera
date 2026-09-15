@@ -221,6 +221,25 @@ def test_every_boolean_is_declared_to_home_assistant():
         assert name in published, f"{name} is declared but never published"
 
 
+def test_the_unattended_start_entities_are_declared():
+    """Five new controls and readings; a missing discovery payload means Home
+    Assistant silently ignores everything published to that topic."""
+    topics = {t for t, _ in discovery_payloads(Settings())}
+    for comp, name in (("binary_sensor", "keyboard_connected"),
+                       ("sensor", "stream_start"),
+                       ("sensor", "stream_start_attempts"),
+                       ("switch", "auto_start"),
+                       ("button", "start_streaming")):
+        assert f"homeassistant/{comp}/ios2ha/{name}/config" in topics, name
+
+
+def test_every_stream_start_state_is_declared():
+    from ios2ha_camera.stream_start import STREAM_START_STATES
+    cfg = next(c for _, c in discovery_payloads(Settings())
+               if c["default_entity_id"] == "sensor.ios2ha_camera_stream_start")
+    assert set(cfg["options"]) == set(STREAM_START_STATES)
+
+
 def test_stalled_is_declared_to_home_assistant():
     """Named explicitly, because the test below iterates STREAM_STATES and so
     cannot notice a state the code produces going missing from that tuple."""
