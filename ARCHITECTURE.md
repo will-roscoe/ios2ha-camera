@@ -108,6 +108,16 @@ buffered rather than waiting for a fresh session. The hold is released — and t
 close — before stacking and rendering run, which is 10–20 s of CPU the phone no longer has to stay
 connected for.
 
+**Getting the phone back, in two parts.** Bringing the phone back — cable, app running, app in front
+— is done over the USB cable by the flows that already exist (`Upstream` sessions,
+`Backgrounding.foreground`, the relaunch button, the cable self-heal). *Starting the stream* is a
+separate step, `stream_start.StreamStarter`, because Guardian Eye only starts streaming from a
+button on its own screen. That step drives `keyboard.Keyboard`, a Bluetooth LE keyboard the host
+emulates through BlueZ, which iOS Full Keyboard Access acts on. It is kept narrow on purpose: it
+presses keys only when the app is proven open and idle (its server answers 503), and re-checks that
+immediately before the activating press, since the same key stops a running stream. Nothing in
+either module knows the phone's address or name, so the phone can be swapped without configuration.
+
 **The state model.** `state()` returns one of these, most specific first (the full list of values
 and what each means lives in `states.py`):
 

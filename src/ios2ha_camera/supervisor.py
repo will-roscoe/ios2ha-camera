@@ -537,6 +537,9 @@ class Supervisor:
         d["stream_start_attempts"] = (self.starter.attempts_last_hour
                                       if self.starter is not None else 0)
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
+        # A rising count means the phone's developer services are not answering,
+        # which is what silently stopped backgrounding for 24 hours on 2026-09-14.
+        d["dvt_failures"] = getattr(self.phone, "dvt_failures", 0) if self.phone else 0
         if getattr(self, "live_fps", None) is not None:
             d["live_fps"] = self.live_fps()
         # With an upstream, only while streaming: probe frames a minute apart

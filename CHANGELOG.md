@@ -18,6 +18,41 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.4.0 — 2026-09-16
+
+**The supervisor can now start the stream itself, so the camera comes back after a power cut with
+nobody touching the phone.** Guardian Eye starts streaming from a button in the app and nothing
+else: no URL, no shortcut, and the accessibility service's own press is refused for App Store apps.
+What does work is a real keyboard, because iOS Full Keyboard Access turns key presses into focus
+moves and activations. So arcturus becomes one.
+
+- **A Bluetooth keyboard, emulated by the host.** HID over GATT through BlueZ, reached only through
+  a D-Bus proxy filtered to `org.bluez`, installed by `scripts/install-bluez-proxy.sh`. The host's
+  own Bluetooth keyboard and mouse are untouched. Nothing is tied to one phone: whatever pairs is
+  the phone, so a replacement needs no configuration.
+- **A narrow, guarded step.** Keys are sent only when the app's process is running *and* its server
+  answers 503, which means open and idle. That answer is re-read immediately before Space, because
+  the sequence takes about fifteen seconds and Space on a streaming app is *Stop* streaming. A
+  refusal (backgrounded, locked, not in front) is left to the flows that already handle it.
+- **Bounded attempts:** six an hour, twenty a day, two minutes apart, widening after failures. A
+  phone that keys cannot fix is not poked all night.
+- **`switch.ios2ha_camera_auto_start`** pauses the whole thing, so a stream you stop on the phone
+  stays stopped. **`button.ios2ha_camera_start_streaming`** presses now, ignoring the switch and the
+  limit, but never the guards.
+- **New readings:** `sensor.ios2ha_camera_stream_start` (how the last attempt went),
+  `sensor.ios2ha_camera_stream_start_attempts`, `binary_sensor.ios2ha_camera_keyboard_connected`,
+  and `sensor.ios2ha_camera_dvt_failures`.
+
+**Fixed: a wedged developer connection stayed wedged.** On 14 September one `ConnectionTerminatedError`
+left every call needing the phone's developer services failing for 24 hours. Backgrounding stopped,
+the app kept streaming, and the battery ran flat. The developer disk image was mounted once and the
+result cached for the life of the process, so nothing re-checked it. A failure now clears that cache
+and is counted, and the count is published.
+
+**One-time phone setup** for the keyboard (see OPERATIONS.md): no passcode, Bluetooth on, Full
+Keyboard Access on, and pair the keyboard once. It appears in the phone's Bluetooth list under the
+host's own name, because iOS shows that rather than the advertised one.
+
 ## 2.3.1 — 2026-09-14
 
 **`camera_online` no longer contradicts `stream_state` after a change.** A stream state change

@@ -152,6 +152,12 @@ _SENSORS = [
          options=list(STREAM_START_STATES), category="diagnostic", icon="mdi:play-network"),
     dict(obj="stream_start_attempts", name="Stream start attempts (1 h)", unit="attempts",
          state_class="measurement", category="diagnostic", icon="mdi:counter"),
+    # Consecutive failures of calls needing the phone's developer services. Zero
+    # normally; a number that stays up means app control is wedged, which is how
+    # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
+    dict(obj="dvt_failures", name="Developer connection failures", unit="failures",
+         state_class="measurement", category="diagnostic",
+         icon="mdi:usb-flash-drive-outline"),
 ]
 def _ordinal(n):
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")

@@ -40,6 +40,13 @@ check)
   else
     echo "MISMATCH: the deployed tree is not this one" >&2; exit 1
   fi
+  # The keyboard that presses Start streaming needs this socket; without it
+  # everything else still works, so this reports rather than fails.
+  if ssh -o BatchMode=yes "$HOST" 'test -S /run/bluez-proxy/bus'; then
+    echo "bluez proxy: present"
+  else
+    echo "bluez proxy: MISSING (run scripts/install-bluez-proxy.sh on $HOST)"
+  fi
   ;;
 
 deploy)
