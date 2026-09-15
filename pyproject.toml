@@ -31,6 +31,9 @@ dependencies = [
     # Floor raised to the 11.x line the code is written against and verified on
     # arcturus (11.12.4); the 4.x API differs enough to break phone.py.
     "pymobiledevice3>=11.0,<12",
+    # Pure-python asyncio D-Bus. The slim image has no GLib bindings, and the
+    # keyboard only ever talks to org.bluez, through the filtered proxy socket.
+    "dbus-fast>=2.21",
 ]
 
 [project.urls]
