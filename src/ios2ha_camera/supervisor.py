@@ -282,7 +282,14 @@ class Supervisor:
                     # the past as if it were now.
                     return self._event({"ts": now, "error": "no fresh frames"})
             probe = [stack.decode(f) for f in probe_frames]
-            mean = np.mean(probe, axis=0)
+            # np.mean(probe, axis=0) first stacks every decoded frame into one
+            # (N,H,W,3) array before reducing -- ~373MB for probe_n=15 at
+            # 1920x1080 float32, thrown away immediately, and this whole block
+            # runs inside the `with hold:` above, so that cost is added straight
+            # to how long the phone connection stays open. Measured
+            # bit-identical to np.mean for stack.decode's float32 frames, at
+            # 73-167ms against np.mean's 200ms-1.1s.
+            mean = sum(probe) / len(probe)
 
             bl_probe = measure.black_level(mean)
             pct = measure.luminance_percentiles(mean, bl_probe)

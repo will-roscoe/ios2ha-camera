@@ -139,6 +139,57 @@ def test_produce_still_publishes_and_archives():
     assert any("depth_used" in st for st in mq.states)
 
 
+def test_probe_mean_matches_np_mean_without_materialising_the_stacked_probe(monkeypatch):
+    """np.mean(probe, axis=0) (supervisor.py:285) implicitly stacks every decoded
+    probe frame into one (N,H,W,3) array before reducing -- ~373MB for
+    probe_n=15 at 1920x1080 float32, thrown away immediately -- while the phone
+    connection is held open for the whole capture (supervisor.py:265's `with
+    hold:`). sum(probe)/len(probe) measured 73-167ms against np.mean's
+    200ms-1.1s and is bit-identical for stack.decode's float32 output
+    (sweep-performance.md finding 1): assert both that the expensive call is
+    gone and that the replacement's numbers pin exactly to what np.mean would
+    have given, for the same frames."""
+    from ios2ha_camera import measure
+
+    real_mean = np.mean
+    list_calls = []
+
+    def spy_mean(a, *args, **kwargs):
+        # The only np.mean(<list>, axis=0) call anywhere in this codebase is the
+        # probe-averaging line finding 1 targets -- every other np.mean call
+        # here reduces a single ndarray, so a list argument uniquely identifies it.
+        if isinstance(a, list):
+            list_calls.append(a)
+        return real_mean(a, *args, **kwargs)
+    monkeypatch.setattr(np, "mean", spy_mean)
+
+    captured = {}
+    real_black_level = measure.black_level
+
+    def spy_black_level(mean, *a, **kw):
+        captured["mean"] = mean
+        return real_black_level(mean, *a, **kw)
+    monkeypatch.setattr(measure, "black_level", spy_black_level)
+
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 10
+    buf = RingBuffer(5_000_000)
+    now = time.time()
+    _fill(buf, 20, now=now)
+    sup = _sup(s, buf)
+    sup.produce_still(now_fps=12.0, now=now)
+
+    assert list_calls == [], (
+        "np.mean(probe, axis=0) still materialises the whole probe stack")
+    assert "mean" in captured
+
+    probe_frames = sup._fresh(buf.recent(sup.probe_n), now, sup.fresh_s)
+    reference = real_mean([stack.decode(f) for f in probe_frames], axis=0)
+    assert captured["mean"].dtype == np.float32
+    assert np.array_equal(captured["mean"], reference)
+
+
 def test_handle_control_updates_setting():
     s = Settings()
     sup = _sup(s)
