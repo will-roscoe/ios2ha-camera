@@ -29,10 +29,10 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
-| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
-| `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
+| `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Turning it **off** also *removes* the entities it created: at startup the supervisor makes one bounded attempt to reach the broker and clears every retained discovery topic and the retained availability message, which deletes the MQTT entities from Home Assistant and frees their entity ids. With no broker reachable this is one warning in the log and nothing else. Switching it back on recreates them. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
 | `EXPOSE_API` | `true` | Turns the JSON API on or off. Same accepted spellings and the same fail-safe on an unrecognised value |
 
 With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving
@@ -57,8 +57,8 @@ these need to be set.
 ### API
 
 Matters only while `EXPOSE_API` is true (the default), and only for the JSON
-routes: `/api/v1/info`, `/objects`, `/state`, `/control/{name}` and `/media`
-(the descriptor list). The media paths under `/api/v1/stream/...` and
+routes: `/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`
+(the descriptor list) and `/events` (the Server-Sent Events stream). The media paths under `/api/v1/stream/...` and
 `/api/v1/snapshot/...` are not part of this — they are in the Core table above,
 served unconditionally alongside `/live`, `/live/stacked` and `/still.jpg` —
 so turning this flag off does not close them. The API has no configuration of

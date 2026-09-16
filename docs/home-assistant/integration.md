@@ -31,12 +31,12 @@ trusted network — a port forward, a tunnel, anything — hands out every value
 every control with no login in front of it.
 
 `GET /api/v1/info` is the only path worth hardcoding. It reports the running
-version, `{"api": 1, "mqtt": 1}` interface versions, the device block, and a
-`routes` map naming everywhere else:
+version, `{"api": 1, "mqtt": 1}` interface versions, the device block, an
+`objects_version`, and a `routes` map naming everywhere else:
 
 | Route | Method | What it serves |
 |---|---|---|
-| `objects` | `GET` | Every entity descriptor and every media descriptor — see {doc}`entities` |
+| `objects` | `GET` | `objects_version`, then every entity descriptor (`objects`) and every media descriptor (`media`) — see [Entity descriptors](#entity-descriptors) |
 | `state` | `GET` | Every current value, keyed by object id |
 | `control` | `POST` to `/api/v1/control/{name}` | One verb for every writable entity: `{"value": ...}` in, `{"ok": true or false, ...}` out |
 | `media` | `GET` | The same media descriptors `objects` embeds, on their own |
@@ -48,6 +48,45 @@ way a Home Assistant automation would watch an MQTT state topic settle. A reject
 write (an out-of-range number, an option outside a select's list, an unknown or
 read-only name) comes back as a `4xx` with an `error` string and, where it makes
 sense, the value currently in effect.
+
+`objects_version` is a fingerprint of the whole `objects` document, served as
+`"sha256:"` followed by 64 hex digits. It is the same string in `info`, at the
+top of `objects` and in every event-stream `snapshot`, and it changes whenever
+any descriptor does. It exists so a client that has cached the descriptors —
+across a reconnect or a Home Assistant restart — can check them against one
+small `info` request instead of refetching every descriptor: if the string
+matches its cache, the cache is current. Compare it for equality only; its
+contents are not meant to be read.
+
+## Entity descriptors
+
+`objects` holds one descriptor per entity, and every descriptor carries all
+fifteen keys below, with `null` where a key does not apply to that entity —
+never a missing key. Key a descriptor on the pair (`domain`, `object_id`):
+`object_id` alone is not unique, since `screenshot` is both a camera and a
+button. The entities themselves are listed in {doc}`entities`.
+
+| Key | Type | Meaning | `null` when |
+|---|---|---|---|
+| `object_id` | string | The entity's id within its domain; also the `{name}` a `control` write uses | never |
+| `domain` | string | The Home Assistant platform: `camera`, `number`, `select`, `switch`, `button`, `sensor` or `binary_sensor`. More may be added; skip a domain you do not handle | never |
+| `name` | string | Display name, without the device name | on the one entity that is the device's main feature (the `still` camera), which Home Assistant then names after the device alone |
+| `state_key` | string | The key under which the entity's value appears in `state` and in `state` events | the entity has no value: cameras and buttons |
+| `device_class` | string | Home Assistant device class, such as `battery` or `enum` | the entity has none |
+| `unit` | string | Unit of measurement, such as `%` or `W` | the value has no unit, and always for cameras, selects, switches, buttons and binary sensors |
+| `state_class` | string | Home Assistant state class; `measurement` today | the value is not a measurement for statistics, and always outside `sensor` |
+| `options` | list of strings | Every value the entity can hold | the entity is not a `select` or an `enum` sensor |
+| `lo`, `hi` | number | Inclusive bounds a `number` accepts | the entity is not a `number` |
+| `step` | number | The increment a `number` moves in | the entity is not a `number` |
+| `category` | string | Home Assistant entity category, `config` or `diagnostic` | the entity is a primary one, shown without a category |
+| `icon` | string | A Material Design icon, such as `mdi:battery-arrow-down` | Home Assistant's default for the domain and device class should be used |
+| `writable` | boolean | Whether `control` accepts it; true for every `number`, `select`, `switch` and `button` | never |
+| `precision` | integer | Digits to display, as Home Assistant's suggested display precision | the entity does not set one, and always outside `sensor` |
+
+A button has no value to send: a `control` write to it is a press, and any
+`value` in the request is ignored. `lo`, `hi` and `step` may be integers or
+floats, so read them as numbers rather than as either. As with every other part
+of the API, a descriptor may gain keys; ignore any you do not recognise.
 
 ## Events
 
@@ -97,6 +136,25 @@ camera; only the JSON routes in the section above turn off with the flag.
 Setting `EXPOSE_API=false` does not close any `/api/v1/stream/...` or
 `/api/v1/snapshot/...` path, and none of the six carries authentication either
 way.
+
+## Moving from MQTT to the component
+
+The component is meant to take over the same entity ids MQTT discovery created,
+`<domain>.ios2ha_camera_<object_id>`, so dashboards and automations keep working.
+Home Assistant will not hand an id to a second entity while the first still holds
+it, so the order matters:
+
+1. **Turn MQTT off.** Set `EXPOSE_MQTT=false` and restart the supervisor. At
+   startup it clears its retained discovery topics and its retained availability
+   message, which deletes the MQTT entities and releases their ids (see
+   {doc}`../supervisor/configuration`). Check the entities have gone from Home
+   Assistant before carrying on; if the broker was unreachable, the log says so
+   and nothing was cleared.
+2. **Install the component** and add the supervisor. Its entities take the same
+   object ids, and so the same entity ids.
+3. **Remove any hand-made Generic Camera entries** pointed at `/live`,
+   `/live/stacked` or `/still.jpg`, once the component's cameras are working.
+   Until then they keep working: those paths are permanent.
 
 ## Versioning
 

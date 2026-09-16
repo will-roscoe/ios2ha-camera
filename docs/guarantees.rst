@@ -50,9 +50,16 @@ number would raise a false alarm on whichever side did not actually change.
        something a caller has to opt into.
    * - ``/api/v1/info``
      - Is the **only path worth hardcoding**. Every other route -- ``objects``,
-       ``state``, ``control``, ``media``, and ``events`` once it is served -- is
-       named in that document's ``routes`` map, so a route moving, or a new one
-       arriving, is a change to served data rather than a client release.
+       ``state``, ``control``, ``media`` and ``events`` -- is named in that
+       document's ``routes`` map, so a route moving, or a new one arriving, is a
+       change to served data rather than a client release.
+   * - ``/api/v1/events``
+     - The Server-Sent Events stream is served and **covered by** ``api: 1`` on
+       the same terms as every other route: its event names (``snapshot``,
+       ``state``, ``objects_changed``) and the keys inside each event keep their
+       meaning, and new event names or keys may appear. A client must ignore an
+       event name it does not recognise, just as it ignores an unknown key. The
+       wire format is described in :doc:`home-assistant/integration`.
 
 The pre-existing media paths -- ``/live``, ``/live/stacked`` and ``/still.jpg`` --
 are **permanent aliases**, not a deprecated route scheduled for removal. They are
@@ -77,9 +84,6 @@ Not covered by this promise
 - **The internal tuning constants** documented in :doc:`supervisor/configuration`
   (``PROBE_INTERVAL_S`` and the rest) -- read alongside the code that justifies
   each one, not a dashboard control, and free to change without notice.
-- **Server-Sent Events at** ``/api/v1/events``. The route is named in
-  ``/api/v1/info``'s ``routes`` map today so a client can find it the moment it
-  exists, but nothing is listening yet: a request to it returns 404.
 - **Authentication on the JSON API or the media routes.** Neither exists yet.
   Nothing here should be read as a claim that either is safe to expose beyond a
   trusted network.
