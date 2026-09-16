@@ -19,6 +19,16 @@ import time
 log = logging.getLogger(__name__)
 
 SEQUENCE = ["tab"] + ["down"] * 40
+# A cold-started app sometimes comes up not accepting keyboard input at all:
+# measured 2026-09-16, keys on the wire and the screen frozen, with none of Full
+# Keyboard Access's blue border. Locking the phone and coming back restores it,
+# and unlike relaunching the app it is reversible -- the same screen returns.
+LOCK = ["ctrl+cmd+q"]
+# Any key wakes the screen, so this one is chosen for what it does if the lock
+# did *not* land: Escape only backs out of a sheet, where Space would activate
+# whatever Full Keyboard Access has focused.
+WAKE = ["escape"]
+REFRESH_SETTLE_S = 3.0
 # Every value attempt() can return. Declared here so mqtt_io can hand the same
 # list to Home Assistant, which silently drops an enum value it was not told of.
 STREAM_START_STATES = ("idle", "starting", "started", "not_ready", "already_streaming",
@@ -44,13 +54,16 @@ class StreamStarter:
     """
 
     def __init__(self, probe, keyboard, is_running, clock=time.monotonic,
-                 sleep=time.sleep, allowed=lambda: True):
+                 sleep=time.sleep, allowed=lambda: True, foreground=None):
         self._probe = probe
         self._kb = keyboard
         self._is_running = is_running
         self._clock = clock
         self._sleep = sleep
         self._allowed = allowed
+        # Brings the app back after the lock/unlock refresh. Without it there is
+        # no refresh, and a phone whose app ignores keys cannot be recovered.
+        self._foreground = foreground
         self._attempts = []          # clock readings of attempts that spent budget
         self.state = "idle"
 
@@ -87,21 +100,60 @@ class StreamStarter:
 
         self._attempts.append(now)
         self.state = "starting"
-        self._kb.press(SEQUENCE)
-        # Re-read, rather than trusting `before`: the Downs take about fifteen
-        # seconds, and a Space sent to a streaming app would stop it.
-        if self._probe() != "off":
+        if self._press_and_check():
+            return self._done("started")
+        if self._probe() == "streaming":
             return self._done("already_streaming")
-        self._kb.press(["space"])
 
+        # The app can come up refusing keyboard input altogether. Lock the phone
+        # and come back -- reversible, and it restores the same screen -- then
+        # try once more before giving the attempt up.
+        state = self._refresh()
+        if state == "off" and self._press_and_check():
+            return self._done("started")
+        if state == "streaming":
+            return self._done("already_streaming")
+        log.warning("start streaming: keys were sent but the app is still not streaming")
+        return self._done("failed_keys_had_no_effect")
+
+    def _press_and_check(self):
+        """One pass of the sequence. True once the app reports it is streaming."""
+        self._kb.press(SEQUENCE)
+        # Re-read, rather than trusting the earlier answer: the Downs take about
+        # fifteen seconds, and a Space sent to a streaming app would stop it.
+        if self._probe() != "off":
+            return False
+        self._kb.press(["space"])
         for _ in range(SETTLE_TRIES):
             self._sleep(SETTLE_S)
             if self._probe() == "streaming":
                 self._attempts.clear()      # it worked, so the budget is not spent
                 log.info("start streaming: the stream is up")
-                return self._done("started")
-        log.warning("start streaming: keys were sent but the app is still not streaming")
-        return self._done("failed_keys_had_no_effect")
+                return True
+        return False
+
+    def _refresh(self):
+        """Lock the phone, wake it, and bring the app back to the front.
+
+        Returns what the app says afterwards, or None if the refresh itself
+        could not be completed.
+        """
+        if self._foreground is None:
+            return None
+        log.info("start streaming: keys had no effect; locking and returning to the app")
+        self._kb.press(LOCK)
+        self._sleep(REFRESH_SETTLE_S)
+        self._kb.press(WAKE)
+        self._sleep(REFRESH_SETTLE_S)
+        try:
+            self._foreground()
+        except Exception as e:
+            log.warning("start streaming: could not bring the app back (%s: %s)",
+                        type(e).__name__, e)
+            return None
+        self._sleep(REFRESH_SETTLE_S)
+        # Only worth pressing again if the app is back and still idle.
+        return self._probe()
 
     # -- internals -------------------------------------------------------------
 

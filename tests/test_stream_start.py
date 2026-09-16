@@ -8,7 +8,7 @@ phone from being poked all night.
 
 import pytest
 
-from ios2ha_camera.stream_start import SEQUENCE, STREAM_START_STATES, StreamStarter
+from ios2ha_camera.stream_start import LOCK, SEQUENCE, STREAM_START_STATES, WAKE, StreamStarter
 
 
 class FakeKeyboard:
@@ -104,6 +104,121 @@ def test_keys_that_do_not_start_the_stream_are_reported():
     s, _ = _starter(Probe("off"), kb)
     assert s.attempt() == "failed_keys_had_no_effect"
     assert kb.pressed == [SEQUENCE, ["space"]]
+
+
+class Refresher:
+    """Stands in for locking the phone and bringing the app back."""
+
+    def __init__(self, fails=False):
+        self.calls = 0
+        self.fails = fails
+
+    def __call__(self):
+        self.calls += 1
+        if self.fails:
+            raise RuntimeError("the cable went away")
+
+
+def _refreshing(probe, kb, foreground):
+    return StreamStarter(probe, kb, lambda: True, clock=lambda: 1000.0,
+                         sleep=lambda s: None, foreground=foreground)
+
+
+def test_a_press_that_does_nothing_locks_the_phone_and_tries_again():
+    """Measured on the device 2026-09-16: a cold-started app can come up
+    ignoring the keyboard entirely, and locking and returning to it is what
+    brings Full Keyboard Access back."""
+    kb = FakeKeyboard()
+    fg = Refresher()
+
+    def probe():
+        # Nothing works until the app has been left and come back to, and then
+        # only once the second run of the sequence has reached Space.
+        done = kb.pressed.count(SEQUENCE) >= 2 and kb.pressed[-1] == ["space"]
+        return "streaming" if fg.calls and done else "off"
+
+    s = _refreshing(probe, kb, fg)
+    assert s.attempt() == "started"
+    assert kb.pressed == [SEQUENCE, ["space"], LOCK, WAKE, SEQUENCE, ["space"]]
+    assert fg.calls == 1
+
+
+def test_the_phone_is_locked_at_most_once_an_attempt():
+    """Otherwise a phone that will never take keys is locked and unlocked in a
+    loop for as long as the budget allows."""
+    kb = FakeKeyboard()
+    fg = Refresher()
+    s = _refreshing(Probe("off"), kb, fg)
+    assert s.attempt() == "failed_keys_had_no_effect"
+    assert kb.pressed.count(SEQUENCE) == 2
+    assert fg.calls == 1
+
+
+def test_nothing_is_locked_when_the_first_press_worked():
+    kb = FakeKeyboard()
+    fg = Refresher()
+    s = _refreshing(Probe("off", "off", "streaming"), kb, fg)
+    assert s.attempt() == "started"
+    assert LOCK not in kb.pressed
+    assert fg.calls == 0
+
+
+def test_a_stream_that_came_up_late_is_not_locked_out_of_it():
+    """The app answering "streaming" after the settle loop gave up means the
+    keys did work; locking it then would be gratuitous."""
+    kb = FakeKeyboard()
+    fg = Refresher()
+    answers = ["off"] * (2 + 10) + ["streaming"]
+    s = _refreshing(Probe(*answers), kb, fg)
+    assert s.attempt() == "already_streaming"
+    assert LOCK not in kb.pressed
+    assert fg.calls == 0
+
+
+def test_no_refresh_is_attempted_without_a_way_back_into_the_app():
+    """Locking a phone we then cannot unlock would leave it worse than found."""
+    kb = FakeKeyboard()
+    s, _ = _starter(Probe("off"), kb)
+    assert s.attempt() == "failed_keys_had_no_effect"
+    assert kb.pressed == [SEQUENCE, ["space"]]
+
+
+def test_the_keys_are_not_pressed_again_when_the_app_did_not_come_back():
+    """A Space with the app not in front is a key sent to whatever is, so the
+    retry only happens once the app is confirmed back and still idle."""
+    kb = FakeKeyboard()
+    fg = Refresher(fails=True)
+    s = _refreshing(Probe("off"), kb, fg)
+    assert s.attempt() == "failed_keys_had_no_effect"
+    assert kb.pressed == [SEQUENCE, ["space"], LOCK, WAKE]
+
+
+def test_the_retry_is_dropped_when_the_app_is_back_but_no_longer_idle():
+    kb = FakeKeyboard()
+    fg = Refresher()
+    # off through the first press, then unreachable once it is back.
+    answers = ["off"] * (2 + 10) + ["off", "unreachable"]
+    s = _refreshing(Probe(*answers), kb, fg)
+    assert s.attempt() == "failed_keys_had_no_effect"
+    assert kb.pressed == [SEQUENCE, ["space"], LOCK, WAKE]
+
+
+def test_a_stream_found_up_after_the_refresh_is_reported_honestly():
+    """The first press may have worked late, or the wake key may have landed on
+    the button. Either way the stream is up, and saying it failed would have
+    the supervisor try again and press Stop."""
+    kb = FakeKeyboard()
+    fg = Refresher()
+    answers = ["off"] * (2 + 10) + ["off", "streaming"]
+    s = _refreshing(Probe(*answers), kb, fg)
+    assert s.attempt() == "already_streaming"
+    assert kb.pressed == [SEQUENCE, ["space"], LOCK, WAKE]
+
+
+def test_the_wake_key_cannot_activate_whatever_is_focused():
+    """It is sent on the assumption the phone locked. If the lock chord missed,
+    the app is still in front and Space would press the focused control."""
+    assert WAKE == ["escape"]
 
 
 def test_the_pause_switch_stops_it_before_anything_is_touched():

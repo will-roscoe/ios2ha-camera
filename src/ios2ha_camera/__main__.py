@@ -70,7 +70,8 @@ def main():
     keyboard = Keyboard()
     log.info("keyboard: %s", keyboard.start())
     starter = StreamStarter(_stream_probe(s), keyboard, phone.is_running,
-                            allowed=lambda: bool(getattr(s, "auto_start", True)))
+                            allowed=lambda: bool(getattr(s, "auto_start", True)),
+                            foreground=phone.foreground)
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
                      starter=starter, keyboard=keyboard)
     stacker = LiveStacker(buf, s)
