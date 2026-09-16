@@ -13,10 +13,89 @@ things depend on: automations, dashboards and templates all name entities direct
 Renaming an entity's *display name* is a patch: entity ids are pinned with `default_entity_id`
 precisely so that display names can be improved without breaking anything.
 
+Since 2.6.0 the JSON API under `/api/v1` is public interface too, and it carries its own version
+number, reported by `/api/v1/info` as `interfaces.api`, separately from MQTT's `interfaces.mqtt`. A
+change that breaks only one interface bumps only that interface's number; the package version above
+still says whether anything at all has broken.
+
 The running version is visible in three places: the first line of the container log, the
 `sw_version` on the Home Assistant device page, and `./deploy.sh version`. It carries the git
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
+
+## 2.6.0 — 2026-09-16
+
+**A second way in: a versioned JSON API, with live updates, alongside MQTT.** Until now the only
+integration was MQTT discovery plus hand-made Generic Camera entries. This release adds an HTTP API
+under `/api/v1` that describes every entity, serves the current state, pushes changes as they
+happen, accepts control writes and serves the camera's media — so that a Home Assistant custom
+component, installed without any MQTT broker, can be written against it. **Nothing that works
+today changes:** every MQTT entity id, topic and discovery payload is byte-for-byte what 2.5.0
+published, and the existing media URLs keep working permanently.
+
+*New: `/api/v1/info`, the one address a client needs.* It names every other route, so a route that
+moves is a change to served data rather than a client release. It carries the running version,
+the device block MQTT already publishes, and a separate version number per interface
+(`{"api": 1, "mqtt": 1}`): the two paths can now change independently, and a change to one no
+longer implies a false alarm for users of the other. Within `api: 1` responses only ever gain keys;
+a client must ignore keys it does not recognise.
+
+*New: entity descriptors, state, control and media.* `/api/v1/objects` describes all 86 entities —
+id, domain, unit, device class, options, ranges, whether it can be written — from the same single
+declaration MQTT discovery is now rendered from, so the two can no longer drift apart. `/api/v1/state`
+serves every current value. `POST /api/v1/control/{name}` writes any switch, number, select or
+button, refusing a bad value with the value actually in effect. The media is served at
+`/api/v1/stream/live`, `/api/v1/stream/stacked` and `/api/v1/snapshot/still` as well as the old
+paths, and each is described with whether it keeps the phone's connection open — a snapshot costs
+the phone nothing, a stream holds its radio up for as long as someone watches.
+
+*New: live updates at `/api/v1/events`.* Server-Sent Events: a full snapshot on connect, then only
+the values that actually changed. A client that falls behind is disconnected rather than silently
+skipped, and gets a fresh snapshot when it reconnects — a skipped update would leave it showing a
+wrong value with no way to know.
+
+*New: `EXPOSE_MQTT` and `EXPOSE_API`, both on by default.* Either interface can be switched off.
+Turning MQTT off also deletes the MQTT entities from Home Assistant, which frees their entity ids
+for the component to reuse; a missing broker costs one bounded attempt at startup and nothing more.
+A typo in either flag keeps it on and logs a warning, rather than quietly switching an interface
+off. With both off the camera still captures, archives and serves its media. **The API has no
+authentication yet**: anything that can reach the port can read every value and write every
+control. Keep it on a trusted network.
+
+*New: a tiered environment-variable table* in the configuration docs — what the container needs to
+run at all, what MQTT adds, what the API adds — and the entity reference page is now generated from
+the code, so it cannot fall out of date.
+
+*Fixed: a malformed control write could be believed.* A boolean control sent `off`, `False` or `no`
+from a script (rather than Home Assistant's own `true`/`false`) was stored as a truthy string and
+did the opposite of what was asked. Such values are now understood, and anything that cannot be
+understood is refused, with the real value republished so Home Assistant does not keep showing the
+rejected one. The same now holds for malformed black-level writes, which previously skipped that
+republish.
+
+*Fixed: the developer-channel failure count stayed flat during the failure it was added for.* A
+wedged phone that failed while *mounting* its developer image never raised `dvt_failures`, so the
+signal built after the 2026-09-14 outage was blind to that outage's own shape.
+
+*Fixed: the noise-reduced live feed could corrupt itself.* A viewer reconnecting while a slow frame
+was still being processed could leave two copies of the stacker writing to the same image at once.
+
+*Fixed: repeated presses could stall backgrounding.* A phone-working button pressed repeatedly —
+by a misfiring automation, say — queued one cable round trip per press ahead of the work that
+backgrounds the app, which could quietly stop while the app kept streaming. Each such action now
+runs at most once at a time; a repeat is folded into the one already in play.
+
+*Fixed: shutdown could be killed mid-way by queued work.* Device actions still waiting when the
+container was stopped were run anyway after the service had finished shutting down, which could
+overrun the stop period. They are now dropped. The shutdown arithmetic has also been corrected:
+the worst case is the whole 20 s grace period, not 17 s.
+
+*Fixed: an unexpected error while connecting to the broker could stop MQTT for good*, and turning
+MQTT off now also clears the retained availability message, not only the entities.
+
+*Faster:* the capture no longer builds a large temporary array while the phone's connection is
+held open (measured 200 ms–1.1 s before, 73–167 ms after, with an identical result), and night stacking no
+longer repeats a full-image multiply for every frame.
 
 ## 2.5.0 — 2026-09-16
 

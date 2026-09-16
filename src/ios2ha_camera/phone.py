@@ -132,10 +132,13 @@ class PhoneManager:
         unknown, so this assumes neither -- it simply stops trusting the cache.
         """
         with self._dvt_lock:
-            self._call(self._mount_ddi)
             try:
+                self._call(self._mount_ddi)
                 result = self._call(fn)
             except Exception:
+                # The mount step itself is a DVT failure too -- a wedged mount is the
+                # exact shape of the 2026-09-14 outage, and dvt_failures must climb for
+                # it just like it does for a failure of fn() after a successful mount.
                 self._ddi_mounted = False
                 self.dvt_failures += 1
                 raise

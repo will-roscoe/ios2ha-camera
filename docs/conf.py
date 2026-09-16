@@ -12,6 +12,10 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
 sys.path.insert(0, os.path.abspath("../src"))
+# The entities-table directive lives here rather than in ../src: it is a
+# documentation build step, not part of the service, and it is the one thing
+# that needs importing ios2ha_camera.entities outside of autodoc.
+sys.path.insert(0, os.path.abspath("_ext"))
 
 # -- Project information ------------------------------------------------------
 project = "ios2ha-camera"
@@ -36,6 +40,7 @@ extensions = [
     "sphinx_autodoc_typehints",
     "sphinx_copybutton",
     "myst_parser",
+    "entities_table",
 ]
 
 # `colon_fence` allows ::: blocks, which survive being read as plain Markdown on

@@ -2,59 +2,24 @@
 
 import json
 import logging
+import threading
+import time
 
 import paho.mqtt.client as mqtt
 
-from . import version
-from .app_open import APP_OPEN_STATES
+from .entities import ENTITIES, device_info
 from .settings import mqtt_endpoints
-from .states import STREAM_STATES
-from .stream_start import STREAM_START_STATES
 
 log = logging.getLogger(__name__)
-
-
-# (object_id, display name, device_class or None)
-#
-# stream_state answers "what is it doing" in one value, which is what a dashboard
-# wants. These answer "which part is broken", which is what you want at 1am, and
-# they are independent axes rather than a decomposition of that one enum: the
-# cable and the WiFi can fail separately, and the app can be alive on a phone
-# that is not currently sending anything.
-_BINARY_SENSORS = [
-    ("camera_online", "Camera online", "connectivity"),
-    ("charging", "Phone charging", "battery_charging"),
-    # Two independent transports to the same phone. Losing the cable costs
-    # battery readings and app control; losing WiFi costs the picture.
-    ("reachable_over_cable", "Reachable over cable", "connectivity"),
-    ("reachable_over_wifi", "Reachable over WiFi", "connectivity"),
-    # Read over the cable, so this is what separates a backgrounded app (alive,
-    # socket suspended) from one iOS has killed. They look identical over WiFi.
-    ("app_running", "App running", "running"),
-    ("app_streaming", "App streaming", None),
-    # Who the frames are for. Both can be true at once.
-    ("capturing_stills", "Capturing stills", None),
-    ("being_viewed", "Being viewed", None),
-    # Whether the power-saving policy is currently engaged. Distinct from the
-    # `backgrounding` switch, which only says whether it is *allowed* to engage:
-    # with a full battery the switch is on and this is off.
-    ("backgrounding_active", "Backgrounding active", None),
-    # Whether a phone is attached to the keyboard arcturus emulates. Without it
-    # the supervisor cannot press Start streaming, and the usual cause is
-    # Bluetooth switched off on the phone.
-    ("keyboard_connected", "Keyboard connected", "connectivity"),
-]
 
 
 def _e(prefix, comp, obj, cfg):
     topic = f"homeassistant/{comp}/ios2ha/{obj}/config"
     base = {
         "availability_topic": f"{prefix}/available",
-        # sw_version puts the running version on the device page in Home
-        # Assistant, so "what is deployed?" is answerable without shell access.
-        "device": {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera",
-                   "manufacturer": "ios2ha-camera", "model": "iPhone supervisor",
-                   "sw_version": version.full()},
+        # Declared in entities.device_info(), not here: the API serves the same
+        # block from /api/v1/info and the two must describe one device.
+        "device": device_info(),
         # Component in the unique_id because a button and a camera can share an
         # object name (screenshot) and only differ by domain.
         "unique_id": f"ios2ha_{comp}_{obj}",
@@ -69,266 +34,104 @@ def _e(prefix, comp, obj, cfg):
     return topic, base
 
 
-# Sensor metadata. Without a unit, a device class and a state class, Home
-# Assistant cannot say what a reading means, cannot graph it sensibly and keeps
-# no long-term statistics for it -- "battery_temperature = 35.39" of what?
-# `category="diagnostic"` keeps the thirty-odd measurements out of the main card
-# while leaving them fully usable in automations and dashboards.
-# Luminance figures are relative 0-255 after black-level subtraction, not lux,
-# so they deliberately carry no unit; see the design's section 4.3.
-_SENSORS = [
-    # Options come from states.STREAM_STATES rather than a second copy: Home
-    # Assistant rejects a state that is not in this list, so the two drifting
-    # apart shows up as an entity that silently goes unavailable.
-    dict(obj="stream_state", name="Stream state", device_class="enum",
-         options=list(STREAM_STATES), icon="mdi:video-wireless"),
-    # The USB side, which is independent of the WiFi stream above. "no_device" is
-    # the cable being out, which is ordinary; "usbmuxd_down" means the daemon is
-    # unreachable and the socket mount is presumed orphaned, which is a fault and
-    # is what the offline alert should watch.
-    dict(obj="cable_state", name="Cable state", device_class="enum",
-         options=["ok", "no_device", "usbmuxd_down"], icon="mdi:usb-port",
-         category="diagnostic"),
-    dict(obj="subject_level", name="Subject level", state_class="measurement", precision=1,
-         icon="mdi:brightness-4"),
-    dict(obj="depth_used", name="Depth used", unit="frames", state_class="measurement",
-         icon="mdi:layers-triple"),
-    dict(obj="motion", name="Motion level", state_class="measurement", precision=2,
-         icon="mdi:motion-sensor"),
-    dict(obj="frame_rate", name="Frame rate", unit="fps", state_class="measurement",
-         precision=1, category="diagnostic", icon="mdi:speedometer"),
-    # The time of the last frame, not an age in seconds: an age is only true at
-    # the instant it is published and is wrong by up to a health tick
-    # afterwards, whereas Home Assistant renders a timestamp as a live relative
-    # age that stays correct on its own.
-    dict(obj="last_frame", name="Last frame", device_class="timestamp",
-         category="diagnostic", icon="mdi:clock-outline"),
-    dict(obj="depth_required", name="Depth required before clamping", unit="frames",
-         state_class="measurement", category="diagnostic", icon="mdi:layers-outline"),
-    dict(obj="capture_duration", name="Capture duration", unit="s", device_class="duration",
-         state_class="measurement", precision=1, category="diagnostic"),
-    dict(obj="colour_temperature", name="Colour temperature", unit="K",
-         state_class="measurement", category="diagnostic", icon="mdi:temperature-kelvin"),
-    dict(obj="effective_exposure_required", name="Effective exposure required", unit="s",
-         device_class="duration", state_class="measurement", precision=2,
-         category="diagnostic"),
-    dict(obj="effective_exposure_achieved", name="Effective exposure achieved", unit="s",
-         device_class="duration", state_class="measurement", precision=2,
-         category="diagnostic"),
-    dict(obj="lum_mean", name="Scene luminance mean", state_class="measurement", precision=1,
-         category="diagnostic", icon="mdi:brightness-6"),
-    dict(obj="dynamic_range", name="Dynamic range", state_class="measurement", precision=1,
-         category="diagnostic", icon="mdi:contrast-box"),
-    dict(obj="highlight_clip", name="Highlight clipping", unit="%", state_class="measurement",
-         precision=2, category="diagnostic", icon="mdi:brightness-percent"),
-    dict(obj="noise", name="Noise", state_class="measurement", precision=2,
-         category="diagnostic", icon="mdi:grain"),
-    dict(obj="snr", name="Signal to noise", state_class="measurement", precision=1,
-         category="diagnostic", icon="mdi:signal"),
-    dict(obj="focus_sharpness", name="Focus sharpness", state_class="measurement", precision=1,
-         category="diagnostic", icon="mdi:image-filter-center-focus"),
-    dict(obj="battery", name="Phone battery", unit="%", device_class="battery",
-         state_class="measurement", category="diagnostic"),
-    dict(obj="battery_temperature", name="Phone battery temperature", unit="°C",
-         device_class="temperature", state_class="measurement", precision=1,
-         category="diagnostic"),
-    dict(obj="archive_free_gb", name="Archive free space", unit="GB", device_class="data_size",
-         state_class="measurement", precision=1, category="diagnostic"),
-    # Signed current is the one figure that says which way the battery is
-    # actually going: the phone reports charging while still losing ground on
-    # an underpowered port.
-    dict(obj="battery_current_ma", name="Phone battery current", unit="mA",
-         device_class="current", state_class="measurement", category="diagnostic"),
-    dict(obj="charger_watts", name="Phone charger power", unit="W", device_class="power",
-         state_class="measurement", category="diagnostic"),
-    # No battery device class here: that one means state of charge, and this is
-    # the cell's maximum against its design capacity.
-    dict(obj="battery_health_pct", name="Phone battery health", unit="%",
-         state_class="measurement", precision=1, category="diagnostic",
-         icon="mdi:battery-heart-variant"),
-    # How the last attempt at pressing Start streaming went. Options come from
-    # stream_start rather than a second copy, for the same reason stream_state's
-    # do: a value the code can produce but discovery does not list fails silently.
-    dict(obj="stream_start", name="Stream start", device_class="enum",
-         options=list(STREAM_START_STATES), category="diagnostic", icon="mdi:play-network"),
-    # The step before it: whether the app itself had to be opened. Separate
-    # because the two fail for different reasons -- no app at all, against an
-    # app that is open but will not take the keys.
-    dict(obj="app_open", name="App open", device_class="enum",
-         options=list(APP_OPEN_STATES), category="diagnostic", icon="mdi:cellphone-play"),
-    dict(obj="stream_start_attempts", name="Stream start attempts (1 h)", unit="attempts",
-         state_class="measurement", category="diagnostic", icon="mdi:counter"),
-    # Consecutive failures of calls needing the phone's developer services. Zero
-    # normally; a number that stays up means app control is wedged, which is how
-    # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
-    dict(obj="dvt_failures", name="Developer connection failures", unit="failures",
-         state_class="measurement", category="diagnostic",
-         icon="mdi:usb-flash-drive-outline"),
-]
-def _ordinal(n):
-    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
+# One renderer per domain, each turning an `entities.Entity` into the discovery
+# config Home Assistant expects. They only ever *read* the record: what an entity
+# is lives in entities.py, and this module decides how Home Assistant is told
+# about it. A domain with no renderer here raises rather than being skipped, so a
+# new kind of entity cannot be declared and then silently never published.
 
 
-_SENSORS += [
-    dict(obj=f"lum_p{p}", name=f"Scene luminance {_ordinal(p)} percentile",
-         state_class="measurement", precision=1, category="diagnostic", icon="mdi:brightness-6")
-    for p in (1, 10, 50, 90, 99)
-]
-_SENSORS += [
-    dict(obj=f"wb_gain_{c}", name=f"White balance gain {c.upper()}",
-         state_class="measurement", precision=3, category="diagnostic",
-         icon="mdi:white-balance-auto")
-    for c in "rgb"
-]
-_SENSORS += [
-    dict(obj=f"black_level_applied_{c}", name=f"Black level applied {c.upper()}",
-         state_class="measurement", precision=2, category="diagnostic", icon="mdi:circle-opacity")
-    for c in "rgb"
-]
-_SENSORS += [
-    dict(obj="holders", name="Connection holders", category="diagnostic",
-         icon="mdi:account-clock"),
-    dict(obj="live_fps", name="Stacked feed rate", unit="fps", state_class="measurement",
-         precision=1, category="diagnostic", icon="mdi:filmstrip"),
-    dict(obj="duty_1h", name="Connected in the last hour", unit="%", state_class="measurement",
-         precision=1, category="diagnostic", icon="mdi:percent-outline"),
-    dict(obj="tick_age", name="Upstream tick age", unit="s", device_class="duration",
-         state_class="measurement", precision=1, category="diagnostic", icon="mdi:heart-pulse"),
-]
-
-# Tuning knobs. All configuration rather than measurement, and each carries its
-# unit so a person reading "600" knows it is seconds, plus a device class where
-# the value has a real physical type.
-_NUMBERS = [
-    dict(obj="interval_s", name="Capture interval", lo=30, hi=3600, step=1, unit="s",
-         device_class="duration", icon="mdi:timer-outline"),
-    # The hysteresis band for backgrounding. Two numbers rather than one so a
-    # phone sitting at the threshold cannot thrash: it engages low and only
-    # stops once the battery has recovered a real margin.
-    dict(obj="background_below_pct", name="Background below", lo=0, hi=100, step=1,
-         unit="%", device_class="battery", icon="mdi:battery-arrow-down"),
-    dict(obj="resume_above_pct", name="Resume above", lo=0, hi=100, step=1,
-         unit="%", device_class="battery", icon="mdi:battery-arrow-up"),
-    dict(obj="fixed_depth", name="Fixed depth", lo=1, hi=1000, step=1, unit="frames",
-         icon="mdi:layers-triple"),
-    dict(obj="target_level", name="Target subject level", lo=1, hi=255, step=1,
-         icon="mdi:brightness-4"),
-    dict(obj="subject_percentile", name="Subject percentile", lo=1, hi=50, step=1, unit="%"),
-    dict(obj="clean_factor", name="Clean factor k", lo=1, hi=64, step=1, icon="mdi:grain"),
-    dict(obj="max_depth", name="Maximum depth", lo=1, hi=2000, step=1, unit="frames",
-         icon="mdi:layers-outline"),
-    dict(obj="window_max_s", name="Maximum capture window", lo=1, hi=120, step=1, unit="s",
-         device_class="duration", icon="mdi:timer-sand"),
-    dict(obj="ramp_tau_s", name="Ramp time constant", lo=0, hi=7200, step=10, unit="s",
-         device_class="duration", icon="mdi:chart-bell-curve"),
-    dict(obj="night_key", name="Night key", lo=0.01, hi=0.5, step=0.01, icon="mdi:weather-night"),
-    dict(obj="stretch_strength", name="Stretch strength", lo=1, hi=60, step=1,
-         icon="mdi:arrow-expand-vertical"),
-    dict(obj="chroma_radius", name="Chroma smoothing radius", lo=0, hi=12, step=0.5, unit="px",
-         icon="mdi:blur"),
-    dict(obj="denoise_strength", name="Denoise strength", lo=0, hi=20, step=0.5,
-         icon="mdi:blur-off"),
-    dict(obj="black_level_0", name="Black level override R", lo=0, hi=32, step=0.1,
-         icon="mdi:circle-opacity"),
-    dict(obj="black_level_1", name="Black level override G", lo=0, hi=32, step=0.1,
-         icon="mdi:circle-opacity"),
-    dict(obj="black_level_2", name="Black level override B", lo=0, hi=32, step=0.1,
-         icon="mdi:circle-opacity"),
-    dict(obj="live_max_window_s", name="Stacked feed window", lo=0.5, hi=15, step=0.5, unit="s",
-         device_class="duration", icon="mdi:motion-outline"),
-]
-
-
-def _sensor(p, spec):
-    cfg = {"name": spec["name"], "state_topic": f"{p}/state/{spec['obj']}"}
-    for key, ha_key in (("unit", "unit_of_measurement"), ("device_class", "device_class"),
-                        ("state_class", "state_class"), ("options", "options"),
-                        ("precision", "suggested_display_precision"),
-                        ("category", "entity_category"), ("icon", "icon")):
-        if key in spec:
-            cfg[ha_key] = spec[key]
+def _camera_cfg(p, e):
+    cfg = {"name": e.name, "topic": f"{p}/{e.topic}"}
+    if e.icon:
+        cfg["icon"] = e.icon
+    if e.category:
+        cfg["entity_category"] = e.category
     return cfg
 
 
+def _number_cfg(p, e):
+    cfg = {"name": e.name, "state_topic": f"{p}/state/{e.object_id}",
+           "command_topic": f"{p}/set/{e.object_id}",
+           "min": e.lo, "max": e.hi, "step": e.step,
+           "entity_category": e.category, "mode": "box"}
+    if e.unit is not None:
+        cfg["unit_of_measurement"] = e.unit
+    if e.device_class:
+        cfg["device_class"] = e.device_class
+    if e.icon:
+        cfg["icon"] = e.icon
+    return cfg
+
+
+def _select_cfg(p, e):
+    return {"name": e.name, "state_topic": f"{p}/state/{e.object_id}",
+            "command_topic": f"{p}/set/{e.object_id}", "options": list(e.options),
+            "entity_category": e.category}
+
+
+def _switch_cfg(p, e):
+    return {"name": e.name, "state_topic": f"{p}/state/{e.object_id}",
+            "command_topic": f"{p}/set/{e.object_id}",
+            "payload_on": "true", "payload_off": "false",
+            "entity_category": e.category, "icon": e.icon}
+
+
+def _button_cfg(p, e):
+    cfg = {"name": e.name, "command_topic": f"{p}/set/{e.object_id}"}
+    if e.icon:
+        cfg["icon"] = e.icon
+    if e.device_class:
+        cfg["device_class"] = e.device_class
+    if e.category:
+        cfg["entity_category"] = e.category
+    return cfg
+
+
+def _sensor_cfg(p, e):
+    cfg = {"name": e.name, "state_topic": f"{p}/state/{e.object_id}"}
+    for value, ha_key in ((e.unit, "unit_of_measurement"),
+                          (e.device_class, "device_class"),
+                          (e.state_class, "state_class"),
+                          (list(e.options) if e.options else None, "options"),
+                          (e.precision, "suggested_display_precision"),
+                          (e.category, "entity_category"),
+                          (e.icon, "icon")):
+        if value is not None:
+            cfg[ha_key] = value
+    return cfg
+
+
+def _binary_sensor_cfg(p, e):
+    cfg = {"name": e.name, "state_topic": f"{p}/state/{e.object_id}",
+           "payload_on": "true", "payload_off": "false",
+           "entity_category": e.category}
+    if e.device_class:
+        cfg["device_class"] = e.device_class
+    return cfg
+
+
+_RENDERERS = {
+    "camera": _camera_cfg,
+    "number": _number_cfg,
+    "select": _select_cfg,
+    "switch": _switch_cfg,
+    "button": _button_cfg,
+    "sensor": _sensor_cfg,
+    "binary_sensor": _binary_sensor_cfg,
+}
+
+
 def discovery_payloads(s):
+    """Every entity in `entities.ENTITIES`, rendered as a Home Assistant discovery
+    payload, in declaration order."""
     p = s.mqtt_prefix
-
-    def st(x):
-        return f"{p}/state/{x}"
-
-    def cmd(x):
-        return f"{p}/set/{x}"
-
     out = []
-    # name null marks the still as the device's main feature, so it shows as
-    # "iPhone Camera" rather than "iPhone Camera Camera".
-    out.append(_e(p, "camera", "still", {"name": None, "topic": f"{p}/still",
-                                         "icon": "mdi:camera"}))
-    # A retained PNG is published here when the screenshot button is pressed;
-    # a distinct entity so it doesn't collide with the still camera above.
-    out.append(_e(p, "camera", "screenshot", {"name": "Screenshot", "topic": f"{p}/screenshot",
-                                              "icon": "mdi:cellphone-screenshot",
-                                              "entity_category": "diagnostic"}))
-    for spec in _NUMBERS:
-        name = spec["obj"]
-        cfg = {"name": spec["name"], "state_topic": st(name), "command_topic": cmd(name),
-               "min": spec["lo"], "max": spec["hi"], "step": spec["step"],
-               "entity_category": "config", "mode": "box"}
-        if "unit" in spec:
-            cfg["unit_of_measurement"] = spec["unit"]
-        for key in ("device_class", "icon"):
-            if key in spec:
-                cfg[key] = spec[key]
-        out.append(_e(p, "number", name, cfg))
-    selects = {"stacking_mode": (["off", "fixed", "auto"], "Stacking mode"),
-               "white_balance": (["as-shot", "grey-world", "brightest-patch"], "White balance"),
-               "render_intent": (["natural", "inspection"], "Render intent")}
-    for name, (opts, label) in selects.items():
-        out.append(_e(p, "select", name, {"name": label, "state_topic": st(name),
-                     "command_topic": cmd(name), "options": opts,
-                     "entity_category": "config"}))
-    for name, label, icon in (("stacking_allowed", "Stacking allowed", "mdi:layers"),
-                              ("autofocus", "Autofocus", "mdi:image-filter-center-focus-strong"),
-                              ("on_demand", "On demand", "mdi:power-plug-off-outline"),
-                              ("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down"),
-                              ("auto_start", "Auto start streaming", "mdi:play-box-outline")):
-        out.append(_e(p, "switch", name, {"name": label, "state_topic": st(name),
-                     "command_topic": cmd(name), "payload_on": "true", "payload_off": "false",
-                     "entity_category": "config", "icon": icon}))
-    # capture_now stays uncategorised: it is the one button that belongs on a
-    # dashboard rather than buried under configuration or diagnostics.
-    buttons = [
-        dict(obj="capture_now", name="Capture now", icon="mdi:camera-iris"),
-        dict(obj="screenshot", name="Phone screenshot", icon="mdi:cellphone-screenshot",
-             category="diagnostic"),
-        dict(obj="relaunch_app", name="Relaunch camera app", device_class="restart",
-             category="config"),
-        dict(obj="prepare_phone", name="Prepare phone", icon="mdi:cellphone-cog",
-             category="config"),
-        # Presses Start streaming now, ignoring the pause switch and the rate
-        # limit: a person asking is an explicit instruction. The guards still hold.
-        dict(obj="start_streaming", name="Start streaming", icon="mdi:video-check",
-             category="config"),
-    ]
-    for spec in buttons:
-        cfg = {"name": spec["name"], "command_topic": cmd(spec["obj"])}
-        if "icon" in spec:
-            cfg["icon"] = spec["icon"]
-        if "device_class" in spec:
-            cfg["device_class"] = spec["device_class"]
-        if "category" in spec:
-            cfg["entity_category"] = spec["category"]
-        out.append(_e(p, "button", spec["obj"], cfg))
-    for spec in _SENSORS:
-        out.append(_e(p, "sensor", spec["obj"], _sensor(p, spec)))
-    for name, label, device_class in _BINARY_SENSORS:
-        cfg = {"name": label, "state_topic": st(name),
-               "payload_on": "true", "payload_off": "false",
-               "entity_category": "diagnostic"}
-        if device_class:
-            cfg["device_class"] = device_class
-        out.append(_e(p, "binary_sensor", name, cfg))
+    for e in ENTITIES:
+        render = _RENDERERS.get(e.domain)
+        if render is None:
+            raise ValueError(f"{e.object_id}: no discovery renderer for domain {e.domain!r}")
+        out.append(_e(p, e.domain, e.object_id, render(p, e)))
     return out
 
 
@@ -357,16 +160,25 @@ class MqttIO:
         self.c.on_connect_fail = self._on_connect_fail
 
     def _on_connect(self, c, u, flags, rc, props=None):
-        c.subscribe(f"{self.s.mqtt_prefix}/set/#")
-        for topic, cfg in discovery_payloads(self.s):
-            # Published as built, with no None-stripping: `"name": null` is a
-            # meaningful value that marks an entity as its device's main
-            # feature, and is not the same as leaving the key out. The builders
-            # omit keys that do not apply.
-            c.publish(topic, json.dumps(cfg), retain=True)
-        self.set_available(True)
+        # Guarded for the same reason as _on_message: this also runs on paho's
+        # network thread, which re-raises a callback exception and takes the
+        # connection down with it. discovery_payloads raises on purpose for an
+        # entity it cannot render, and that must cost the discovery, not every
+        # later control.
+        try:
+            c.subscribe(f"{self.s.mqtt_prefix}/set/#")
+            for topic, cfg in discovery_payloads(self.s):
+                # Published as built, with no None-stripping: `"name": null` is
+                # a meaningful value that marks an entity as its device's main
+                # feature, and is not the same as leaving the key out. The
+                # builders omit keys that do not apply.
+                c.publish(topic, json.dumps(cfg), retain=True)
+            self.set_available(True)
+        except Exception:
+            log.exception("MQTT connect handling failed")
         # Runs on every (re)connect, so the supervisor can republish state that a
-        # broker restart dropped.
+        # broker restart dropped. Separately guarded, so a discovery failure
+        # above does not also cost the replay.
         try:
             self.on_connected()
         except Exception:
@@ -456,3 +268,150 @@ class MqttIO:
             log.warning("could not publish offline availability", exc_info=True)
         self.c.disconnect()
         self.c.loop_stop()
+
+    def teardown_discovery(self, timeout=5.0):
+        """Delete every MQTT-discovered entity: publish an empty retained payload
+        to each discovery topic, which is how Home Assistant's MQTT integration
+        forgets an entity -- without it the registry keeps ghosts and their
+        entity ids stay reserved. Called once from `__main__` startup when
+        EXPOSE_MQTT is false, instead of running the supervisor's normal MQTT
+        lifecycle (`connect()` / `loop_start()`).
+
+        A native-only deployment may have no broker at all, so the whole call
+        is bounded by `timeout` seconds -- one connection attempt, plus
+        whatever is left of the budget to publish -- and gives up with a
+        single log line, never the endless retry EXPOSE_MQTT exists to stop.
+        Topics come from discovery_payloads(self.s), the same registry
+        _on_connect publishes from, so nothing cleared here can drift from what
+        would have been created. The retained `<prefix>/available` message is
+        cleared as well, after them and within the same deadline.
+        """
+        if timeout <= 0:
+            # paho's own connect_timeout setter raises ValueError for this; catch
+            # it here so a bad call is one log line, not a crash during startup.
+            log.warning("MQTT teardown skipped: timeout must be positive, got %r", timeout)
+            return
+        discovery = [topic for topic, _cfg in discovery_payloads(self.s)]
+        # The retained availability message goes too, and last: left behind, a
+        # broker keeps announcing a device that has no entities, and cleared
+        # before them, a teardown cut short would leave entities whose
+        # availability topic is already gone.
+        topics = discovery + [f"{self.s.mqtt_prefix}/available"]
+        ep = self._endpoints[self._endpoint]
+        connected = threading.Event()
+        original_on_connect = self.c.on_connect
+
+        def _on_connect(c, u, flags, rc, props=None):
+            if rc == 0:
+                connected.set()
+
+        self.c.on_connect = _on_connect
+        self.c.connect_timeout = timeout
+        deadline = time.monotonic() + timeout
+        try:
+            try:
+                # keepalive must cover the whole teardown budget: the default
+                # paho ships (60s) or a short hardcoded value could otherwise
+                # let the broker drop the connection partway through a slow
+                # run of the (currently 86-entry) discovery-topic loop, before
+                # the deadline below ever gets a chance to end things cleanly.
+                self.c.connect(ep.host, ep.port, keepalive=max(30, int(timeout) + 5))
+            except OSError as e:
+                # Refused, unresolvable or timed out at the socket level -- all
+                # ordinary for a deployment with no broker, not a fault.
+                log.warning("MQTT teardown skipped: %s:%s unreachable (%s)", ep.host, ep.port, e)
+                return
+            # connect() only opens the socket and sends CONNECT; the CONNACK that
+            # confirms it -- what _on_connect above is waiting for -- is only
+            # processed once the network loop is running (see paho's own
+            # docstring on connect()). Restoring on_connect before this point
+            # would hand that CONNACK to the real discovery-publishing handler
+            # instead, and connected.wait() below would time out even on a
+            # perfectly reachable broker.
+            self.c.loop_start()
+            if not connected.wait(max(deadline - time.monotonic(), 0)):
+                log.warning("MQTT teardown skipped: no response from %s:%s within %.0fs",
+                            ep.host, ep.port, timeout)
+                return
+            # One deadline for the whole loop, not one timeout per topic: with
+            # 86 discovery topics, a per-topic wait would let a slow or dying
+            # connection stretch teardown to 86 * timeout, which is exactly
+            # the kind of unbounded wait EXPOSE_MQTT exists to avoid.
+            cleared = 0
+            gave_up = None
+            for topic in topics:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    gave_up = "ran out of time"
+                    break
+                try:
+                    info = self.c.publish(topic, "", retain=True)
+                    info.wait_for_publish(remaining)
+                except (RuntimeError, ValueError) as e:
+                    # The broker dropped the connection mid-teardown (or this
+                    # client's own keepalive expired): every publish after
+                    # this one would fail the same way, so stop rather than
+                    # repeat the failure for each remaining topic.
+                    gave_up = f"connection lost ({e})"
+                    break
+                cleared += 1
+            if gave_up:
+                log.warning("MQTT teardown stopped after clearing %d of %d retained topics: %s",
+                            cleared, len(topics), gave_up)
+            else:
+                log.info("MQTT discovery cleared: %d entities removed and availability "
+                         "retracted (EXPOSE_MQTT=false)", len(discovery))
+        finally:
+            self.c.on_connect = original_on_connect
+            # Matches close(), a few lines up: disconnect (which sends the
+            # DISCONNECT packet over the still-running network loop) before
+            # loop_stop (which joins that loop's thread) -- the reverse order
+            # would join the thread before it can send the packet.
+            self.c.disconnect()
+            self.c.loop_stop()
+
+
+class NullMqttIO:
+    """Stands in for MqttIO when EXPOSE_MQTT is false: the same calls, no broker.
+
+    The supervisor publishes its state, its events, its stills and its
+    availability without knowing whether anyone is listening, and guarding each
+    of those call sites with the flag would scatter the question "is MQTT on?"
+    across a module that does not otherwise care. It is answered once instead,
+    by which of these two objects startup hands over.
+
+    Nothing is queued for a connection that might come later: with discovery off
+    there is no consumer for any of it, and the supervisor remembers its own
+    values either way, so the JSON API still answers with real ones.
+
+    `teardown_discovery` is deliberately absent. Clearing the retained discovery
+    topics needs a real broker, and a copy of it here that quietly did nothing
+    would report success for entities that were never removed.
+    """
+
+    def connect(self):
+        pass
+
+    def loop_start(self):
+        pass
+
+    def loop_stop(self):
+        pass
+
+    def publish_still(self, jpeg):
+        pass
+
+    def publish_screenshot(self, png):
+        pass
+
+    def publish_state(self, d, retain=True):
+        pass
+
+    def publish_event(self, d):
+        pass
+
+    def set_available(self, ok):
+        pass
+
+    def close(self, timeout=2.0):
+        pass

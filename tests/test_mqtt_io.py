@@ -1,4 +1,8 @@
-from ios2ha_camera.mqtt_io import MqttIO, discovery_payloads
+import inspect
+import logging
+
+from ios2ha_camera import mqtt_io as mqtt_io_module
+from ios2ha_camera.mqtt_io import MqttIO, NullMqttIO, discovery_payloads
 from ios2ha_camera.settings import CONTROLS, Settings
 from ios2ha_camera.states import STREAM_STATES
 
@@ -7,6 +11,76 @@ class _Msg:
     def __init__(self, topic, payload):
         self.topic = topic
         self.payload = payload
+
+
+class _Info:
+    """Stand-in for paho's MQTTMessageInfo.
+
+    Real paho (2.1.0): `wait_for_publish` raises RuntimeError immediately,
+    before any waiting, whenever the message's rc is not 0 -- e.g. `publish()`
+    was called on a disconnected socket (MQTT_ERR_NO_CONN). `fail=True`
+    reproduces exactly that so a test can exercise it without a real broker.
+    """
+
+    def __init__(self, fail=False):
+        self._fail = fail
+
+    def wait_for_publish(self, timeout=None):
+        if self._fail:
+            raise RuntimeError("Message publish failed: No connection")
+
+
+class _FakeBroker:
+    """Stands in for paho's Client during teardown tests, so no real socket or
+    broker is needed. `respond` controls what happens on connect():
+    - "connack": call the stored on_connect callback with rc=0, as a broker
+      that accepts the connection would.
+    - "refused": raise ConnectionRefusedError, as an unreachable broker would.
+    - "silent": return normally but never call on_connect, as a broker that
+      accepts the TCP connection but never completes the handshake would.
+
+    `disconnect_after`, if set, simulates the broker dropping the connection
+    partway through teardown: the first `disconnect_after` publishes succeed,
+    every one after that returns an `_Info` whose `wait_for_publish` raises.
+    """
+
+    def __init__(self, respond="connack", disconnect_after=None):
+        self.respond = respond
+        self.disconnect_after = disconnect_after
+        self.on_connect = None
+        self.connect_timeout = None
+        self.connect_calls = 0
+        self.keepalive_used = None
+        self.loop_started = False
+        self.loop_stopped = False
+        self.disconnected = False
+        self.published = []
+        self.publish_calls = 0
+
+    def connect(self, host, port, keepalive=30):
+        self.connect_calls += 1
+        self.keepalive_used = keepalive
+        if self.respond == "refused":
+            raise ConnectionRefusedError("refused")
+        if self.respond == "connack":
+            self.on_connect(self, None, None, 0)
+        # "silent": nothing happens; on_connect never fires.
+
+    def loop_start(self):
+        self.loop_started = True
+
+    def loop_stop(self):
+        self.loop_stopped = True
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def publish(self, topic, payload, retain=False):
+        self.publish_calls += 1
+        if self.disconnect_after is not None and self.publish_calls > self.disconnect_after:
+            return _Info(fail=True)
+        self.published.append((topic, payload, retain))
+        return _Info(fail=False)
 
 
 def test_close_is_quiet_when_never_connected():
@@ -29,6 +103,39 @@ def test_a_raising_control_handler_never_escapes_the_message_callback():
 
     io = MqttIO(Settings(), on_control=boom)
     io._on_message(None, None, _Msg("ios2ha_camera/set/interval_s", b"300"))
+
+
+class _RaisingClient(_FakeBroker):
+    def subscribe(self, topic):
+        raise OSError("socket gone")
+
+
+def test_a_failing_subscribe_never_escapes_the_connect_callback(caplog):
+    """The connect callback runs on paho's network thread too: an exception
+    there tears the loop down and leaves the camera uncontrollable."""
+    connected = []
+    io = MqttIO(Settings(), on_connected=lambda: connected.append(True))
+    with caplog.at_level(logging.ERROR):
+        io._on_connect(_RaisingClient(), None, None, 0)
+    assert connected == [True], "the state replay must still run"
+    assert any("connect" in r.getMessage() for r in caplog.records)
+
+
+def test_a_discovery_payload_that_cannot_be_built_never_escapes_the_connect_callback(
+        monkeypatch, caplog):
+    """discovery_payloads raises on a domain it has no renderer for, by design."""
+    def boom(s):
+        raise ValueError("x: no discovery renderer for domain 'fan'")
+
+    monkeypatch.setattr(mqtt_io_module, "discovery_payloads", boom)
+    connected = []
+    io = MqttIO(Settings(), on_connected=lambda: connected.append(True))
+    client = _FakeBroker()
+    client.subscribe = lambda topic: None
+    with caplog.at_level(logging.ERROR):
+        io._on_connect(client, None, None, 0)
+    assert connected == [True]
+    assert any("connect" in r.getMessage() for r in caplog.records)
 
 
 def test_control_payloads_decode_to_the_right_python_types():
@@ -249,6 +356,150 @@ def test_the_new_entities_are_discovered_with_pinned_ids():
             "sensor.ios2ha_camera_tick_age"} <= ids
 
 
+def test_teardown_clears_exactly_the_topics_discovery_would_publish():
+    """EXPOSE_MQTT=false must delete every entity discovery created -- derived
+    from the registry (discovery_payloads), never a hand list, so a new entity
+    cannot be forgotten here."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    io.teardown_discovery(timeout=0.2)
+    expected_topics = {topic for topic, _cfg in discovery_payloads(Settings())}
+    expected_topics.add(f"{Settings().mqtt_prefix}/available")
+    published_topics = {topic for topic, _payload, _retain in io.c.published}
+    assert published_topics == expected_topics
+    for _topic, payload, retain in io.c.published:
+        assert payload == "", "a non-empty payload would not delete the entity"
+        assert retain is True, "a non-retained clear leaves the old retained config in place"
+
+
+def test_teardown_retracts_the_retained_availability_last(caplog):
+    """Left behind, the retained `online` has a broker announcing a device that
+    no longer has any entities. Cleared after the entities, within the same
+    deadline, so a teardown cut short never leaves entities with no
+    availability topic behind them."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    with caplog.at_level(logging.INFO):
+        io.teardown_discovery(timeout=0.2)
+    topic, payload, retain = io.c.published[-1]
+    assert (topic, payload, retain) == (f"{Settings().mqtt_prefix}/available", "", True)
+    total = len(discovery_payloads(Settings()))
+    assert any(f"{total} entities removed" in r.getMessage() for r in caplog.records)
+
+
+def test_teardown_makes_exactly_one_connection_attempt():
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    io.teardown_discovery(timeout=0.2)
+    assert io.c.connect_calls == 1
+
+
+def test_teardown_never_raises_when_broker_refuses_connection(caplog):
+    """A native-only deployment may have no broker at all; teardown must give up
+    with one log line, not raise and not retry."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="refused")
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=0.2)
+    assert io.c.connect_calls == 1
+    assert io.c.published == []
+    assert any("MQTT" in r.message for r in caplog.records)
+
+
+def test_teardown_gives_up_once_when_the_broker_never_completes_the_handshake(caplog):
+    """Bounded in time: a broker that accepts the TCP connection but never sends
+    a CONNACK must not hang teardown forever."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="silent")
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=0.1)
+    assert io.c.connect_calls == 1
+    assert io.c.published == []
+    assert io.c.loop_stopped is True
+    assert io.c.disconnected is True
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "no response" in warnings[0]
+
+
+def test_teardown_never_raises_when_the_connection_drops_mid_publish(caplog):
+    """Reproduces paho 2.1.0's real behaviour, confirmed against the installed
+    package: MQTTMessageInfo.wait_for_publish raises RuntimeError immediately
+    (before any waiting) whenever the message's rc is not 0 -- e.g. the broker
+    dropped the connection, or the client's own keepalive expired, partway
+    through the discovery-topic loop. This must degrade to one log line
+    reporting how many topics were cleared, never an uncaught exception."""
+    total_topics = len(discovery_payloads(Settings()))
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack", disconnect_after=3)
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=5.0)  # must not raise
+    assert len(io.c.published) == 3
+    assert 3 < total_topics, "fixture assumption: more topics exist than the simulated cutoff"
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("3" in m for m in warnings), warnings
+
+
+def test_teardown_stops_within_one_overall_deadline_not_per_topic_waits(monkeypatch):
+    """A per-topic timeout would let N slow topics run to N * timeout -- with 80+
+    discovery topics that is minutes, directly under "nothing optional may stop
+    the container starting". The budget must cover the whole call. Simulated
+    with a monkeypatched clock, not a real sleep of any length: each fake
+    publish advances the clock by a second, and a 3.5s budget must not be
+    enough for all topics."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mqtt_io_module.time, "monotonic", lambda: clock["t"])
+
+    class _SlowFakeBroker(_FakeBroker):
+        def publish(self, topic, payload, retain=False):
+            clock["t"] += 1.0
+            return super().publish(topic, payload, retain=retain)
+
+    total_topics = len(discovery_payloads(Settings()))
+    io = MqttIO(Settings())
+    io.c = _SlowFakeBroker(respond="connack")
+    io.teardown_discovery(timeout=3.5)
+    assert 0 < len(io.c.published) < total_topics, (
+        "a per-topic (rather than overall) timeout would have cleared every topic here"
+    )
+
+
+def test_teardown_rejects_a_non_positive_timeout_without_raising(caplog):
+    """paho's own `connect_timeout` setter raises ValueError for timeout <= 0
+    (confirmed in the installed package); teardown must never raise, so a bad
+    call here is one log line and no connection attempt, not a crash."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=0)
+    assert io.c.connect_calls == 0
+    assert any("timeout" in r.message.lower() for r in caplog.records)
+
+
+def test_teardown_keeps_the_connection_alive_for_the_whole_budget():
+    """The hardcoded keepalive=30 from the first draft could let the broker
+    drop the connection mid-teardown on any budget longer than 30s. keepalive
+    must cover at least the whole requested timeout."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    io.teardown_discovery(timeout=45.0)
+    assert io.c.keepalive_used >= 45.0
+
+
+def test_teardown_disconnects_before_stopping_the_loop():
+    """Matches close() (mqtt_io.py) which disconnects, then stops the loop --
+    stopping the loop first would join the network thread before it can send
+    the DISCONNECT packet."""
+    order = []
+    io = MqttIO(Settings())
+    fb = _FakeBroker(respond="connack")
+    fb.disconnect = lambda: order.append("disconnect")
+    fb.loop_stop = lambda: order.append("loop_stop")
+    io.c = fb
+    io.teardown_discovery(timeout=0.2)
+    assert order == ["disconnect", "loop_stop"]
+
+
 def test_stream_state_declares_every_value_the_code_can_produce():
     """Home Assistant rejects a state that is not in an enum sensor's options,
     and does it silently -- the entity just goes unavailable. So the discovery
@@ -259,3 +510,45 @@ def test_stream_state_declares_every_value_the_code_can_produce():
     assert set(cfg["options"]) == set(STREAM_STATES)
     for expected in ("ready", "backgrounded", "unavailable", "in_use", "capturing"):
         assert expected in cfg["options"]
+
+
+# -- the stand-in used when MQTT is switched off -----------------------------
+
+def test_the_stand_in_answers_every_call_the_service_makes():
+    """The supervisor publishes unconditionally. Asking "is MQTT on?" at each of
+    these call sites would put the flag in a dozen places that do not otherwise
+    care about it; the answer is which object was handed over at startup."""
+    io = NullMqttIO()
+    io.connect()
+    io.loop_start()
+    io.publish_state({"phone_battery": 81})
+    io.publish_state({"phone_battery": 81}, retain=False)
+    io.publish_event({"error": "x"})
+    io.publish_still(b"jpeg")
+    io.publish_screenshot(b"png")
+    io.set_available(True)
+    io.loop_stop()
+    io.close()
+    io.close(timeout=0.1)
+
+
+def test_the_stand_in_matches_the_real_client_call_for_call():
+    """A method the real client grows and this one does not is an AttributeError
+    at whatever hour the deployment with MQTT off next restarts."""
+    real = {n for n in vars(MqttIO) if not n.startswith("_")}
+    # teardown_discovery is the deliberate exception: clearing the retained
+    # discovery topics needs a broker, so a copy here that quietly did nothing
+    # would report success for entities that were never removed. __main__ uses a
+    # real client for it.
+    shared = real - {"teardown_discovery"}
+    assert shared <= {n for n in vars(NullMqttIO) if not n.startswith("_")}
+    assert not hasattr(NullMqttIO, "teardown_discovery")
+    for name in sorted(shared):
+        assert (inspect.signature(getattr(NullMqttIO, name))
+                == inspect.signature(getattr(MqttIO, name))), name
+
+
+def test_the_stand_in_needs_no_broker_settings():
+    """It is chosen precisely when the broker settings are not being used, and
+    must not be able to fail on one that is malformed."""
+    assert inspect.signature(NullMqttIO) == inspect.Signature()

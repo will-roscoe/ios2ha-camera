@@ -76,11 +76,13 @@ Host networking, because the service must reach the phone, the broker and the US
 It mounts `/var/run/usbmuxd` and `/var/lib/lockdown` (read-only) for battery access, and a data
 directory for the archive.
 
-`stop_grace_period: 20s` matters. Worst case is about 17 seconds: up to 4 s for the event loop to
-finish or cancel a `/live` viewer's pending write, 5 s for the upstream connection to close, two 3 s
-thread joins, and up to 2 s to publish "offline" over MQTT — see [ARCHITECTURE.md](ARCHITECTURE.md)
-for the full arithmetic. Measured end to end with a viewer attached: 1.1–5.1 s in practice, well
-inside the budget. Before the on-demand connection, the same shutdown could take 122 s with a viewer
+`stop_grace_period: 20s` matters. Worst case is 20 seconds, the whole period: up to 4 s for the
+event loop to finish or cancel a `/live` viewer's pending write, 5 s for the upstream connection to
+close, 3 s to stop the Bluetooth keyboard, two 3 s thread joins, and up to 2 s to publish "offline"
+over MQTT — see [ARCHITECTURE.md](ARCHITECTURE.md) for the full arithmetic. A device action already
+running on the cable when the stop arrives is waited for on top of that; one stuck on the cable can
+outlast the period. Measured end to end with a viewer attached: 1.1–5.1 s in practice. A longer
+`stop_grace_period` buys margin for the worst case at no cost to a normal stop. Before the on-demand connection, the same shutdown could take 122 s with a viewer
 attached — the ingest thread waiting out a connect to an unresponsive phone before the offline
 availability was ever published — which is longer than even this grace period, so the container was
 SIGKILLed mid-shutdown and Home Assistant kept showing the camera as online after a planned restart.

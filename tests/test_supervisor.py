@@ -103,7 +103,7 @@ class Inline:
     def submit(self, fn, *a):
         fn(*a)
 
-    def shutdown(self, wait=True):
+    def shutdown(self, wait=True, *, cancel_futures=False):
         pass
 
 
@@ -137,6 +137,57 @@ def test_produce_still_publishes_and_archives():
     assert mq.stills and ar.paths and mq.events
     assert ev["depth_used"] >= 1
     assert any("depth_used" in st for st in mq.states)
+
+
+def test_probe_mean_matches_np_mean_without_materialising_the_stacked_probe(monkeypatch):
+    """np.mean(probe, axis=0) (supervisor.py:285) implicitly stacks every decoded
+    probe frame into one (N,H,W,3) array before reducing -- ~373MB for
+    probe_n=15 at 1920x1080 float32, thrown away immediately -- while the phone
+    connection is held open for the whole capture (supervisor.py:265's `with
+    hold:`). sum(probe)/len(probe) measured 73-167ms against np.mean's
+    200ms-1.1s and is bit-identical for stack.decode's float32 output
+    (sweep-performance.md finding 1): assert both that the expensive call is
+    gone and that the replacement's numbers pin exactly to what np.mean would
+    have given, for the same frames."""
+    from ios2ha_camera import measure
+
+    real_mean = np.mean
+    list_calls = []
+
+    def spy_mean(a, *args, **kwargs):
+        # The only np.mean(<list>, axis=0) call anywhere in this codebase is the
+        # probe-averaging line finding 1 targets -- every other np.mean call
+        # here reduces a single ndarray, so a list argument uniquely identifies it.
+        if isinstance(a, list):
+            list_calls.append(a)
+        return real_mean(a, *args, **kwargs)
+    monkeypatch.setattr(np, "mean", spy_mean)
+
+    captured = {}
+    real_black_level = measure.black_level
+
+    def spy_black_level(mean, *a, **kw):
+        captured["mean"] = mean
+        return real_black_level(mean, *a, **kw)
+    monkeypatch.setattr(measure, "black_level", spy_black_level)
+
+    s = Settings()
+    s.stacking_mode = "fixed"
+    s.fixed_depth = 10
+    buf = RingBuffer(5_000_000)
+    now = time.time()
+    _fill(buf, 20, now=now)
+    sup = _sup(s, buf)
+    sup.produce_still(now_fps=12.0, now=now)
+
+    assert list_calls == [], (
+        "np.mean(probe, axis=0) still materialises the whole probe stack")
+    assert "mean" in captured
+
+    probe_frames = sup._fresh(buf.recent(sup.probe_n), now, sup.fresh_s)
+    reference = real_mean([stack.decode(f) for f in probe_frames], axis=0)
+    assert captured["mean"].dtype == np.float32
+    assert np.array_equal(captured["mean"], reference)
 
 
 def test_handle_control_updates_setting():
@@ -325,6 +376,37 @@ def test_autofocus_success_applies_and_publishes():
     assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
 
 
+def test_autofocus_coerces_a_conventional_string_spelling_like_the_other_controls():
+    """handle_control used to coerce the raw payload with a bare bool(value)
+    before ever reaching Settings.apply_control's boolean validation, so a
+    non-JSON "off" (bool("off") is True) silently turned autofocus ON --
+    exactly backwards. It must go through the same _coerce_bool the other
+    four boolean controls use."""
+    s = Settings()
+    s.autofocus = True
+    onvif = FakeOnvif(result=True)
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("autofocus", "off")
+    assert onvif.calls == ["MANUAL"]
+    assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
+
+
+def test_autofocus_rejects_unparseable_junk_before_touching_the_device_executor():
+    """The rejection must happen before anything is submitted to the device
+    executor: a bad value must not cost an ONVIF round trip or occupy the
+    single device worker, and the stored setting must be untouched -- the
+    same contract the other four boolean controls get via _apply_setting's
+    rejected-control path."""
+    s = Settings()
+    s.autofocus = False
+    onvif = FakeOnvif(result=True)
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("autofocus", "banana")
+    assert onvif.calls == [], "a rejected value must never reach the device executor"
+    assert s.autofocus is False, "a rejected write must not change the setting"
+    assert sup.mqtt.published["autofocus"] is False, "Home Assistant must be corrected back"
+
+
 def test_screenshot_publishes_a_png():
     sup = _sup(phone=FakePhone())
     sup.handle_control("screenshot", "PRESS")
@@ -384,6 +466,19 @@ def test_black_level_channel_control_applies_and_publishes():
     sup.handle_control("black_level_1", 0.46)
     assert s.black_level_override == (0.0, 0.46, 0.0)
     assert sup.mqtt.published["black_level_1"] == 0.46
+
+
+def test_a_non_number_for_a_black_level_channel_republishes_the_real_value(caplog):
+    """Home Assistant shows a number as changed as soon as it sends it; a rejected
+    write has to be answered with the value actually in effect."""
+    s = Settings()
+    s.black_level_override = (0.1, 0.2, 0.3)
+    sup = _sup(s)
+    with caplog.at_level("WARNING"):
+        sup.handle_control("black_level_1", None)
+    assert s.black_level_override == (0.1, 0.2, 0.3)
+    assert sup.mqtt.states[-1] == {"black_level_1": 0.2}
+    assert any("rejected control black_level_1" in r.getMessage() for r in caplog.records)
 
 
 def test_health_state_is_offline_when_frames_are_stale():
@@ -535,8 +630,154 @@ class QueueingExecutor:
     def submit(self, fn, *a):
         self.queued.append((fn, a))
 
-    def shutdown(self, wait=True):
+    def shutdown(self, wait=True, *, cancel_futures=False):
         pass
+
+
+def test_close_drops_device_actions_still_waiting_for_the_worker():
+    """At shutdown only the action already running may finish. The worker is a
+    non-daemon thread that the interpreter joins after main() returns, so every
+    queued action left behind -- each an ONVIF or cable round trip -- would run
+    outside the shutdown budget and push the process past the container's grace
+    period into a kill."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    sup = _sup(device_executor=ex)
+    running, release = threading.Event(), threading.Event()
+    ran = []
+
+    def blocking():
+        running.set()
+        release.wait(5)
+
+    sup._submit("first", blocking)
+    assert running.wait(5)
+    for i in range(5):
+        sup._submit(f"queued_{i}", lambda i=i: ran.append(i))
+    sup.close()
+    release.set()
+    ex.shutdown(wait=True)
+    assert ran == []
+
+
+class GatedPhone(FakePhone):
+    """A phone whose first screenshot blocks until released: an action that is
+    still running on the device worker."""
+
+    def __init__(self):
+        super().__init__()
+        self.running, self.release = threading.Event(), threading.Event()
+        self.shots = 0
+
+    def screenshot(self):
+        self.shots += 1
+        self.running.set()
+        self.release.wait(5)
+        return super().screenshot()
+
+
+class GatedOnvif(FakeOnvif):
+    """ONVIF whose first call blocks until released."""
+
+    def __init__(self):
+        super().__init__()
+        self.running, self.release = threading.Event(), threading.Event()
+
+    def set_autofocus(self, mode):
+        self.running.set()
+        self.release.wait(5)
+        return super().set_autofocus(mode)
+
+
+@pytest.mark.parametrize("button", ["screenshot", "relaunch_app", "prepare_phone",
+                                    "start_streaming"])
+def test_repeated_presses_queue_one_device_action(button, caplog):
+    """A misfiring automation or a double-firing dashboard button must not park
+    device work ahead of the backgrounding hooks, which share the one worker."""
+    ex = QueueingExecutor()
+    sup = _sup(phone=FakePhone(), starter=FakeStarter(), device_executor=ex)
+    with caplog.at_level("INFO"):
+        for _ in range(10):
+            sup.handle_control(button, None)
+    assert len(ex.queued) == 1
+    assert any(button in r.getMessage() and "already" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_press_while_the_same_action_runs_is_refused():
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    phone = GatedPhone()
+    mq = FakeMqtt()
+    sup = _sup(phone=phone, mqtt=mq, device_executor=ex)
+    sup.handle_control("screenshot", None)
+    assert phone.running.wait(5)
+    sup.handle_control("screenshot", None)
+    phone.release.set()
+    ex.shutdown(wait=True)
+    assert phone.shots == 1
+    assert len(mq.screenshots) == 1
+
+
+def test_a_press_after_the_action_finished_runs_again():
+    phone = FakePhone()
+    mq = FakeMqtt()
+    sup = _sup(phone=phone, mqtt=mq)      # Inline: each press completes at once
+    sup.handle_control("screenshot", None)
+    sup.handle_control("screenshot", None)
+    assert len(mq.screenshots) == 2
+
+
+def test_different_device_actions_do_not_refuse_each_other():
+    ex = QueueingExecutor()
+    sup = _sup(phone=FakePhone(), device_executor=ex)
+    sup.handle_control("screenshot", None)
+    sup.handle_control("relaunch_app", None)
+    assert len(ex.queued) == 2
+
+
+def test_a_press_is_not_refused_because_an_automatic_start_is_pending():
+    """The automatic attempt honours the pause switch and the rate limit and may
+    decline; a person pressing the button overrides both, so it is a different
+    request and must not be swallowed by the automatic one."""
+    ex = QueueingExecutor()
+    starter = FakeStarter()
+    sup = _sup(starter=starter, device_executor=ex)
+    sup.on_stream_state("streaming_off")
+    sup.on_stream_state("streaming_off")
+    sup.handle_control("start_streaming", None)
+    assert len(ex.queued) == 2
+    for fn, a in ex.queued:
+        fn(*a)
+    assert sorted(starter.calls) == [False, True]
+
+
+def test_autofocus_changed_while_a_change_is_running_ends_on_the_last_request():
+    """A switch carries a value, so a later write is a different request, not a
+    repeat: dropping it would leave the camera on the earlier value. Writes made
+    while one is running collapse into a single follow-up carrying the latest."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    onvif = GatedOnvif()
+    sup = _sup(onvif=onvif, device_executor=ex)
+    sup.s.autofocus = True
+    sup.handle_control("autofocus", False)
+    assert onvif.running.wait(5)
+    for v in (True, False, True, False):
+        sup.handle_control("autofocus", v)
+    onvif.release.set()
+    # The follow-up is submitted as the first finishes, so shutting the worker
+    # down any earlier would refuse it.
+    deadline = time.monotonic() + 5
+    while len(onvif.calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    ex.shutdown(wait=True)
+    assert onvif.calls == ["MANUAL", "MANUAL"]
+    assert sup.s.autofocus is False
+    assert sup.current_state()["autofocus"] is False
 
 
 def test_attempts_to_open_the_app_do_not_pile_up():
@@ -563,12 +804,18 @@ def test_a_failed_attempt_does_not_block_every_later_one():
     class Boom:
         state = "unavailable"
 
+        def __init__(self):
+            self.calls = 0
+
         def attempt(self, manual=False):
+            self.calls += 1
             raise RuntimeError("no usbmux")
 
-    sup = _sup(opener=Boom())
+    op = Boom()
+    sup = _sup(opener=op)
     sup.on_stream_state("backgrounded")
-    assert sup._opening is False
+    sup.on_stream_state("unavailable")
+    assert op.calls == 2
 
 
 def test_the_open_state_is_published():
@@ -678,6 +925,81 @@ def test_publish_controls_republishes_the_last_still_and_measurements():
     sup.publish_controls()
     assert len(mq.stills) == before + 1
     assert "subject_level" in mq.published
+
+
+def test_current_state_answers_with_everything_published_so_far():
+    sup = _sup()
+    sup.publish_controls()
+    sup.publish_state({"phone_battery": 81})
+    state = sup.current_state()
+    assert state["phone_battery"] == 81
+    assert {c for c in CONTROLS if c != "black_level_override"} <= set(state)
+
+
+def test_current_state_hands_out_a_copy():
+    """Every capture, health and device thread writes the remembered state while
+    whoever asked is reading it, so the answer cannot be the live dict."""
+    sup = _sup()
+    sup.publish_state({"phone_battery": 81})
+    taken = sup.current_state()
+    taken["phone_battery"] = 0
+    taken["invented"] = True
+    assert sup.current_state() == {"phone_battery": 81}
+
+
+def test_a_state_listener_hears_every_publish():
+    sup = _sup()
+    heard = []
+    sup.add_state_listener(heard.append)
+    sup.publish_state({"phone_battery": 81})
+    sup.publish_state({"exposure": 0.5})
+    assert heard == [{"phone_battery": 81}, {"exposure": 0.5}]
+
+
+def test_a_listener_is_told_only_once_the_value_can_be_read_back():
+    """A listener feeding a second interface may be asked for the current state
+    the instant it hears a change -- by its own new client, on its own thread.
+    Told first, it would answer with the value it has just been told replaced."""
+    sup = _sup()
+    seen = []
+    sup.add_state_listener(lambda d: seen.append(sup.current_state()))
+    sup.publish_state({"phone_battery": 81})
+    assert seen == [{"phone_battery": 81}]
+
+
+def test_a_listener_that_raises_costs_only_its_own_events(caplog):
+    """These calls arrive on paho's network thread among others, where an
+    exception does not merely lose the event: it takes the connection down."""
+    mq = FakeMqtt()
+    sup = _sup(mqtt=mq)
+    second = []
+
+    def broken(d):
+        raise RuntimeError("no")
+
+    sup.add_state_listener(broken)
+    sup.add_state_listener(second.append)
+    with caplog.at_level("ERROR"):
+        sup.publish_state({"phone_battery": 81})
+    assert mq.published == {"phone_battery": 81}
+    assert second == [{"phone_battery": 81}]
+    assert sup.current_state() == {"phone_battery": 81}
+    assert any("listener" in r.getMessage() for r in caplog.records)
+
+
+def test_the_reconnect_replay_is_not_repeated_to_listeners():
+    """The replay exists because a broker restart drops retained values. A
+    listener holding the same values already has them, and sending the lot again
+    on every reconnect would be a burst of changes that changed nothing."""
+    mq = FakeMqtt()
+    sup = _sup(mqtt=mq)
+    sup.publish_state({"phone_battery": 81})
+    heard = []
+    sup.add_state_listener(heard.append)
+    before = len(mq.states)
+    sup.publish_controls()
+    assert len(mq.states) > before + 1          # the controls, then the whole snapshot
+    assert len(heard) == 1 and "phone_battery" not in heard[0]
 
 
 def test_reconnect_republish_survives_concurrent_state_writes():
