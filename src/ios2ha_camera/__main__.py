@@ -7,6 +7,7 @@ import threading
 from aiohttp import web
 
 from . import version
+from .app_open import AppOpener
 from .archive import Archive
 from .ingest import Ingestor
 from .keyboard import Keyboard
@@ -72,8 +73,10 @@ def main():
     starter = StreamStarter(_stream_probe(s), keyboard, phone.is_running,
                             allowed=lambda: bool(getattr(s, "auto_start", True)),
                             foreground=phone.foreground)
+    opener = AppOpener(phone.is_running, phone.launch,
+                       allowed=lambda: bool(getattr(s, "auto_start", True)))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
-                     starter=starter, keyboard=keyboard)
+                     starter=starter, keyboard=keyboard, opener=opener)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 

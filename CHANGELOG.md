@@ -18,10 +18,23 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
-## 2.4.2 — 2026-09-16
+## 2.5.0 — 2026-09-16
 
-**The keyboard now survives a container restart, and can recover an app that has stopped listening
-to it.** Three fixes, each found on the device.
+**The camera now comes back from a restart on its own.** Previously the last two steps each needed
+a person: opening the app after the phone rebooted, and tapping Start streaming afterwards.
+
+*New: the app is opened when it is not running.* A new diagnostic sensor, **App open**, reports how
+that went (`idle`, `opening`, `opened`, `not_needed`, `rate_limited`, `paused`, `failed_launch`,
+`unavailable`). The check runs on the battery cadence, using the answer the cable already gives for
+whether the app's process exists, and it only ever acts on a definite "not running": a cold start
+kills the running copy, so launching an app iOS has merely suspended would throw away a stream that
+would have woken by itself, and a cable that cannot answer means *unknown*, not dead. At most 3
+starts an hour and 12 a day, ten minutes apart, and a success does not refund that budget — an app
+that dies the moment it opens must not be relaunched all night.
+
+The three fixes below make the keyboard half of that reliable.
+
+*The keyboard survives a container restart, and can recover an app that has stopped listening.*
 
 *Pinned GATT handles.* BlueZ gave the HID service fresh handles on every registration — 0x00b8, then
 0x00cc, then 0x00e0 — and iOS caches the handles of a bonded keyboard: on reconnect it re-discovers

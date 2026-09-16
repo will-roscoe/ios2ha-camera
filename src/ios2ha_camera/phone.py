@@ -221,11 +221,11 @@ class PhoneManager:
     def launch(self):
         """Cold-start the app, killing any running copy.
 
-        Note what this costs: a cold start always leaves **streaming off**, and
-        only a person tapping Start streaming can turn it back on. That is the
-        right behaviour for the relaunch button, whose whole purpose is reviving
-        a dead app, and the wrong behaviour for merely bringing a running app
-        back to the front -- use `foreground()` for that.
+        Note what this costs: a cold start always leaves **streaming off**, so
+        the stream comes back only once `StreamStarter` presses Start streaming
+        (or a person does). That is the right behaviour for the relaunch button,
+        whose whole purpose is reviving a dead app, and the wrong behaviour for
+        merely bringing a running app back to the front -- use `foreground()`.
         """
         pid = self._dvt(lambda: self._launch(kill_existing=True))
         return bool(pid)

@@ -137,7 +137,7 @@ class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
-                 starter=None, keyboard=None):
+                 starter=None, keyboard=None, opener=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -182,6 +182,7 @@ class Supervisor:
         # which is what happens when the D-Bus proxy or BlueZ is missing.
         self.starter = starter
         self.keyboard = keyboard
+        self.opener = opener
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
 
@@ -537,6 +538,7 @@ class Supervisor:
         d["stream_start_attempts"] = (self.starter.attempts_last_hour
                                       if self.starter is not None else 0)
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
+        d["app_open"] = self.opener.state if self.opener is not None else "idle"
         # A rising count means the phone's developer services are not answering,
         # which is what silently stopped backgrounding for 24 hours on 2026-09-14.
         d["dvt_failures"] = getattr(self.phone, "dvt_failures", 0) if self.phone else 0
@@ -579,6 +581,13 @@ class Supervisor:
         except PhoneUnavailable as e:
             log.info("app state unavailable: %s", e)
             self._app_running = None
+        # The step before the keys. An app that is not running cannot be started
+        # by them, and nothing else in this service opens it, so a phone that
+        # rebooted would otherwise wait for a person. False only: None means the
+        # cable could not answer, and a cold start on a guess kills a stream
+        # that was merely suspended.
+        if self._app_running is False and self.opener is not None:
+            self._submit("open_app", lambda: self.opener.attempt(False))
         # Already on the health thread, and the policy only decides -- any phone
         # call it makes here is the release path, which must happen promptly or
         # the app stays asleep.

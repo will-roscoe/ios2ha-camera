@@ -471,6 +471,53 @@ class FakeKeyboard:
         return "connected" if self._connected else "advertising"
 
 
+class FakeOpener:
+    def __init__(self, result="opened"):
+        self.calls = []
+        self.result = result
+        self.state = "idle"
+
+    def attempt(self, manual=False):
+        self.calls.append(manual)
+        self.state = self.result
+        return self.result
+
+
+def test_an_app_that_is_not_running_is_opened():
+    """Nothing else here opens the app, so without this a phone that rebooted
+    waits for a person however long that takes."""
+    op = FakeOpener()
+    _sup(phone=FakePhone(running=False), opener=op).phone_state()
+    assert op.calls == [False]
+
+
+def test_an_app_that_is_running_is_not_touched():
+    """A cold start kills the running copy: on a suspended app that throws away
+    a stream iOS would have woken on its own."""
+    op = FakeOpener()
+    _sup(phone=FakePhone(running=True), opener=op).phone_state()
+    assert op.calls == []
+
+
+def test_a_cable_that_cannot_answer_does_not_trigger_a_cold_start():
+    op = FakeOpener()
+    _sup(phone=FakePhone(running_error=PhoneUnavailable("no cable")), opener=op).phone_state()
+    assert op.calls == []
+
+
+def test_the_open_state_is_published():
+    op = FakeOpener()
+    sup = _sup(phone=FakePhone(running=False), opener=op)
+    sup.phone_state()
+    assert sup.health_state()["app_open"] == "opened"
+
+
+def test_without_an_opener_the_open_state_is_still_published():
+    """Every declared entity carries a value, or Home Assistant shows it as
+    unknown for ever."""
+    assert _sup().health_state()["app_open"] == "idle"
+
+
 def test_streaming_off_runs_the_start_step_once():
     st = FakeStarter()
     sup = _sup(starter=st)
