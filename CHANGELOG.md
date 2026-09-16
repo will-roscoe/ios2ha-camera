@@ -18,6 +18,76 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.5.0 — 2026-09-16
+
+**The camera now comes back from a restart on its own.** Previously the last two steps each needed
+a person: opening the app after the phone rebooted, and tapping Start streaming afterwards.
+
+*New: the app is opened when it is not running.* A new diagnostic sensor, **App open**, reports how
+that went (`idle`, `opening`, `opened`, `not_needed`, `rate_limited`, `paused`, `failed_launch`,
+`unavailable`). The check runs on the battery cadence, using the answer the cable already gives for
+whether the app's process exists, and it only ever acts on a definite "not running": a cold start
+kills the running copy, so launching an app iOS has merely suspended would throw away a stream that
+would have woken by itself, and a cable that cannot answer means *unknown*, not dead. At most 3
+starts an hour and 12 a day, ten minutes apart, and a success does not refund that budget — an app
+that dies the moment it opens must not be relaunched all night.
+
+*Fixed: two threads could open a developer session at the same time, and wedge the phone.* iOS
+serves one instruments session at a time. The health tick asking whether the app is running, and
+the step that opens the app asking the same thing, each opened their own — and when they overlapped
+both hung until their timeouts and the phone's side stayed wedged, so every later call failed too.
+Only restarting the container, which drops the sessions, recovered it. This is what actually kept
+the camera dark for two and a half hours on the night of 2026-09-16, with a healthy phone on the
+end of a healthy cable: lockdown answered in milliseconds throughout, and an instruments call made
+with the container stopped returned 344 processes in one second. Developer-channel calls are now
+serialised inside `PhoneManager`, so they queue rather than collide.
+
+*The app is asked for on the health cadence, not only when something changes.* A phone that has just
+restarted cannot answer over the cable for a minute or two while its developer image remounts, so
+the attempt triggered by the state change can only report that it cannot tell — and a stream state
+that then sits at `backgrounded` never changes again, so nothing asked a second time. Measured the
+hard way: the camera stayed dark for two and a half hours with a perfectly healthy phone on the end
+of the cable. The 30-second health tick now retries while nothing is answering, with a flag so
+attempts cannot pile up behind one that is blocked on the mount's own two-minute timeout.
+
+*Fixed: "is the app running" could not answer honestly.* The process was matched on the last word
+of its bundle id, which for `com.guardianeye.webcam.ios` is `ios` — and that matches `apfs_iosd`,
+present on every iPhone. The app therefore read as running on a phone where it had been deleted,
+and every part of the recovery that asks the question first was quietly built on it. The executable
+name now comes from the phone's own app list, looked up once by bundle id and remembered, so it is
+exact and stays right when the phone or the app is swapped.
+
+*Also new: a running app that answers nothing is brought to the front.* After a phone restart iOS
+relaunches Guardian Eye by itself, backgrounded and serving nothing — a process exists, so a cold
+start would be both wrong and destructive. That case is fronted instead, never while the battery
+policy has deliberately backgrounded the app, since that pause is meant to be held.
+
+The three fixes below make the keyboard half of that reliable.
+
+*The keyboard survives a container restart, and can recover an app that has stopped listening.*
+
+*Pinned GATT handles.* BlueZ gave the HID service fresh handles on every registration — 0x00b8, then
+0x00cc, then 0x00e0 — and iOS caches the handles of a bonded keyboard: on reconnect it re-discovers
+the device but never re-reads its report map. So a pairing made against one container worked, and
+then silently did nothing after the next restart, with the phone still listed as connected and the
+host still transmitting. The service is now registered at a fixed handle (0x0200, its report
+characteristic at 0x0208), which BlueZ honours, so a restart no longer breaks the pairing.
+
+*More than one key at a time.* A report can now carry several key usages, because iOS Full Keyboard
+Access chords on Tab rather than on a modifier: Home is Tab+H, and Tab+Z lists its commands. The
+letters are available for iOS's own shortcuts, along with minus and power.
+
+*A lock-and-return repair.* A cold-started app sometimes comes up accepting no keyboard input at
+all — keys on the wire, nothing on screen, and none of Full Keyboard Access's blue border. Locking
+the phone with Ctrl+Cmd+Q and coming back to the app restores it, and unlike relaunching the app it
+is reversible: the same screen returns. When its first press has no effect, the start step now locks
+the phone, wakes it, brings the app back over the cable, and tries once more. It does this at most
+once per attempt, only when it has a way back into the app, and only if the app is confirmed back
+and still idle — and if the stream turns out to be up afterwards it says so rather than reporting a
+failure, since the supervisor's answer to a failure is another attempt, and a second run of the
+sequence on a streaming app lands on *Stop* streaming. The wake key is Escape, not Space: if the
+lock chord ever misses, Space would activate whatever the focus frame is sitting on.
+
 ## 2.4.1 — 2026-09-16
 
 **The keys never left the host.** 2.4.0 sent its key presses from the supervisor's device worker,

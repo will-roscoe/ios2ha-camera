@@ -2,8 +2,9 @@
 
 Separate from the D-Bus plumbing in `keyboard.py` so the bytes can be tested
 without a bus. Report ID 1, the usual boot-keyboard shape: modifiers, a reserved
-byte, then up to six key usages, of which only one is ever sent -- iOS Full
-Keyboard Access needs single keys, never chords beyond a modifier.
+byte, then up to six key usages. More than one usage at a time is genuinely
+needed: iOS Full Keyboard Access treats Tab as a chord key, so Home is Tab+H
+rather than a modifier and a letter.
 """
 
 
@@ -13,8 +14,16 @@ class UnknownKey(Exception):
 
 # USB HID usage ids, keyboard/keypad page 0x07.
 KEYS = {"enter": 0x28, "escape": 0x29, "tab": 0x2B, "space": 0x2C,
+        "minus": 0x2D, "equals": 0x2E, "power": 0x66,
         "right": 0x4F, "left": 0x50, "down": 0x51, "up": 0x52}
+# Letters, for iOS's own shortcuts: Cmd+H is Home on any hardware keyboard, and
+# Full Keyboard Access uses Tab as a chord key (Tab+H, Tab+Z and so on).
+KEYS.update({chr(ord("a") + i): 0x04 + i for i in range(26)})
 MODS = {"ctrl": 0x01, "shift": 0x02, "alt": 0x04, "cmd": 0x08}
+
+# A report carries up to six keys at once; more than that is a rollover error,
+# which no sequence here needs.
+MAX_KEYS = 6
 
 # Every key up. Sent after each press: without it the phone sees the key held.
 RELEASE = bytes(8)
@@ -38,20 +47,24 @@ REPORT_MAP = bytes([
 
 
 def report(name):
-    """One key-down report for a name like "tab" or "shift+tab".
+    """One key-down report for a name like "tab", "shift+tab" or "tab+h".
 
-    An unknown name raises rather than producing a report with no usage: the
-    phone would accept that and do nothing, leaving the caller believing a key
-    was pressed.
+    Several non-modifier keys may be held together, because iOS's Full Keyboard
+    Access uses Tab as a chord key rather than a modifier: Tab+H is Home, Tab+Z
+    shows its command list. An unknown name raises rather than producing a
+    report with no usage, which the phone would accept and ignore, leaving the
+    caller believing a key was pressed.
     """
-    mods, key = 0, None
+    mods, keys = 0, []
     for part in name.lower().split("+"):
         if part in MODS:
             mods |= MODS[part]
         elif part in KEYS:
-            key = KEYS[part]
+            keys.append(KEYS[part])
         else:
             raise UnknownKey(name)
-    if key is None:
+    if not keys:
         raise UnknownKey(name)
-    return bytes([mods, 0, key, 0, 0, 0, 0, 0])
+    if len(keys) > MAX_KEYS:
+        raise UnknownKey(f"{name}: more than {MAX_KEYS} keys at once")
+    return bytes([mods, 0, *keys, *([0] * (MAX_KEYS - len(keys)))])

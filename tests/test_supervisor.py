@@ -119,8 +119,10 @@ def _fill(buf, n, val=30, now=None, step=1 / 12):
 
 def _sup(settings=None, buf=None, mqtt=None, archive=None, **kw):
     s = settings or Settings()
+    # Inline unless a test wants to watch what was queued rather than run it.
+    executor = kw.pop("device_executor", None) or Inline()
     return Supervisor(s, buf or RingBuffer(5_000_000), mqtt or FakeMqtt(),
-                      archive or FakeArchive(), device_executor=Inline(), **kw)
+                      archive or FakeArchive(), device_executor=executor, **kw)
 
 
 def test_produce_still_publishes_and_archives():
@@ -469,6 +471,117 @@ class FakeKeyboard:
 
     def state(self):
         return "connected" if self._connected else "advertising"
+
+
+class FakeOpener:
+    def __init__(self, result="opened"):
+        self.calls = []
+        self.result = result
+        self.state = "idle"
+
+    def attempt(self, manual=False):
+        self.calls.append(manual)
+        self.state = self.result
+        return self.result
+
+
+def test_an_app_that_is_not_running_is_opened():
+    """Nothing else here opens the app, so without this a phone that rebooted
+    waits for a person however long that takes."""
+    op = FakeOpener()
+    _sup(phone=FakePhone(running=False), opener=op).phone_state()
+    assert op.calls == [False]
+
+
+def test_an_app_that_is_running_is_not_touched():
+    """A cold start kills the running copy: on a suspended app that throws away
+    a stream iOS would have woken on its own."""
+    op = FakeOpener()
+    _sup(phone=FakePhone(running=True), opener=op).phone_state()
+    assert op.calls == []
+
+
+def test_a_cable_that_cannot_answer_does_not_trigger_a_cold_start():
+    op = FakeOpener()
+    _sup(phone=FakePhone(running_error=PhoneUnavailable("no cable")), opener=op).phone_state()
+    assert op.calls == []
+
+
+def test_a_state_with_nothing_answering_opens_the_app():
+    """What a rebooted phone looks like from the network side. Waiting for the
+    next five-minute battery sweep would leave the camera dark for no reason."""
+    for state in ("backgrounded", "unavailable"):
+        op = FakeOpener()
+        _sup(opener=op).on_stream_state(state)
+        assert op.calls == [False], state
+
+
+def test_a_state_where_the_app_is_answering_does_not_open_it():
+    """`streaming_off` is an app that is open and idle -- the keys' job, not a
+    relaunch, which would kill it. The rest are already streaming."""
+    op = FakeOpener()
+    sup = _sup(opener=op)
+    for state in ("streaming_off", "ready", "in_use", "capturing", "stalled"):
+        sup.on_stream_state(state)
+    assert op.calls == []
+
+
+class QueueingExecutor:
+    """Takes work and never runs it, which is what a blocked cable looks like."""
+
+    def __init__(self):
+        self.queued = []
+
+    def submit(self, fn, *a):
+        self.queued.append((fn, a))
+
+    def shutdown(self, wait=True):
+        pass
+
+
+def test_attempts_to_open_the_app_do_not_pile_up():
+    """A phone that has just rebooted leaves the first attempt blocked on the
+    cable for up to two minutes. Without the guard the health tick would queue
+    another every 30 s behind it."""
+    ex = QueueingExecutor()
+    sup = _sup(opener=FakeOpener(), device_executor=ex)
+    for _ in range(5):
+        sup.on_stream_state("backgrounded")
+    assert len(ex.queued) == 1
+
+
+def test_the_next_attempt_is_allowed_once_the_last_one_finished():
+    op = FakeOpener()
+    sup = _sup(opener=op)           # Inline: each attempt completes at once
+    sup.on_stream_state("backgrounded")
+    sup.on_stream_state("unavailable")
+    assert op.calls == [False, False]
+
+
+def test_a_failed_attempt_does_not_block_every_later_one():
+    """The first attempt after a reboot usually raises: the cable is not ready."""
+    class Boom:
+        state = "unavailable"
+
+        def attempt(self, manual=False):
+            raise RuntimeError("no usbmux")
+
+    sup = _sup(opener=Boom())
+    sup.on_stream_state("backgrounded")
+    assert sup._opening is False
+
+
+def test_the_open_state_is_published():
+    op = FakeOpener()
+    sup = _sup(phone=FakePhone(running=False), opener=op)
+    sup.phone_state()
+    assert sup.health_state()["app_open"] == "opened"
+
+
+def test_without_an_opener_the_open_state_is_still_published():
+    """Every declared entity carries a value, or Home Assistant shows it as
+    unknown for ever."""
+    assert _sup().health_state()["app_open"] == "idle"
 
 
 def test_streaming_off_runs_the_start_step_once():

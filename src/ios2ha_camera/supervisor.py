@@ -137,7 +137,7 @@ class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
-                 starter=None, keyboard=None):
+                 starter=None, keyboard=None, opener=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -151,6 +151,8 @@ class Supervisor:
         # health tick: it is a usbmux round trip, and asking every 30 s would
         # spend the cable on a question whose answer changes rarely.
         self._app_running = None
+        # True while an attempt to open the app is queued or running.
+        self._opening = False
         self.s = settings
         # Reads the switch and both thresholds live, because all three are Home
         # Assistant controls that can change between one capture and the next.
@@ -182,6 +184,7 @@ class Supervisor:
         # which is what happens when the D-Bus proxy or BlueZ is missing.
         self.starter = starter
         self.keyboard = keyboard
+        self.opener = opener
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
 
@@ -430,6 +433,25 @@ class Supervisor:
     def _submit(self, name, fn):
         self._device_executor.submit(self._run_device_action, name, fn)
 
+    def _maybe_open_app(self):
+        """Ask the opener, unless it is already busy.
+
+        A phone that has just rebooted cannot answer over the cable for a
+        minute or two while the developer image remounts, and that attempt sits
+        blocked for as long as the mount's own timeout. Without this guard the
+        health tick would queue a fresh one every 30 s behind it.
+        """
+        if self.opener is None or self._opening:
+            return
+        self._opening = True
+        self._submit("open_app", self._open_app)
+
+    def _open_app(self):
+        try:
+            self.opener.attempt(False)
+        finally:
+            self._opening = False
+
     def _run_device_action(self, name, fn):
         try:
             fn()
@@ -505,6 +527,13 @@ class Supervisor:
         # re-checks all of it anyway; this is only the trigger.
         if state == "streaming_off" and self.starter is not None:
             self._submit("start_streaming", lambda: self.starter.attempt(False))
+        # Nothing answered on the app's page at all, which is what a phone that
+        # rebooted looks like. Asked here as well as on the battery tick so the
+        # app is opened in seconds rather than after the next five-minute
+        # sweep. The opener re-checks over the cable, where a suspended app
+        # still counts as running, so a deliberate backgrounding is left alone.
+        if state in ("backgrounded", "unavailable"):
+            self._maybe_open_app()
 
     def health_state(self, now=None):
         now = time.time() if now is None else now
@@ -537,6 +566,7 @@ class Supervisor:
         d["stream_start_attempts"] = (self.starter.attempts_last_hour
                                       if self.starter is not None else 0)
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
+        d["app_open"] = self.opener.state if self.opener is not None else "idle"
         # A rising count means the phone's developer services are not answering,
         # which is what silently stopped backgrounding for 24 hours on 2026-09-14.
         d["dvt_failures"] = getattr(self.phone, "dvt_failures", 0) if self.phone else 0
@@ -579,6 +609,13 @@ class Supervisor:
         except PhoneUnavailable as e:
             log.info("app state unavailable: %s", e)
             self._app_running = None
+        # The step before the keys. An app that is not running cannot be started
+        # by them, and nothing else in this service opens it, so a phone that
+        # rebooted would otherwise wait for a person. False only: None means the
+        # cable could not answer, and a cold start on a guess kills a stream
+        # that was merely suspended.
+        if self._app_running is False:
+            self._maybe_open_app()
         # Already on the health thread, and the policy only decides -- any phone
         # call it makes here is the release path, which must happen promptly or
         # the app stays asleep.
@@ -724,6 +761,14 @@ class Supervisor:
         while not stop.is_set():
             try:
                 self.publish_state(self.health_state())
+                # Measured after a phone restart on 2026-09-16: the cable cannot
+                # answer for a minute or so after the phone boots, so the
+                # attempt triggered by the state change can only say "cannot
+                # tell". Retried here rather than left until the next
+                # five-minute battery sweep; the opener's own rate limit bounds
+                # what this can actually do to the phone.
+                if self.stream_state in ("backgrounded", "unavailable"):
+                    self._maybe_open_app()
                 if time.monotonic() - last_battery >= battery_every:
                     last_battery = time.monotonic()
                     self.publish_state(self.phone_state())

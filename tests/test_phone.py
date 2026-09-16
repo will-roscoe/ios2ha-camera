@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import types
 
@@ -35,21 +36,64 @@ def test_battery_missing_fields_default_safely(monkeypatch):
     b = pm.battery()
     assert b["level"] is None and b["temperature"] == 0.0 and b["charging"] is False
 
+def _installed(pm, monkeypatch, executable="GuardianEye"):
+    """The phone's own app list, which is where the executable name comes from."""
+    monkeypatch.setattr(pm, "_applist", lambda: [
+        {"CFBundleIdentifier": "com.other.app", "ExecutableName": "Other"},
+        {"CFBundleIdentifier": pm.bundle_id, "ExecutableName": executable},
+    ])
+
 def test_is_running_true_when_bundle_process_present(monkeypatch):
     pm = PhoneManager("com.example.guardianeye")
     monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    _installed(pm, monkeypatch)
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "GuardianEye"}, {"name": "SpringBoard"}])
     assert pm.is_running() is True
 
 def test_is_running_false_when_absent(monkeypatch):
     pm = PhoneManager("com.example.guardianeye")
     monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    _installed(pm, monkeypatch)
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "SpringBoard"}])
     assert pm.is_running() is False
+
+def test_is_running_does_not_match_a_process_that_merely_contains_the_name(monkeypatch):
+    """The bug this replaced: the needle was the last word of the bundle id, so
+    `com.guardianeye.webcam.ios` matched `apfs_iosd` -- present on every iPhone.
+    The app read as running on a phone that did not even have it installed, and
+    nothing would then open it."""
+    pm = PhoneManager("com.guardianeye.webcam.ios")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    _installed(pm, monkeypatch, executable="GuardianEyeWebCam")
+    monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "apfs_iosd"},
+                                                  {"name": "PeopleWidget_iOSExtension"}])
+    assert pm.is_running() is False
+
+def test_is_running_raises_when_the_app_is_not_installed(monkeypatch):
+    """Better than answering "not running", which would have us cold start an
+    app that is not there, three times an hour, for ever."""
+    pm = PhoneManager("com.example.missing")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    monkeypatch.setattr(pm, "_applist", lambda: [{"CFBundleIdentifier": "com.other.app",
+                                                  "ExecutableName": "Other"}])
+    with pytest.raises(PhoneUnavailable):
+        pm.is_running()
+
+def test_the_executable_name_is_asked_for_once(monkeypatch):
+    pm = PhoneManager("com.example.guardianeye")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    calls = []
+    monkeypatch.setattr(pm, "_applist", lambda: calls.append(1) or [
+        {"CFBundleIdentifier": pm.bundle_id, "ExecutableName": "GuardianEye"}])
+    monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "GuardianEye"}])
+    assert pm.is_running() is True
+    assert pm.is_running() is True
+    assert calls == [1]
 
 def test_is_running_raises_when_no_device(monkeypatch):
     pm = PhoneManager("com.example")
     monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    _installed(pm, monkeypatch)
     def boom(): raise RuntimeError("no device")
     monkeypatch.setattr(pm, "_proclist", boom)
     with pytest.raises(PhoneUnavailable):
@@ -89,6 +133,7 @@ def test_is_running_triggers_mount(monkeypatch):
     pm = PhoneManager("com.example.guardianeye")
     mounted = []
     monkeypatch.setattr(pm, "_mount_ddi", lambda: mounted.append(1))
+    pm._executable = "GuardianEye"          # already looked up, so only the proclist mounts
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "GuardianEye"}])
     assert pm.is_running() is True
     assert mounted == [1]
@@ -415,6 +460,7 @@ def test_a_dvt_failure_clears_the_mount_cache_so_the_next_call_remounts(monkeypa
     pm = phone.PhoneManager("com.example.app")
     mounts = []
     monkeypatch.setattr(pm, "_mount_ddi_now", lambda: mounts.append(1))
+    pm._executable = "ExampleApp"       # already looked up from the phone's app list
     monkeypatch.setattr(pm, "_proclist",
                         lambda: (_ for _ in ()).throw(RuntimeError("ConnectionTerminatedError")))
     with pytest.raises(phone.PhoneUnavailable):
@@ -422,12 +468,49 @@ def test_a_dvt_failure_clears_the_mount_cache_so_the_next_call_remounts(monkeypa
     assert pm._ddi_mounted is False
     assert pm.dvt_failures == 1
 
-    # The name has to contain the bundle id's last part ("app"), which is what
-    # is_running matches on.
+    # The process name has to be the app's executable, which is what is_running
+    # matches on.
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "ExampleApp", "pid": 1}])
     assert pm.is_running() is True
     assert len(mounts) == 2       # remounted rather than trusting the stale cache
     assert pm.dvt_failures == 0
+
+
+def test_developer_calls_never_overlap(monkeypatch):
+    """iOS serves one instruments session at a time, and opening a second while
+    the first is in flight hangs both until their timeouts -- then leaves the
+    phone's side wedged. Measured 2026-09-16: the health tick asking whether the
+    app was running raced the step that opens it, and the camera stayed dark for
+    two and a half hours with a healthy phone on the cable. Only restarting the
+    container, which drops the sessions, cleared it."""
+    pm = phone.PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    inside, overlaps = [], []
+
+    def slow():
+        inside.append(1)
+        if len(inside) > 1:
+            overlaps.append(1)
+        time.sleep(0.02)
+        inside.pop()
+        return "ok"
+
+    threads = [threading.Thread(target=lambda: pm._dvt(slow)) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps == []
+
+
+def test_a_failing_developer_call_releases_the_lock(monkeypatch):
+    """Otherwise the first timeout after a phone reboot would block every later
+    call for the life of the process, which is the failure it exists to stop."""
+    pm = phone.PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    with pytest.raises(phone.PhoneUnavailable):
+        pm._dvt(lambda: (_ for _ in ()).throw(RuntimeError("timed out")))
+    assert pm._dvt(lambda: "ok") == "ok"
 
 
 def test_a_healthy_run_mounts_once(monkeypatch):
@@ -436,6 +519,7 @@ def test_a_healthy_run_mounts_once(monkeypatch):
     pm = phone.PhoneManager("com.example.app")
     mounts = []
     monkeypatch.setattr(pm, "_mount_ddi_now", lambda: mounts.append(1))
+    pm._executable = "ExampleApp"       # already looked up from the phone's app list
     monkeypatch.setattr(pm, "_proclist", lambda: [{"name": "ExampleApp", "pid": 1}])
     pm.is_running()
     pm.is_running()
