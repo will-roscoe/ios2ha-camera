@@ -194,8 +194,12 @@ class Settings:
 # Boolean controls, derived from the dataclass itself: exactly the CONTROLS
 # fields whose default is an actual bool. Kept off a hand-typed list so it
 # cannot silently drift from the dataclass as fields are added or retyped.
+# Keyed off the default value rather than `f.type`, for the same reason as
+# _coerce_like: under postponed annotations `f.type` is the string "bool", and
+# the set would come out empty with nothing to say so.
 _BOOL_CONTROLS = {
-    f.name for f in Settings.__dataclass_fields__.values() if f.type is bool
+    f.name for f in Settings.__dataclass_fields__.values()
+    if isinstance(f.default, bool)
 } & CONTROLS
 
 

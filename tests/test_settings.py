@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -117,6 +118,29 @@ def test_bool_controls_are_derived_from_the_dataclass():
     assert _BOOL_CONTROLS == {
         "stacking_allowed", "on_demand", "autofocus", "backgrounding", "auto_start",
     }
+
+
+def test_the_boolean_controls_survive_postponed_annotations():
+    """Under `from __future__ import annotations` every field's `type` is a
+    string, so deriving the set from `f.type is bool` would silently come out
+    empty and switch off boolean coercion. Loads this module's own source that
+    way and checks the set is unchanged."""
+    import sys
+    import types
+
+    from ios2ha_camera import settings
+
+    source = Path(settings.__file__).read_text()
+    lazy = types.ModuleType("ios2ha_camera._settings_lazy_annotations")
+    lazy.__package__ = "ios2ha_camera"
+    sys.modules[lazy.__name__] = lazy
+    try:
+        exec(compile("from __future__ import annotations\n" + source,
+                     settings.__file__, "exec"), lazy.__dict__)
+        assert lazy.Settings.__dataclass_fields__["autofocus"].type == "bool"
+        assert lazy._BOOL_CONTROLS == _BOOL_CONTROLS != set()
+    finally:
+        del sys.modules[lazy.__name__]
 
 
 @pytest.mark.parametrize("name", sorted(_BOOL_CONTROLS))
