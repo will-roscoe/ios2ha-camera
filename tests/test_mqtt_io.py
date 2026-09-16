@@ -367,6 +367,9 @@ def test_teardown_gives_up_once_when_the_broker_never_completes_the_handshake(ca
     assert io.c.published == []
     assert io.c.loop_stopped is True
     assert io.c.disconnected is True
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "no response" in warnings[0]
 
 
 def test_teardown_never_raises_when_the_connection_drops_mid_publish(caplog):

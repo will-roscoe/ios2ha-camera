@@ -241,8 +241,10 @@ def test_a_stacker_that_fails_to_attach_still_releases_the_hold():
 
 def test_the_new_raw_stream_path_serves_the_same_frame_as_the_old_one():
     """`_API_PATH["live"]` is `/api/v1/stream/live`, registered alongside `/live`
-    -- same handler, not a redirect (D1), so the same seeded frame comes back
-    from both without needing the background broadcast tick to run."""
+    -- same handler, not a redirect, because a redirect mid-MJPEG behaves
+    differently through Home Assistant's camera proxy and a Cloudflare tunnel --
+    so the same seeded frame comes back from both without needing the
+    background broadcast tick to run."""
     async def run():
         buf = RingBuffer(1_000_000)
         buf.append(Frame(b"\xff\xd8\xff\xd9", ts=1.0))
@@ -366,9 +368,9 @@ def test_the_new_stacked_stream_path_takes_an_upstream_hold():
 
 def test_old_paths_still_serve_an_unrecognised_query_string():
     """`/live`, `/live/stacked` and `/still.jpg` are the Generic Camera path's
-    permanent public interface (D1); users' existing entries may already carry
-    a cache-busting query string, so the 400-for-undeclared-parameters rule
-    (D10) must not reach these paths."""
+    permanent public interface; users' existing entries may already carry a
+    cache-busting query string, so the 400-for-undeclared-parameters rule must
+    not reach these paths."""
     async def run():
         buf = RingBuffer(1_000_000)
         buf.append(Frame(b"\xff\xd8\xff\xd9", ts=1.0))
@@ -400,7 +402,7 @@ def test_old_paths_still_serve_an_unrecognised_query_string():
 
 
 def test_new_paths_reject_an_undeclared_query_parameter_with_the_accepted_list():
-    """Spec D10: a param the descriptor does not declare is a 400 naming what
+    """A query parameter the descriptor does not declare is a 400 naming what
     is accepted, not a silently ignored knob. `MEDIA` declares no params on any
     of the three sources today, so the accepted list is empty for all of them."""
     async def run():

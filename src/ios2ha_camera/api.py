@@ -50,9 +50,11 @@ PREFIX = "/api/v1"
 INFO = PREFIX + "/info"
 
 # Every route except `info` itself, which is the one a client is told to
-# hardcode. `events` is served by a later task; it is named here because its
-# path is already decided and a client that discovers it before it exists gets a
-# 404 it can read, where a client that never learns the name cannot ask at all.
+# hardcode. `events` has no handler registered yet, but is named here anyway: a
+# client discovers every path from this map, so `events`'s path has to be fixed
+# now rather than sprung on it once the handler exists. Until then it 404s,
+# which a client can read and retry later, where a client that never learns the
+# name cannot ask at all.
 ROUTES = {
     "objects": PREFIX + "/objects",
     "state": PREFIX + "/state",
@@ -209,10 +211,9 @@ def add_api_routes(app, state, settings, on_control=lambda n, v: None):
     than the supervisor itself, which is what keeps this module independently
     testable and free of a second opinion about the state.
 
-    `settings` is not read yet. It is in the signature because the wiring task
-    passes it and because optional auth (deliberately deferred, not forgotten)
-    lands on this surface: adding it later must not change how two other modules
-    call this.
+    `settings` is not read yet. It is in the signature now because optional auth
+    (deliberately deferred, not forgotten) lands on this surface: adding it
+    later must not change how two other modules call this.
     """
     async def get_info(request):
         return web.json_response(info(), headers=_NO_STORE)

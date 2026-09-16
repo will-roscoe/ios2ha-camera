@@ -183,10 +183,10 @@ def _stream_handler(clients, source, attach=None, detach=None):
 
 def _reject_undeclared_params(handler, accepted):
     """Wrap `handler` so a query parameter its descriptor does not declare is a
-    400 naming what is accepted, rather than a silently ignored knob (spec
-    D10) -- a caller who mistypes `?width=640` on a route that cannot resize
-    should see that immediately, not get back a full-resolution stream and
-    assume it worked.
+    400 naming what is accepted, rather than a silently ignored knob -- silently
+    ignoring it looks exactly like a bug: a caller who mistypes `?width=640` on
+    a route that cannot resize should see the 400 immediately, not get back a
+    full-resolution stream and assume it worked.
 
     Only ever applied to the new `/api/v1/...` paths. The old paths
     (`/live`, `/live/stacked`, `/still.jpg`) are the Generic Camera
@@ -255,9 +255,9 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     `/api/v1/snapshot/still`) -- the same handler object, not a redirect, so a
     302 mid-MJPEG never has to survive Home Assistant's camera proxy or a
     Cloudflare tunnel. The old paths are the Generic Camera integration's
-    permanent public interface (design D1) and keep accepting any query
-    string; only the new paths enforce D10's "undeclared parameter is a 400"
-    rule, via `_reject_undeclared_params`.
+    permanent public interface and keep accepting any query string; only the
+    new paths refuse an undeclared parameter with a 400, via
+    `_reject_undeclared_params`.
     """
     app = web.Application()
     app[BUFFER] = buffer

@@ -70,8 +70,9 @@ class Entity:
     icon: str | None = None
     writable: bool = False
     # Digits Home Assistant should show, rendered as suggested_display_precision.
-    # Not in the plan's field list, but every sensor carrying one needs it or the
-    # published payload changes.
+    # Every entity carries this field, null where a sensor does not set it, so
+    # giving one sensor a precision cannot change the shape of every other
+    # descriptor.
     precision: int | None = None
     # The payload topic of a camera entity, relative to the MQTT prefix. Only the
     # cameras use it; everything else derives its topics from `object_id`.
