@@ -1,9 +1,13 @@
 """Every entity this service publishes, declared once.
 
-Both renderings read from here: `mqtt_io` builds Home Assistant discovery payloads,
-and `api` serves the same facts as JSON to the custom component. They agreed by hand
-until 2026-09-16 and would have drifted the moment the second consumer shipped -- 86
-entities maintained in two repositories with separate release cycles.
+These 86 records are the whole declaration. `mqtt_io` is one renderer over them,
+turning each into a Home Assistant discovery payload; it is not the only intended
+one, which is why the declaration is here rather than inside it. A Home Assistant
+custom component living in its own repository, on its own release cycle, needs the
+same object ids, names, units, device classes, options and ranges, and the only way
+it can have them without a second hand-kept copy to drift against is to be served
+this one. Adding a renderer is a new reader of this module; it is never a second
+place to state what an entity is.
 
 `state_key` is the key in the supervisor's published state this entity reads. Keeping
 it here is what lets a test assert that every published value has an entity and every
