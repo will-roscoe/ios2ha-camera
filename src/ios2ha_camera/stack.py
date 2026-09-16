@@ -43,13 +43,17 @@ def _accumulate_pass(frame_source, mu, sd, sigma):
     255**2 per pixel alone already exceeds that.
     """
     total = sq_total = count = None
+    # sigma and sd are both invariant for the whole pass -- sd is fixed for the
+    # call, sigma is a constant -- so this is computed once here rather than
+    # recomputed on every frame inside the loop below.
+    thresh = None if mu is None else sigma * sd
     for arr in frame_source():
         arr = arr.astype(np.float64, copy=False)
         if total is None:
             total = np.zeros(arr.shape, dtype=np.float64)
             sq_total = np.zeros(arr.shape, dtype=np.float64)
             count = np.zeros(arr.shape, dtype=np.float64)
-        keep = np.ones(arr.shape, dtype=bool) if mu is None else np.abs(arr - mu) < sigma * sd
+        keep = np.ones(arr.shape, dtype=bool) if thresh is None else np.abs(arr - mu) < thresh
         total += arr * keep
         sq_total += (arr ** 2) * keep
         count += keep
