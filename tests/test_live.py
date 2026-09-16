@@ -3,8 +3,14 @@ import time
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from ios2ha_camera.entities import MEDIA
 from ios2ha_camera.live import CLIENTS, QUEUE_SIZE, make_live_app
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
+
+# The API path for each media id, read from the registry rather than typed
+# again here -- if live.py ever derived a path that disagreed with the
+# descriptor, a test hardcoding the same string here would not catch it.
+_API_PATH = {m.id: m.path for m in MEDIA}
 
 
 def test_live_streams_latest_frame():
@@ -230,6 +236,196 @@ def test_a_stacker_that_fails_to_attach_still_releases_the_hold():
             resp = await client.get("/live/stacked")
             assert resp.status == 500
             assert up.events == ["hold", "release"]
+    asyncio.run(run())
+
+
+def test_the_new_raw_stream_path_serves_the_same_frame_as_the_old_one():
+    """`_API_PATH["live"]` is `/api/v1/stream/live`, registered alongside `/live`
+    -- same handler, not a redirect (D1), so the same seeded frame comes back
+    from both without needing the background broadcast tick to run."""
+    async def run():
+        buf = RingBuffer(1_000_000)
+        buf.append(Frame(b"\xff\xd8\xff\xd9", ts=1.0))
+        app = make_live_app(buf)
+        async with TestClient(TestServer(app)) as client:
+            old = await client.get("/live")
+            new = await client.get(_API_PATH["live"])
+            try:
+                assert old.status == new.status == 200
+                assert await old.content.read(64) == await new.content.read(64)
+            finally:
+                old.close()
+                new.close()
+    asyncio.run(run())
+
+
+def test_the_new_stacked_stream_path_serves_the_same_frame_as_the_old_one():
+    async def run():
+        buf = RingBuffer(1 << 20)
+
+        class FakeStacker:
+            def attach(self):
+                pass
+
+            def detach(self):
+                pass
+
+            def latest(self):
+                return Frame(b"\xff\xd8stacked", time.time())
+
+        app = make_live_app(buf, stacker=FakeStacker())
+        async with TestClient(TestServer(app)) as client:
+            old = await client.get("/live/stacked")
+            new = await client.get(_API_PATH["stacked"])
+            try:
+                assert old.status == new.status == 200
+                assert await old.content.read(64) == await new.content.read(64)
+            finally:
+                old.close()
+                new.close()
+    asyncio.run(run())
+
+
+def test_the_new_snapshot_path_serves_the_same_bytes_as_the_old_one():
+    buf = RingBuffer(1_000_000)
+    buf.append(Frame(b"\xff\xd8\xffraw-frame\xff\xd9", ts=1.0))
+    stacked = b"\xff\xd8\xffstacked-still\xff\xd9"
+
+    async def run():
+        app = make_live_app(buf, latest_still=lambda: stacked)
+        async with TestClient(TestServer(app)) as client:
+            old = await client.get("/still.jpg")
+            new = await client.get(_API_PATH["still"])
+            assert old.status == new.status == 200
+            assert await old.read() == await new.read() == stacked
+    asyncio.run(run())
+
+
+def test_the_new_snapshot_path_takes_no_upstream_hold():
+    """This is the behaviour `holds_phone: false` on the `still` descriptor
+    advertises. Proven the same way as `test_still_jpg_never_holds_the_connection`,
+    against the new path, so a descriptor that lied would fail a test rather
+    than only a docstring."""
+    async def run():
+        buf = RingBuffer(1 << 20)
+        buf.append(Frame(b"\xff\xd8jpeg", time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get(_API_PATH["still"])
+            assert resp.status == 200
+            assert up.events == []
+    asyncio.run(run())
+
+
+def test_the_new_raw_stream_path_takes_an_upstream_hold():
+    """The other half of the same proof: `holds_phone: true` on `live` means a
+    viewer on the new path holds the phone open exactly as one on `/live`
+    does, released once the viewer disconnects."""
+    async def run():
+        buf = RingBuffer(1 << 20)
+        buf.append(Frame(b"\xff\xd8jpeg", time.time()))
+        up = FakeUpstream()
+        async with TestClient(TestServer(make_live_app(buf, upstream=up))) as client:
+            resp = await client.get(_API_PATH["live"])
+            await resp.content.read(64)
+            resp.close()
+            await asyncio.wait_for(_wait_until(lambda: "release" in up.events), timeout=2.0)
+            assert up.events[0] == "hold"
+    asyncio.run(run())
+
+
+def test_the_new_stacked_stream_path_takes_an_upstream_hold():
+    async def run():
+        buf = RingBuffer(1 << 20)
+
+        class FakeStacker:
+            def __init__(self):
+                self.attached = 0
+
+            def attach(self):
+                self.attached += 1
+
+            def detach(self):
+                self.attached -= 1
+
+            def latest(self):
+                return Frame(b"\xff\xd8stacked", time.time())
+
+        up = FakeUpstream()
+        st = FakeStacker()
+        app = make_live_app(buf, upstream=up, stacker=st)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(_API_PATH["stacked"])
+            await resp.content.read(64)
+            resp.close()
+            await asyncio.wait_for(_wait_until(lambda: "release" in up.events), timeout=2.0)
+            assert up.events[0] == "hold"
+            assert st.attached == 0
+    asyncio.run(run())
+
+
+def test_old_paths_still_serve_an_unrecognised_query_string():
+    """`/live`, `/live/stacked` and `/still.jpg` are the Generic Camera path's
+    permanent public interface (D1); users' existing entries may already carry
+    a cache-busting query string, so the 400-for-undeclared-parameters rule
+    (D10) must not reach these paths."""
+    async def run():
+        buf = RingBuffer(1_000_000)
+        buf.append(Frame(b"\xff\xd8\xff\xd9", ts=1.0))
+
+        class FakeStacker:
+            def attach(self):
+                pass
+
+            def detach(self):
+                pass
+
+            def latest(self):
+                return Frame(b"\xff\xd8stacked", time.time())
+
+        app = make_live_app(buf, latest_still=lambda: b"\xff\xd8still\xff\xd9",
+                            stacker=FakeStacker())
+        async with TestClient(TestServer(app)) as client:
+            live_resp = await client.get("/live?cachebust=123")
+            stacked_resp = await client.get("/live/stacked?cachebust=123")
+            still_resp = await client.get("/still.jpg?cachebust=123")
+            try:
+                assert live_resp.status == 200
+                assert stacked_resp.status == 200
+                assert still_resp.status == 200
+            finally:
+                live_resp.close()
+                stacked_resp.close()
+    asyncio.run(run())
+
+
+def test_new_paths_reject_an_undeclared_query_parameter_with_the_accepted_list():
+    """Spec D10: a param the descriptor does not declare is a 400 naming what
+    is accepted, not a silently ignored knob. `MEDIA` declares no params on any
+    of the three sources today, so the accepted list is empty for all of them."""
+    async def run():
+        buf = RingBuffer(1_000_000)
+        buf.append(Frame(b"\xff\xd8\xff\xd9", ts=1.0))
+
+        class FakeStacker:
+            def attach(self):
+                pass
+
+            def detach(self):
+                pass
+
+            def latest(self):
+                return None
+
+        app = make_live_app(buf, latest_still=lambda: b"\xff\xd8still\xff\xd9",
+                            stacker=FakeStacker())
+        async with TestClient(TestServer(app)) as client:
+            for path in (_API_PATH["live"], _API_PATH["stacked"], _API_PATH["still"]):
+                resp = await client.get(path + "?width=640")
+                assert resp.status == 400, path
+                body = await resp.text()
+                assert "width" in body
+                assert "[]" in body
     asyncio.run(run())
 
 
