@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 import types
 
@@ -473,6 +474,43 @@ def test_a_dvt_failure_clears_the_mount_cache_so_the_next_call_remounts(monkeypa
     assert pm.is_running() is True
     assert len(mounts) == 2       # remounted rather than trusting the stale cache
     assert pm.dvt_failures == 0
+
+
+def test_developer_calls_never_overlap(monkeypatch):
+    """iOS serves one instruments session at a time, and opening a second while
+    the first is in flight hangs both until their timeouts -- then leaves the
+    phone's side wedged. Measured 2026-09-16: the health tick asking whether the
+    app was running raced the step that opens it, and the camera stayed dark for
+    two and a half hours with a healthy phone on the cable. Only restarting the
+    container, which drops the sessions, cleared it."""
+    pm = phone.PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    inside, overlaps = [], []
+
+    def slow():
+        inside.append(1)
+        if len(inside) > 1:
+            overlaps.append(1)
+        time.sleep(0.02)
+        inside.pop()
+        return "ok"
+
+    threads = [threading.Thread(target=lambda: pm._dvt(slow)) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert overlaps == []
+
+
+def test_a_failing_developer_call_releases_the_lock(monkeypatch):
+    """Otherwise the first timeout after a phone reboot would block every later
+    call for the life of the process, which is the failure it exists to stop."""
+    pm = phone.PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    with pytest.raises(phone.PhoneUnavailable):
+        pm._dvt(lambda: (_ for _ in ()).throw(RuntimeError("timed out")))
+    assert pm._dvt(lambda: "ok") == "ok"
 
 
 def test_a_healthy_run_mounts_once(monkeypatch):

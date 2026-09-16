@@ -31,6 +31,7 @@ needs no DDI, so it stays available even on a freshly rebooted, unmounted phone.
 """
 
 import asyncio
+import threading
 
 TIMEOUT_S = 15  # finite and short: a hung call must never stall the supervisor's health tick
 # auto_mount may need to download the DeveloperDiskImage over the network the first time it
@@ -64,6 +65,15 @@ class PhoneManager:
         self.bundle_id = bundle_id
         # Filled from the phone's own app list on first use; see executable_name.
         self._executable = None
+        # iOS serves one instruments session at a time. Two threads each opening
+        # their own -- the health tick asking whether the app is running, and the
+        # step that opens it doing the same -- leave both hanging until their
+        # timeouts, and the phone's side stays wedged afterwards: measured on
+        # 2026-09-16, the camera was dark for two and a half hours with a healthy
+        # phone on the end of the cable, and only restarting the container (which
+        # drops the sessions) cleared it. Reentrant because one call may be built
+        # from another, as is_running is from the app list lookup.
+        self._dvt_lock = threading.RLock()
         self._ddi_mounted = False
         # Consecutive failures of calls that need the developer services. One of
         # these wedged every such call for 24 hours on 2026-09-14 while the
@@ -121,15 +131,16 @@ class PhoneManager:
         the battery died. Whether the phone or the process was wedged is still
         unknown, so this assumes neither -- it simply stops trusting the cache.
         """
-        self._call(self._mount_ddi)
-        try:
-            result = self._call(fn)
-        except Exception:
-            self._ddi_mounted = False
-            self.dvt_failures += 1
-            raise
-        self.dvt_failures = 0
-        return result
+        with self._dvt_lock:
+            self._call(self._mount_ddi)
+            try:
+                result = self._call(fn)
+            except Exception:
+                self._ddi_mounted = False
+                self.dvt_failures += 1
+                raise
+            self.dvt_failures = 0
+            return result
 
     def _mount_ddi(self):
         """Mount the DeveloperDiskImage needed by is_running/launch/screenshot. A no-op once

@@ -32,6 +32,16 @@ would have woken by itself, and a cable that cannot answer means *unknown*, not 
 starts an hour and 12 a day, ten minutes apart, and a success does not refund that budget — an app
 that dies the moment it opens must not be relaunched all night.
 
+*Fixed: two threads could open a developer session at the same time, and wedge the phone.* iOS
+serves one instruments session at a time. The health tick asking whether the app is running, and
+the step that opens the app asking the same thing, each opened their own — and when they overlapped
+both hung until their timeouts and the phone's side stayed wedged, so every later call failed too.
+Only restarting the container, which drops the sessions, recovered it. This is what actually kept
+the camera dark for two and a half hours on the night of 2026-09-16, with a healthy phone on the
+end of a healthy cable: lockdown answered in milliseconds throughout, and an instruments call made
+with the container stopped returned 344 processes in one second. Developer-channel calls are now
+serialised inside `PhoneManager`, so they queue rather than collide.
+
 *The app is asked for on the health cadence, not only when something changes.* A phone that has just
 restarted cannot answer over the cable for a minute or two while its developer image remounts, so
 the attempt triggered by the state change can only report that it cannot tell — and a stream state
