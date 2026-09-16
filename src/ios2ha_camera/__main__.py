@@ -198,16 +198,17 @@ def main():
         log.info("shutting down")
         stop.set()
         sup.capture_requested.set()   # wake the capture loop out of its wait
-        # Compose allows 20 s from SIGTERM. The event loop's shutdown above has
+        # Compose allows 30 s from SIGTERM. The event loop's shutdown above has
         # already spent up to 4 s of it, not 2: aiohttp waits shutdown_timeout
         # once for handlers to finish and again after cancelling them, and a
         # /live viewer waiting for a frame sits out both (measured 4.0 s). Open
         # event streams add nothing to that: the application's own shutdown hook
         # ends them before the first of those waits begins. Then 5 s for
         # up.stop(), 3 s for keyboard.stop(), two 3 s thread joins and up to 2 s
-        # for mqtt.close() -- 20 s in all, which is the whole grace period with
-        # nothing to spare. Every one of those is a worst case that has not been
-        # seen together; measured shutdowns take 1-5 s. An upstream thread still
+        # for mqtt.close() -- 20 s in all, 10 s inside the grace period. Keep
+        # that sum under the compose value if a timeout here grows. Every one
+        # of those is a worst case that has not been seen together; measured
+        # shutdowns take 1-5 s. An upstream thread still
         # alive after its 5 s is stuck
         # in a probe, which stop() deliberately leaves alone rather than
         # touching the ingestor from a second thread. One term is outside that
