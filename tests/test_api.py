@@ -166,3 +166,153 @@ def _objects_version_in_a_new_process(seed):
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          env=env, check=True)
     return out.stdout.strip()
+
+
+# -- the control verb ---------------------------------------------------------
+
+
+def _posts(app, *calls):
+    """Several POSTs against one application, in one loop.
+
+    An aiohttp Application binds to the first event loop it is served on, so a
+    test that wants to watch several writes land on the same recorder has to
+    make them together rather than one `asyncio.run` at a time.
+    """
+    async def run():
+        out = []
+        async with TestClient(TestServer(app)) as client:
+            for path, kw in calls:
+                resp = await client.post(path, **kw)
+                out.append((resp.status, await resp.json()))
+        return out
+    return asyncio.run(run())
+
+
+def _post(app, path, **kw):
+    return _posts(app, (path, kw))[0]
+
+
+def _recording_api(state=dict):
+    """An API whose dispatches are recorded rather than performed, standing in for
+    `Supervisor.handle_control` -- which returns nothing and never raises, so the
+    only way to assert a write was accepted is to watch what it was handed."""
+    seen = []
+    return make_api(state, Settings(), on_control=lambda n, v: seen.append((n, v))), seen
+
+
+def test_a_control_reaches_handle_control_unchanged():
+    app, seen = _recording_api()
+    status, body = _post(app, "/api/v1/control/interval_s", json={"value": 120})
+    assert status == 200
+    assert seen == [("interval_s", 120)]
+    assert body["ok"] is True
+
+
+def test_every_writable_entity_is_reachable_through_the_one_verb():
+    """One verb over the whole declared vocabulary: 26 controls and 5 buttons. A
+    name that is declared writable but cannot be written is an entity Home
+    Assistant offers and this service ignores."""
+    _, doc = _get(_api(), "/api/v1/objects")
+    writable = [o for o in doc["objects"] if o["writable"]]
+    assert len(writable) == 31
+
+    for o in writable:
+        app, seen = _recording_api()
+        status, _ = _post(app, "/api/v1/control/" + o["object_id"],
+                          json={"value": _a_valid_value(o)})
+        assert status == 200, (o["object_id"], status)
+        assert seen == [(o["object_id"], None if o["domain"] == "button"
+                         else _a_valid_value(o))]
+
+
+def test_an_unknown_control_is_refused_with_the_accepted_list():
+    """A silently ignored control looks exactly like a bug in the caller."""
+    app, seen = _recording_api()
+    status, body = _post(app, "/api/v1/control/intervals", json={"value": 120})
+    assert status == 404
+    assert seen == []
+    assert "interval_s" in body["accepted"]
+    assert "capture_now" in body["accepted"]
+    assert "battery" not in body["accepted"]
+
+
+def test_a_read_only_entity_is_refused_rather_than_accepted_and_dropped():
+    """`battery` is a real object id, which is exactly why writing to it has to
+    fail loudly rather than look like it worked."""
+    app, seen = _recording_api()
+    status, body = _post(app, "/api/v1/control/battery", json={"value": 50})
+    assert status == 404
+    assert seen == []
+    assert "battery" in body["error"]
+
+
+def test_a_rejected_value_echoes_the_real_current_value():
+    """Matches `_apply_setting`: Home Assistant must not keep showing a value that
+    did not take effect."""
+    app, seen = _recording_api(lambda: {"white_balance": "grey-world"})
+    status, body = _post(app, "/api/v1/control/white_balance", json={"value": "purple"})
+    assert status == 400
+    assert seen == []
+    assert body["current"] == "grey-world"
+    assert "as-shot" in body["error"]
+
+
+def test_a_number_outside_its_declared_range_is_refused():
+    app, seen = _recording_api(lambda: {"interval_s": 600})
+    bad = (5, 100000, "120", True, None)
+    answers = _posts(app, *(("/api/v1/control/interval_s", {"json": {"value": v}})
+                            for v in bad))
+    for value, (status, body) in zip(bad, answers, strict=True):
+        assert status == 400, value
+        assert body["current"] == 600
+    assert seen == []
+
+    # The ends of the declared range are inside it.
+    app, seen = _recording_api()
+    ok = _posts(app, *(("/api/v1/control/interval_s", {"json": {"value": v}})
+                       for v in (30, 3600)))
+    assert [status for status, _ in ok] == [200, 200]
+    assert seen == [("interval_s", 30), ("interval_s", 3600)]
+
+
+def test_a_button_press_needs_no_body():
+    """Home Assistant's own button sends a payload nobody reads; an absent body
+    and a null value both mean the same press."""
+    for kw in ({}, {"json": {"value": None}}, {"json": {"value": "PRESS"}}):
+        app, seen = _recording_api()
+        status, _ = _post(app, "/api/v1/control/capture_now", **kw)
+        assert status == 200
+        assert seen == [("capture_now", None)]
+
+
+def test_a_switch_value_is_left_to_the_settings_layer():
+    """The boolean spellings a switch accepts are declared in settings.py, and
+    `handle_control` coerces them there. Repeating that table here would be the
+    second control vocabulary this route exists to avoid, so the value goes
+    through as sent and the settings layer decides."""
+    app, seen = _recording_api()
+    answers = _posts(app, *(("/api/v1/control/autofocus", {"json": {"value": v}})
+                            for v in (True, False, "off", "ON")))
+    assert [status for status, _ in answers] == [200, 200, 200, 200]
+    assert seen == [("autofocus", True), ("autofocus", False),
+                    ("autofocus", "off"), ("autofocus", "ON")]
+
+
+def test_a_value_control_with_no_value_is_refused():
+    app, seen = _recording_api()
+    bodies = ({}, {"data": "not json"}, {"json": [1, 2]}, {"json": {"v": 1}})
+    answers = _posts(app, *(("/api/v1/control/interval_s", kw) for kw in bodies))
+    assert [status for status, _ in answers] == [400, 400, 400, 400]
+    assert seen == []
+
+
+def _a_valid_value(o):
+    """A value the descriptor itself says is acceptable, so this test learns the
+    vocabulary from the same document a component would."""
+    if o["domain"] == "button":
+        return None
+    if o["options"]:
+        return o["options"][0]
+    if o["lo"] is not None:
+        return o["lo"]
+    return True

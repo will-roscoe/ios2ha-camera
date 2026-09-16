@@ -17,9 +17,10 @@ Three properties follow from that, and each is pinned by a test:
   A client that must test for a key before reading it grows a different code
   path per domain, and the domain it has not met yet is the one it gets wrong.
 - **The state is a callable, not the supervisor.** `api` never imports
-  `Supervisor`: it is handed `state()`. That is what keeps this module testable
-  against a plain dict, and what stops it growing a second opinion about what
-  the state is.
+  `Supervisor`: it is handed `state()` and `on_control()`. That is what keeps
+  this module testable against a plain dict, and what stops it growing a second
+  opinion about what the state is or a second control vocabulary to keep in step
+  with the first.
 
 Routes are registered at absolute paths on an application the caller owns,
 rather than as a sub-application mounted under a prefix. The media routes
@@ -66,6 +67,12 @@ ROUTES = {
 # Cloudflare tunnel, which is free to apply its own heuristics to a response
 # that does not say. Same reasoning as the still route in live.py.
 _NO_STORE = {"Cache-Control": "no-store"}
+
+# The entire control vocabulary: the numbers, selects and switches that carry a
+# value, and the buttons that carry only a press. Keyed by object id, which is
+# unambiguous here even though it is not across the whole registry -- `screenshot`
+# is both a camera and a button, and only the button is writable.
+_WRITABLE = {e.object_id: e for e in ENTITIES if e.writable}
 
 
 def _object(e):
@@ -135,12 +142,72 @@ def info():
             "routes": dict(ROUTES)}
 
 
-def add_api_routes(app, state, settings):
+async def _posted_value(request):
+    """The `value` from the request body, or None when there is no body.
+
+    A button press legitimately carries nothing, so an empty body is not an
+    error here; it is the value controls that go on to refuse a missing value.
+    Anything that is neither empty nor a JSON object with a `value` key raises,
+    because guessing what was meant is how a typo becomes a silent no-op.
+    """
+    raw = (await request.text()).strip()
+    if not raw:
+        return None
+    try:
+        body = json.loads(raw)
+    except ValueError as err:
+        raise ValueError(f"body is not JSON: {err}") from err
+    if not isinstance(body, dict) or "value" not in body:
+        raise ValueError('body must be a JSON object with a "value" key')
+    return body["value"]
+
+
+def _unacceptable(e, value):
+    """Why the registry refuses this value, or None if it does not.
+
+    Only what the registry itself declares: a select's options and a number's
+    range. Type coercion is `Settings.apply_control`'s business -- the boolean
+    spellings a switch accepts are stated there, and a copy of that table here
+    would be the second vocabulary this route exists to avoid. So a switch is
+    validated by nothing and passed through as sent.
+
+    Rejecting here rather than downstream is what makes a bad write visible:
+    `Supervisor.handle_control` is called from paho's network thread, swallows
+    everything by design, and so can never tell a caller that it refused.
+    """
+    if value is None:
+        return f'{e.object_id} needs a value: POST {{"value": ...}}'
+    if e.options is not None:
+        if value not in e.options:
+            return f"{e.object_id} must be one of {list(e.options)}, not {value!r}"
+    elif e.lo is not None:
+        # bool is an int in Python, and True would land inside most of these
+        # ranges. A switch's value arriving on a number is a caller bug.
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return f"{e.object_id} must be a number between {e.lo} and {e.hi}, not {value!r}"
+        if not e.lo <= value <= e.hi:
+            return f"{e.object_id} must be between {e.lo} and {e.hi}, not {value!r}"
+    return None
+
+
+def _refused(status, error, **extra):
+    """A refusal a person can act on: why, and enough to fix the call.
+
+    `ok` is the one key every control response carries, so a client can branch on
+    it without first knowing which failures are possible.
+    """
+    return web.json_response({"ok": False, "error": error, **extra},
+                             status=status, headers=_NO_STORE)
+
+
+def add_api_routes(app, state, settings, on_control=lambda n, v: None):
     """Register the API on an application the caller owns.
 
     `state` is called per request and returns the current values keyed by object
-    id. A callable rather than the supervisor itself, which is what keeps this
-    module independently testable and free of a second opinion about the state.
+    id; `on_control` is handed an accepted write, and is
+    `Supervisor.handle_control` in the live service. Both are callables rather
+    than the supervisor itself, which is what keeps this module independently
+    testable and free of a second opinion about the state.
 
     `settings` is not read yet. It is in the signature because the wiring task
     passes it and because optional auth (deliberately deferred, not forgotten)
@@ -164,15 +231,56 @@ def add_api_routes(app, state, settings):
     async def get_state(request):
         return web.json_response(state(), headers=_NO_STORE)
 
+    async def post_control(request):
+        """One verb over the whole vocabulary: every switch, number, select and
+        button, mapping straight onto the existing control path.
+
+        200 means accepted and dispatched, not applied: `handle_control` is
+        fire-and-forget by necessity, so a caller that wants confirmation reads
+        `/state` (or, later, the event stream) rather than this response.
+        """
+        name = request.match_info["name"]
+        e = _WRITABLE.get(name)
+        if e is None:
+            # Named separately because they are different mistakes: a typo, and
+            # a real entity that was never meant to be written.
+            declared = any(x.object_id == name for x in ENTITIES)
+            return _refused(404, f"{name} is read-only" if declared
+                           else f"there is no control named {name}",
+                           name=name, accepted=sorted(_WRITABLE))
+        try:
+            value = await _posted_value(request)
+        except ValueError as err:
+            return _refused(400, str(err), name=name)
+        if e.domain == "button":
+            # A press carries no value. Home Assistant's own button sends
+            # "PRESS" and a script may send anything; none of it means a thing
+            # to a press, so it is dropped here rather than passed on as if the
+            # supervisor might read it.
+            value = None
+        else:
+            problem = _unacceptable(e, value)
+            if problem:
+                log.warning("refused control %s: %s", name, problem)
+                # The real current value, so a client that optimistically
+                # displayed the rejected one can put it straight back. Exactly
+                # what _apply_setting republishes over MQTT for the same case.
+                return _refused(400, problem, name=name,
+                               current=state().get(e.state_key))
+        on_control(name, value)
+        return web.json_response({"ok": True, "name": name, "value": value},
+                                 headers=_NO_STORE)
+
     app.router.add_get(INFO, get_info)
     app.router.add_get(ROUTES["objects"], get_objects)
     app.router.add_get(ROUTES["media"], get_media)
     app.router.add_get(ROUTES["state"], get_state)
+    app.router.add_post(ROUTES["control"], post_control)
     return app
 
 
-def make_api(state, settings):
+def make_api(state, settings, on_control=lambda n, v: None):
     """A standalone application serving the API, for tests and for a deployment
     that wants it on its own port. The live service calls `add_api_routes` on the
     application already serving the media routes instead."""
-    return add_api_routes(web.Application(), state, settings)
+    return add_api_routes(web.Application(), state, settings, on_control=on_control)
