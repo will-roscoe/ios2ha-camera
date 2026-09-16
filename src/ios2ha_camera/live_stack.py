@@ -126,20 +126,36 @@ class LiveStacker:
     def step(self, frame, now=None):
         now = time.time() if now is None else now
         arr = _decode_scaled(frame.data)
-        if (self._acc is None or self._acc.shape != arr.shape
-                or self._last_frame_ts is None or frame.ts - self._last_frame_ts > GAP_RESET_S):
-            self._acc = np.zeros_like(arr)
-            self._t = 0
-            self._params = None
-        self._last_frame_ts = frame.ts
-        self._t += 1
-        a = max(1.0 / self._t, 1.0 / max(self._depth, 1))
-        self._acc += (arr - self._acc) * np.float32(a)
-        img = self.accumulated()
-        if self._params is None or now - self._params_at >= REFRESH_S:
-            self.refresh_params(fps=max(self.fps(), 1.0), img=img)
-            self._params_at = now
-        jpeg = render.to_jpeg(self.tone(img), quality=JPEG_QUALITY)
+        # _run_after starts a new generation's loop on only a bounded join of the
+        # predecessor (see its docstring), so two threads can be inside step() on
+        # the same instance at once. Everything that reads or writes self._acc/
+        # _t/_last_frame_ts/_params/_params_at has to happen as one unit -- a
+        # reset landing between another thread's shape check and its accumulate
+        # produced a numpy broadcast error, and a reset's `_params = None`
+        # landing between the refresh check and tone()'s read of self._params
+        # produced an unpack-of-None crash, both observed under a low GIL switch
+        # interval (sweep-correctness.md finding 2). tone()/to_jpeg() -- the
+        # ~60ms/frame budget this file exists to hit -- work from the snapshot
+        # taken at the end of the lock instead, so the lock itself only ever
+        # holds for the cheap part: the accumulate and the (twice-a-second)
+        # parameter refresh.
+        with self._lock:
+            if (self._acc is None or self._acc.shape != arr.shape
+                    or self._last_frame_ts is None
+                    or frame.ts - self._last_frame_ts > GAP_RESET_S):
+                self._acc = np.zeros_like(arr)
+                self._t = 0
+                self._params = None
+            self._last_frame_ts = frame.ts
+            self._t += 1
+            a = max(1.0 / self._t, 1.0 / max(self._depth, 1))
+            self._acc += (arr - self._acc) * np.float32(a)
+            img = self._acc.copy()
+            if self._params is None or now - self._params_at >= REFRESH_S:
+                self.refresh_params(fps=max(self.fps(), 1.0), img=img)
+                self._params_at = now
+            params = self._params
+        jpeg = render.to_jpeg(self.tone(img, params), quality=JPEG_QUALITY)
         self._out_times.append(now)
         # Pruned here, not just inside fps(): the bound on _out_times' size must
         # not depend on fps() being called at some other cadence.
@@ -178,7 +194,7 @@ class LiveStacker:
             subject, self.s, fps, None,
             hard_cap=max(1, int(self.s.live_max_window_s * fps)))
 
-    def tone(self, img):
+    def tone(self, img, params=None):
         """`render._tone_natural`'s arithmetic in float32, with no chroma blur
         and no NLM: the moving average is the denoiser. Blended with `img`
         itself -- the accumulated mean as shot -- by the weight `refresh_params`
@@ -190,8 +206,13 @@ class LiveStacker:
         weight 0 (daylight, the common case) it must never run at all, not
         just have its result thrown away in the lerp; and at weight 1 the
         lerp itself is skipped rather than computed as a 1x/0x no-op.
+
+        `params` defaults to the live self._params for direct/test callers, but
+        step() passes the snapshot it took under the lock: reading self._params
+        fresh here would race a concurrent generation's reset, which sets it to
+        None, against this call's unpack of it.
         """
-        bl, gains, lavg, lw, w = self._params
+        bl, gains, lavg, lw, w = self._params if params is None else params
         if w <= 1e-6:
             return np.clip(img, 0, 255).astype(np.uint8)
         x = img - bl
