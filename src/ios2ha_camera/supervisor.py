@@ -30,7 +30,7 @@ import numpy as np
 from . import measure, render, stack
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
-from .settings import BLACK_LEVEL_CHANNELS, CONTROLS
+from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, _coerce_bool
 from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
@@ -409,7 +409,20 @@ class Supervisor:
                 # the rate limit, though never the guards around the keys.
                 self._submit(name, lambda: self.starter.attempt(True))
             elif name == "autofocus":
-                self._submit(name, lambda: self._autofocus(bool(value)))
+                try:
+                    # The same coercion the other four boolean controls get via
+                    # Settings.apply_control -- a bare bool(value) here turned
+                    # any non-empty, non-JSON string (e.g. "off") into True,
+                    # exactly backwards. Validated before _submit, not inside
+                    # _autofocus, so a rejected value never reaches the device
+                    # executor: no ONVIF round trip, no time on the single
+                    # device worker.
+                    on = _coerce_bool(value)
+                except ValueError as e:
+                    log.warning("rejected control %s: %s", name, e)
+                    self.publish_state({name: getattr(self.s, name, None)})
+                    return
+                self._submit(name, lambda: self._autofocus(on))
             else:
                 self._apply_setting(name, value)
         except Exception:

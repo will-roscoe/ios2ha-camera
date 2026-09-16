@@ -376,6 +376,37 @@ def test_autofocus_success_applies_and_publishes():
     assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
 
 
+def test_autofocus_coerces_a_conventional_string_spelling_like_the_other_controls():
+    """handle_control used to coerce the raw payload with a bare bool(value)
+    before ever reaching Settings.apply_control's boolean validation, so a
+    non-JSON "off" (bool("off") is True) silently turned autofocus ON --
+    exactly backwards. It must go through the same _coerce_bool the other
+    four boolean controls use."""
+    s = Settings()
+    s.autofocus = True
+    onvif = FakeOnvif(result=True)
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("autofocus", "off")
+    assert onvif.calls == ["MANUAL"]
+    assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
+
+
+def test_autofocus_rejects_unparseable_junk_before_touching_the_device_executor():
+    """The rejection must happen before anything is submitted to the device
+    executor: a bad value must not cost an ONVIF round trip or occupy the
+    single device worker, and the stored setting must be untouched -- the
+    same contract the other four boolean controls get via _apply_setting's
+    rejected-control path."""
+    s = Settings()
+    s.autofocus = False
+    onvif = FakeOnvif(result=True)
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("autofocus", "banana")
+    assert onvif.calls == [], "a rejected value must never reach the device executor"
+    assert s.autofocus is False, "a rejected write must not change the setting"
+    assert sup.mqtt.published["autofocus"] is False, "Home Assistant must be corrected back"
+
+
 def test_screenshot_publishes_a_png():
     sup = _sup(phone=FakePhone())
     sup.handle_control("screenshot", "PRESS")
