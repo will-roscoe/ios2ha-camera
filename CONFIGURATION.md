@@ -5,7 +5,22 @@ below that is writable live from Home Assistant and takes effect on the next cap
 
 ## Environment
 
-Read by `Settings.from_env`, and coerced to the type of each field's default.
+Read by `Settings.from_env`, apart from a handful of process-level settings
+(`LOG_LEVEL`, `BUFFER_BYTES`, `PHONE_BUNDLE_ID`) that the entry point reads directly.
+Every value is coerced to the type of the field's default.
+
+The table is split by what has to be switched on for a variable to matter.
+**Core** variables matter regardless: the ios2ha-camera supervisor needs them to
+start, capture, stack, archive and serve all six media paths — `/live`,
+`/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`,
+`/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — with both other
+interfaces switched off. Those six are never gated by either flag: they are the
+camera. **MQTT** variables matter only while `EXPOSE_MQTT` is true. **API**
+variables matter only while `EXPOSE_API` is true, and cover the JSON routes
+under `/api/v1/` only — not the media paths above, which share the prefix but
+not the flag.
+
+### Core
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -13,14 +28,45 @@ Read by `Settings.from_env`, and coerced to the type of each field's default.
 | `PHONE_PORT` | `8080` | |
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
+| `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
+| `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
+| `LOG_LEVEL` | `INFO` | |
+| `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Turning it **off** also *removes* the entities it created: at startup the supervisor makes one bounded attempt to reach the broker and clears every retained discovery topic and the retained availability message, which deletes the MQTT entities from Home Assistant and frees their entity ids. With no broker reachable this is one warning in the log and nothing else. Switching it back on recreates them. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
+| `EXPOSE_API` | `true` | Turns the JSON API on or off. Same accepted spellings and the same fail-safe on an unrecognised value |
+
+With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving
+keep running, and all six media paths keep serving, unauthenticated, exactly as
+before: turning `EXPOSE_API` off removes only the JSON routes named above, not
+anything under `/api/v1/stream/...` or `/api/v1/snapshot/...`. Only discovery,
+state publishing and those JSON routes stop. A startup warning names what is
+off and what still works.
+
+### MQTT
+
+Matters only while `EXPOSE_MQTT` is true (the default). With it false, none of
+these need to be set.
+
+| Variable | Default | Notes |
+|---|---|---|
 | `MQTT_URL` | unset | The broker, as one or more space-separated URLs tried in order when a connection fails. The scheme sets transport, TLS and default port together: `mqtt://` (1883), `mqtts://` (8883, TLS), `ws://` (80, websockets), `wss://` (443, websockets over TLS). A websocket path comes from the URL, `/mqtt` if none. Every entry must use the same scheme, because the transport is fixed when the client starts. Credentials go in `MQTT_USER` / `MQTT_PASSWORD`, never in the URL: a URL containing them is refused at startup so it cannot end up in a log. Example: `mqtts://broker.lan mqtts://broker-2.lan` |
 | `MQTT_HOST` / `MQTT_PORT` | `192.168.1.5` / `1883` | **Deprecated**, the older way to say `mqtt://host:port`. Still used when `MQTT_URL` is unset; when both are set, `MQTT_URL` wins and a warning names what was ignored |
 | `MQTT_USER` / `MQTT_PASSWORD` | — | A broker-local login, such as the Mosquitto add-on's `logins` option. No Home Assistant account is needed; see OPERATIONS.md |
 | `MQTT_PREFIX` | `ios2ha_camera` | Root of every topic |
-| `ARCHIVE_DIR` | `/data/archive` | Inside the container |
-| `LIVE_PORT` | `8099` | `/live` and `/still.jpg` |
-| `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
-| `LOG_LEVEL` | `INFO` | |
+
+### API
+
+Matters only while `EXPOSE_API` is true (the default), and only for the JSON
+routes: `/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`
+(the descriptor list) and `/events` (the Server-Sent Events stream). The media paths under `/api/v1/stream/...` and
+`/api/v1/snapshot/...` are not part of this — they are in the Core table above,
+served unconditionally alongside `/live`, `/live/stacked` and `/still.jpg` —
+so turning this flag off does not close them. The API has no configuration of
+its own beyond the flag in the core table above: it is served on `LIVE_PORT`,
+by the same process, with no separate port or path prefix to set. See
+[docs/home-assistant/integration.md](docs/home-assistant/integration.md) for
+what it serves, and [docs/guarantees.rst](docs/guarantees.rst) for what is
+promised about it.
 
 Secrets belong in the deployment `.env`, never in the repository.
 
@@ -162,6 +208,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `binary_sensor.ios2ha_camera_keyboard_connected` | | A phone is attached to the Bluetooth keyboard the supervisor emulates. Without it, Start streaming cannot be pressed; the usual cause is Bluetooth switched off on the phone |
 | `switch.ios2ha_camera_auto_start` | | Whether the supervisor may press Start streaming itself when the app is open but idle. Off leaves a stream you stopped on the phone stopped. The button below ignores it |
 | `button.ios2ha_camera_start_streaming` | | Press Start streaming now, ignoring the switch and the attempt budget. Still refuses unless the app is open and answering 503 |
+| `sensor.ios2ha_camera_app_open` | | How the last attempt to make the app present went: `idle`, `opening`, `opened` (it was not running and was cold started), `fronted` (it was running but answering nothing, so it was brought to the front — what a phone looks like after a restart), `not_needed`, `paused`, `rate_limited`, `failed_launch`, `unavailable` (the cable could not say whether it was running, which is not the same as "no"). See OPERATIONS.md |
 | `sensor.ios2ha_camera_stream_start` | | How the last attempt went: `idle`, `starting`, `started`, `not_ready`, `already_streaming`, `paused`, `rate_limited`, `failed_keyboard_not_connected`, `failed_keys_had_no_effect`. See OPERATIONS.md |
 | `sensor.ios2ha_camera_stream_start_attempts` | | Attempts in the last hour, against a budget of six an hour and twenty a day |
 | `sensor.ios2ha_camera_dvt_failures` | | Consecutive failures of calls needing the phone's developer services. Zero normally; a number that stays up means app control is wedged, which once stopped backgrounding for 24 hours unnoticed |

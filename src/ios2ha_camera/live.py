@@ -36,6 +36,13 @@ from contextlib import nullcontext
 
 from aiohttp import web
 
+from .entities import MEDIA
+
+# Keyed by the same `id`s `make_live_app` builds handlers for ("live",
+# "stacked", "still"), so a new API path always comes from the descriptor
+# that advertises it rather than being typed a second time here.
+_MEDIA_BY_ID = {m.id: m for m in MEDIA}
+
 # Typed keys rather than plain strings: aiohttp warns on str keys, and an
 # unattended service wants a log with nothing routine in it.
 BUFFER = web.AppKey("buffer", object)
@@ -174,6 +181,35 @@ def _stream_handler(clients, source, attach=None, detach=None):
     return handler
 
 
+def _reject_undeclared_params(handler, accepted):
+    """Wrap `handler` so a query parameter its descriptor does not declare is a
+    400 naming what is accepted, rather than a silently ignored knob -- silently
+    ignoring it looks exactly like a bug: a caller who mistypes `?width=640` on
+    a route that cannot resize should see the 400 immediately, not get back a
+    full-resolution stream and assume it worked.
+
+    Only ever applied to the new `/api/v1/...` paths. The old paths
+    (`/live`, `/live/stacked`, `/still.jpg`) are the Generic Camera
+    integration's permanent public interface, and a user's existing entry may
+    already carry a cache-busting query string that must keep working, so the
+    old paths register `handler` directly, unwrapped.
+    """
+    async def wrapped(request):
+        extra = sorted(set(request.query.keys()) - accepted)
+        if extra:
+            # The envelope every other /api/v1 refusal uses, so a client needs
+            # one error parser -- and this is the route most likely to be sent
+            # a stray query string.
+            return web.json_response(
+                {"ok": False,
+                 "error": f"unexpected query parameter(s): {extra}; "
+                          f"accepted: {sorted(accepted)}",
+                 "accepted": sorted(accepted)},
+                status=400, headers={"Cache-Control": "no-store"})
+        return await handler(request)
+    return wrapped
+
+
 async def _still(request):
     """The latest stacked still, as one JPEG.
 
@@ -220,6 +256,15 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     process. `stacker`, if given, additionally serves /live/stacked from its
     noise-reduced feed and has its background thread attached/detached to the
     lifetime of that route's viewers.
+
+    Each of these three routes is also registered under its `entities.MEDIA`
+    path (`/api/v1/stream/live`, `/api/v1/stream/stacked`,
+    `/api/v1/snapshot/still`) -- the same handler object, not a redirect, so a
+    302 mid-MJPEG never has to survive Home Assistant's camera proxy or a
+    Cloudflare tunnel. The old paths are the Generic Camera integration's
+    permanent public interface and keep accepting any query string; only the
+    new paths refuse an undeclared parameter with a 400, via
+    `_reject_undeclared_params`.
     """
     app = web.Application()
     app[BUFFER] = buffer
@@ -231,15 +276,24 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     raw_clients = set()
     app[CLIENTS] = raw_clients
     app[SOURCES].append((buffer.latest, raw_clients))
-    app.router.add_get("/live", _stream_handler(raw_clients, buffer.latest))
+    raw_handler = _stream_handler(raw_clients, buffer.latest)
+    app.router.add_get("/live", raw_handler)
+    app.router.add_get(_MEDIA_BY_ID["live"].path,
+                       _reject_undeclared_params(raw_handler, set(_MEDIA_BY_ID["live"].params)))
 
     if stacker is not None:
         stacked_clients = set()
         app[SOURCES].append((stacker.latest, stacked_clients))
-        app.router.add_get("/live/stacked", _stream_handler(
-            stacked_clients, stacker.latest, attach=stacker.attach, detach=stacker.detach))
+        stacked_handler = _stream_handler(
+            stacked_clients, stacker.latest, attach=stacker.attach, detach=stacker.detach)
+        app.router.add_get("/live/stacked", stacked_handler)
+        app.router.add_get(
+            _MEDIA_BY_ID["stacked"].path,
+            _reject_undeclared_params(stacked_handler, set(_MEDIA_BY_ID["stacked"].params)))
 
     app.router.add_get("/still.jpg", _still)
+    app.router.add_get(_MEDIA_BY_ID["still"].path,
+                       _reject_undeclared_params(_still, set(_MEDIA_BY_ID["still"].params)))
     app.on_startup.append(_start_broadcast)
     app.on_cleanup.append(_stop_broadcast)
     return app

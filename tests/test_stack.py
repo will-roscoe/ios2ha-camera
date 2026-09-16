@@ -82,6 +82,45 @@ def test_sigma_clipped_mean_is_not_median():
     assert abs(result.mean() - 10.0) < 2.0
 
 
+def test_accumulate_pass_hoists_sigma_times_sd_out_of_the_frame_loop():
+    """sigma and sd are both invariant for the whole pass -- sd is a parameter
+    fixed for the call, sigma is a constant -- yet `sigma * sd` (a full (H,W,3)
+    float64 array multiply, ~9.8ms measured on a full-size frame) was
+    recomputed on every frame instead of once before the loop
+    (sweep-performance.md finding 2). Output must be unchanged."""
+
+    class _CountingMultiply:
+        """Stands in for sd so `sigma * sd` can be counted without changing the
+        maths: __rmul__ is exactly what `sigma * sd` invokes for a float sigma
+        and a non-float right-hand side."""
+
+        def __init__(self, arr):
+            self._arr = arr
+            self.calls = 0
+
+        def __rmul__(self, other):
+            self.calls += 1
+            return other * self._arr
+
+    rng = np.random.default_rng(0)
+    frames = [rng.normal(10, 2, (3, 3, 1)) for _ in range(4)]
+    mu = np.full((3, 3, 1), 10.0)
+    sd_arr = np.full((3, 3, 1), 2.0)
+
+    # A plain-ndarray run, as a reference for "output must be unchanged".
+    ref_mu, ref_sd = stack._accumulate_pass(lambda: iter(frames), mu, sd_arr, 2.5)
+
+    counting_sd = _CountingMultiply(sd_arr)
+    new_mu, new_sd = stack._accumulate_pass(lambda: iter(frames), mu, counting_sd, 2.5)
+
+    assert counting_sd.calls == 1, (
+        f"sigma * sd was computed {counting_sd.calls} times for {len(frames)} "
+        "frames -- it is a loop invariant and must be hoisted once per pass"
+    )
+    assert np.array_equal(new_mu, ref_mu)
+    assert np.array_equal(new_sd, ref_sd)
+
+
 def test_stack_frames_matches_in_memory_sigma_clipped_mean():
     # stack_frames decodes on a bounded thread pool instead of building an
     # arrays list up front, but it must reach the same shared accumulator

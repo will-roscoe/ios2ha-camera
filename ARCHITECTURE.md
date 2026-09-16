@@ -108,9 +108,13 @@ buffered rather than waiting for a fresh session. The hold is released — and t
 close — before stacking and rendering run, which is 10–20 s of CPU the phone no longer has to stay
 connected for.
 
-**Getting the phone back, in two parts.** Bringing the phone back — cable, app running, app in front
-— is done over the USB cable by the flows that already exist (`Upstream` sessions,
-`Backgrounding.foreground`, the relaunch button, the cable self-heal). *Starting the stream* is a
+**Getting the phone back, in three parts.** Bringing the phone back — cable, app running, app in
+front — is done over the USB cable by the flows that already exist (`Upstream` sessions,
+`Backgrounding.foreground`, the relaunch button, the cable self-heal). *Making the app present* when
+none of those has, which is what a restarted phone needs, is `app_open.AppOpener`: it cold starts the
+app when the phone says it is not running, and brings it to the front when it is running but
+answering nothing, never acting on a cable that cannot answer and never while the battery policy has
+deliberately backgrounded the app. *Starting the stream* is a third
 separate step, `stream_start.StreamStarter`, because Guardian Eye only starts streaming from a
 button on its own screen. That step drives `keyboard.Keyboard`, a Bluetooth LE keyboard the host
 emulates through BlueZ, which iOS Full Keyboard Access acts on. It is kept narrow on purpose: it
@@ -284,8 +288,18 @@ probe, so "does the app answer with a frame" is asked the same way everywhere it
 Writes the display JPEG under `YYYY/MM/DD/HHMMSS.jpg` via a temporary file and an atomic rename, so
 a reader never sees a half-written frame, and reports free space.
 
+### `entities.py`
+Every entity the service publishes, declared once: object id, domain, display name, unit, device
+class, options, range and the state key it reads. `mqtt_io` renders these into Home Assistant
+discovery payloads, and a Home Assistant custom component in its own repository will read the same
+declaration, so the two cannot drift apart as they would have done with a hand-kept copy each. It
+also carries `MEDIA`, the video and image the HTTP server offers, where `holds_phone` records which
+of them keep the phone's connection open while a viewer is attached.
+
 ### `mqtt_io.py`
-The MQTT client and the Home Assistant discovery payloads. State is **retained**, so Home Assistant
+The MQTT client, and the renderer that turns `entities.ENTITIES` into Home Assistant discovery
+payloads -- one small builder per domain, so a declared entity of a kind nothing renders raises
+rather than being silently left unpublished. State is **retained**, so Home Assistant
 shows real values immediately after its own restart rather than "unknown" until the next interval,
 and an `on_connected` callback republishes controls, measurements and the last still on every
 reconnect. `connect_async` means a broker that is down at startup does not stop capture. `close()`
@@ -319,8 +333,11 @@ server. `web.run_app` returns on SIGTERM, which is how the container stops the p
 **The shutdown budget.** Compose allows 20 s from SIGTERM before it SIGKILLs. `run_app` is given
 `shutdown_timeout=2.0`, but a `/live` viewer waiting for a frame can sit out that timeout *twice* —
 once while aiohttp waits for handlers to finish, once again after cancelling them — measured 4.0 s,
-not 2. Then `up.stop(timeout=5.0)`, two 3 s thread joins (capture, health) and up to 2 s for
-`mqtt.close()`: 4 + 5 + 3 + 3 + 2 = 17 s, inside the 20 s budget with headroom to spare. An upstream
+not 2. Then `up.stop(timeout=5.0)`, `keyboard.stop(timeout=3.0)`, two 3 s thread joins (capture,
+health) and up to 2 s for `mqtt.close()`: 4 + 5 + 3 + 3 + 3 + 2 = 20 s, the entire budget with no
+headroom. Each term is a worst case and they have not been seen together, but the arithmetic leaves
+nothing spare. A device action already running when the stop arrives is waited for after `main()`
+returns, outside this sum; queued ones are dropped. An upstream
 thread still alive after its 5 s is presumed stuck inside a probe's own timeout, and `stop()`
 deliberately leaves it alone rather than touching the ingestor from a second thread, which is the
 kind of two-client churn that wedges the app. Measured end to end with a viewer attached: 1.1–5.1 s

@@ -1,4 +1,5 @@
 import io
+import sys
 import threading
 import time
 import types
@@ -58,6 +59,27 @@ def test_output_is_half_resolution():
     jpeg = st.step(_frame(40, 1000.0), now=1000.0)
     im = Image.open(io.BytesIO(jpeg))
     assert (im.width, im.height) == (1920 // SCALE, 1080 // SCALE)
+
+
+def test_latest_is_set_while_the_lock_is_held(monkeypatch):
+    """_latest was named alongside _acc/_t/_params as a field step() mutates with
+    no lock at all (sweep-correctness.md finding 2), but the earlier fix only
+    serialised the accumulate/params region -- `self._latest = Frame(jpeg, now)`
+    still ran after that lock had already been released. A plain attribute
+    reassignment is atomic under the GIL either way, so this is a compliance
+    check for the named requirement, not a corruption reproduction."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    seen_locked = []
+    real_frame = live_stack.Frame
+
+    def spy_frame(*a, **kw):
+        seen_locked.append(st._lock.locked())
+        return real_frame(*a, **kw)
+    monkeypatch.setattr(live_stack, "Frame", spy_frame)
+
+    st.step(_frame(40, 1000.0), now=1000.0)
+
+    assert seen_locked == [True]
 
 
 def test_the_warm_up_is_the_running_mean_of_what_it_has_seen():
@@ -322,3 +344,58 @@ def test_an_outgoing_thread_that_outlives_the_join_leaves_its_successor_alone(mo
         buf.release.set()
         st.detach()
         _join(first, second)
+
+
+def test_two_generations_stepping_concurrently_leave_a_consistent_accumulator():
+    """_run_after starts a new generation's loop after only a bounded 1s join on
+    the predecessor (THREAD_JOIN_TIMEOUT_S), regardless of whether it actually
+    exited -- a slow step() then leaves two threads calling step() on the same
+    LiveStacker at once. step() mutates self._acc/_t/_params/_latest with no
+    lock at all: one thread's reset (`self._acc = np.zeros_like(arr)`, taken
+    because the accumulator's shape does not match its own frame) can land
+    between another thread's shape check and its `self._acc += (arr -
+    self._acc) * a`, so that thread's accumulate then runs against a
+    differently-shaped array and raises a numpy broadcast ValueError -- exactly
+    the "ValueError from a shape mismatch" sweep-correctness.md finding 2
+    predicts. A tiny GIL switch interval makes the interleaving reliable
+    without a real timing race."""
+    st = LiveStacker(RingBuffer(1 << 20), _settings())
+    # Two different decoded shapes: whichever thread ran last leaves self._acc at
+    # its own shape, so the other thread's very next call sees a shape mismatch
+    # and resets -- np.zeros_like's allocation is large enough to release the
+    # GIL, so the reset (thread A) and the accumulate (thread B, still holding
+    # its own differently-shaped arr) can genuinely interleave every iteration,
+    # not just occasionally.
+    frame_a = _frame(40, 1000.0, size=(64, 64))
+    frame_b = _frame(90, 1000.0, size=(160, 96))
+
+    n_per_thread = 400
+    errors = []
+
+    def run(frame):
+        for _ in range(n_per_thread):
+            try:
+                st.step(frame)
+            except Exception as e:
+                errors.append(e)
+                return
+
+    old_interval = sys.getswitchinterval()
+    # Forces the interpreter to hand the GIL to the other thread almost every
+    # bytecode, so the two threads actually interleave inside step() instead of
+    # each completing a whole call atomically before the other gets scheduled.
+    sys.setswitchinterval(1e-6)
+    try:
+        t1 = threading.Thread(target=run, args=(frame_a,))
+        t2 = threading.Thread(target=run, args=(frame_b,))
+        t1.start()
+        t2.start()
+        t1.join(15)
+        t2.join(15)
+    finally:
+        sys.setswitchinterval(old_interval)
+
+    assert errors == [], f"concurrent step() calls corrupted shared state: {errors!r}"
+    acc = st.accumulated()
+    assert acc is not None
+    assert not np.isnan(acc).any()
