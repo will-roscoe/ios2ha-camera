@@ -519,18 +519,26 @@ class Supervisor:
             # value back so Home Assistant does not keep showing the rejected
             # one as if it had taken effect.
             log.warning("rejected control %s: %s", name, e)
-            self.publish_state({name: getattr(self.s, name, None)})
+            self.publish_state({name: self._stored(name)})
             return
         if not known:
             log.warning("ignoring unknown control %r", name)
             return
         # Echo what was stored, not what arrived: the black-level channels live
         # inside a tuple and are coerced on the way in.
-        channel = BLACK_LEVEL_CHANNELS.get(name)
-        stored = (self.s.black_level_override[channel] if channel is not None
-                  else getattr(self.s, name, value))
+        stored = self._stored(name)
         log.info("control %s = %r", name, stored)
         self.publish_state({name: stored})
+
+    def _stored(self, name):
+        """The value a control holds now, as it is published. A black-level
+        channel is not an attribute of its own but one slot of the override
+        tuple, and has no value while there is no override."""
+        channel = BLACK_LEVEL_CHANNELS.get(name)
+        if channel is None:
+            return getattr(self.s, name, None)
+        override = self.s.black_level_override
+        return None if override is None else override[channel]
 
     def _submit(self, name, fn, *, key=None, latest_wins=False):
         """Queue `fn` for the device worker, unless the same action is already

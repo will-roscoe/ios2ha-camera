@@ -84,6 +84,16 @@ def test_apply_control_rejects_out_of_range_black_level_channel():
     assert s.black_level_override is None
 
 
+@pytest.mark.parametrize("value", [None, [0.1], {"v": 0.1}])
+def test_apply_control_rejects_a_non_number_for_one_black_level_channel(value):
+    """float() raises TypeError for these, which the supervisor's corrective
+    republish (it catches ValueError) would not see."""
+    s = Settings()
+    with pytest.raises(ValueError):
+        s.apply_control("black_level_1", value)
+    assert s.black_level_override is None
+
+
 def test_every_control_names_a_real_field():
     """A control that names no field would accept writes that go nowhere."""
     from ios2ha_camera.settings import CONTROLS
@@ -195,7 +205,7 @@ def test_both_interfaces_off_message_names_what_is_off_and_what_still_works():
 
 def test_apply_control_rejects_a_non_iterable_black_level_override():
     """tuple(float(v) for v in value) raises TypeError on a bare number, which
-    _apply_setting's `except ValueError` (supervisor.py:411-424) does not catch --
+    Supervisor._apply_setting's `except ValueError` does not catch --
     the corrective republish meant for exactly this kind of rejected write never
     runs. Must surface as ValueError instead."""
     s = Settings()

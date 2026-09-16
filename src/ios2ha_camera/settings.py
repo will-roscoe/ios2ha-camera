@@ -160,7 +160,13 @@ class Settings:
         if channel is not None:
             current = self.black_level_override or (0.0, 0.0, 0.0)
             updated = list(current)
-            updated[channel] = float(value)
+            try:
+                updated[channel] = float(value)
+            except TypeError as e:
+                # None, a list, an object: float() says TypeError, which the
+                # supervisor's corrective republish does not catch. A string
+                # that is not a number is already a ValueError.
+                raise ValueError(f"{name} must be a number, not {value!r}") from e
             self.black_level_override = tuple(updated)
             return True
         if name not in CONTROLS:
@@ -174,10 +180,10 @@ class Settings:
                 value = tuple(float(v) for v in value)
             except TypeError as e:
                 # A bare number (or anything else non-iterable) instead of a
-                # 3-tuple. _apply_setting (supervisor.py:411-424) only catches
-                # ValueError to log "rejected control" and republish the true
-                # value -- a TypeError here used to skip that corrective path
-                # entirely and leave Home Assistant showing the rejected write.
+                # 3-tuple. Supervisor._apply_setting only catches ValueError to
+                # log "rejected control" and republish the true value -- a
+                # TypeError here used to skip that corrective path entirely and
+                # leave Home Assistant showing the rejected write.
                 raise ValueError(
                     f"black_level_override must be an iterable of numbers, not {value!r}"
                 ) from e
