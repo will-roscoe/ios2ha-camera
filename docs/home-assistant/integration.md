@@ -49,6 +49,15 @@ write (an out-of-range number, an option outside a select's list, an unknown or
 read-only name) comes back as a `4xx` with an `error` string and, where it makes
 sense, the value currently in effect.
 
+A button that works the phone (`screenshot`, `relaunch_app`, `prepare_phone`,
+`start_streaming`) runs at most once at a time. A press that arrives while the
+same action is already queued or running is still answered `200`, but is folded
+into the one in play rather than queued again, so pressing twice does not do the
+work twice. A screenshot pressed during a screenshot therefore returns the image
+that was already being taken. A write that carries a value, such as `autofocus`,
+is not folded away: the latest value asked for is applied once the change in
+play finishes.
+
 `objects_version` is a fingerprint of the whole `objects` document, served as
 `"sha256:"` followed by 64 hex digits. It is the same string in `info`, at the
 top of `objects` and in every event-stream `snapshot`, and it changes whenever

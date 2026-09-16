@@ -204,8 +204,11 @@ def main():
         # /live viewer waiting for a frame sits out both (measured 4.0 s). Open
         # event streams add nothing to that: the application's own shutdown hook
         # ends them before the first of those waits begins. Then 5 s for
-        # up.stop(), two 3 s thread joins and up to 2 s for mqtt.close() -- 17 s
-        # in all. An upstream thread still alive after its 5 s is stuck
+        # up.stop(), 3 s for keyboard.stop(), two 3 s thread joins and up to 2 s
+        # for mqtt.close() -- 20 s in all, which is the whole grace period with
+        # nothing to spare. Every one of those is a worst case that has not been
+        # seen together; measured shutdowns take 1-5 s. An upstream thread still
+        # alive after its 5 s is stuck
         # in a probe, which stop() deliberately leaves alone rather than
         # touching the ingestor from a second thread. One term is outside that
         # sum: sup.close() drops every device action still queued, but the one
