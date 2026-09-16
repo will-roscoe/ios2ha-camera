@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+import time
 
 import paho.mqtt.client as mqtt
 
@@ -263,16 +264,23 @@ class MqttIO:
         """Delete every MQTT-discovered entity: publish an empty retained payload
         to each discovery topic, which is how Home Assistant's MQTT integration
         forgets an entity -- without it the registry keeps ghosts and their
-        entity ids stay reserved. For EXPOSE_MQTT=false, so the wiring task calls
-        this once instead of running the supervisor's normal MQTT lifecycle.
+        entity ids stay reserved. Called once from `__main__` startup when
+        EXPOSE_MQTT is false, instead of running the supervisor's normal MQTT
+        lifecycle (`connect()` / `loop_start()`).
 
-        A native-only deployment may have no broker at all, so this makes
-        exactly one connection attempt bounded by `timeout` and gives up with a
-        single log line -- never the endless retry EXPOSE_MQTT exists to stop.
+        A native-only deployment may have no broker at all, so the whole call
+        is bounded by `timeout` seconds -- one connection attempt, plus
+        whatever is left of the budget to publish -- and gives up with a
+        single log line, never the endless retry EXPOSE_MQTT exists to stop.
         Topics come from discovery_payloads(self.s), the same registry
         _on_connect publishes from, so nothing cleared here can drift from what
         would have been created.
         """
+        if timeout <= 0:
+            # paho's own connect_timeout setter raises ValueError for this; catch
+            # it here so a bad call is one log line, not a crash during startup.
+            log.warning("MQTT teardown skipped: timeout must be positive, got %r", timeout)
+            return
         topics = [topic for topic, _cfg in discovery_payloads(self.s)]
         ep = self._endpoints[self._endpoint]
         connected = threading.Event()
@@ -284,9 +292,15 @@ class MqttIO:
 
         self.c.on_connect = _on_connect
         self.c.connect_timeout = timeout
+        deadline = time.monotonic() + timeout
         try:
             try:
-                self.c.connect(ep.host, ep.port, keepalive=30)
+                # keepalive must cover the whole teardown budget: the default
+                # paho ships (60s) or a short hardcoded value could otherwise
+                # let the broker drop the connection partway through a slow
+                # run of the (currently 86-entry) discovery-topic loop, before
+                # the deadline below ever gets a chance to end things cleanly.
+                self.c.connect(ep.host, ep.port, keepalive=max(30, int(timeout) + 5))
             except OSError as e:
                 # Refused, unresolvable or timed out at the socket level -- all
                 # ordinary for a deployment with no broker, not a fault.
@@ -300,16 +314,43 @@ class MqttIO:
             # instead, and connected.wait() below would time out even on a
             # perfectly reachable broker.
             self.c.loop_start()
-            if not connected.wait(timeout):
+            if not connected.wait(max(deadline - time.monotonic(), 0)):
                 log.warning("MQTT teardown skipped: no response from %s:%s within %.0fs",
                             ep.host, ep.port, timeout)
                 return
+            # One deadline for the whole loop, not one timeout per topic: with
+            # 86 discovery topics, a per-topic wait would let a slow or dying
+            # connection stretch teardown to 86 * timeout, which is exactly
+            # the kind of unbounded wait EXPOSE_MQTT exists to avoid.
+            cleared = 0
+            gave_up = None
             for topic in topics:
-                info = self.c.publish(topic, "", retain=True)
-                info.wait_for_publish(timeout)
-            log.info("MQTT discovery cleared: %d entities removed (EXPOSE_MQTT=false)",
-                     len(topics))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    gave_up = "ran out of time"
+                    break
+                try:
+                    info = self.c.publish(topic, "", retain=True)
+                    info.wait_for_publish(remaining)
+                except (RuntimeError, ValueError) as e:
+                    # The broker dropped the connection mid-teardown (or this
+                    # client's own keepalive expired): every publish after
+                    # this one would fail the same way, so stop rather than
+                    # repeat the failure for each remaining topic.
+                    gave_up = f"connection lost ({e})"
+                    break
+                cleared += 1
+            if gave_up:
+                log.warning("MQTT teardown stopped after clearing %d of %d discovery topics: %s",
+                            cleared, len(topics), gave_up)
+            else:
+                log.info("MQTT discovery cleared: %d entities removed (EXPOSE_MQTT=false)",
+                         cleared)
         finally:
             self.c.on_connect = original_on_connect
-            self.c.loop_stop()
+            # Matches close(), a few lines up: disconnect (which sends the
+            # DISCONNECT packet over the still-running network loop) before
+            # loop_stop (which joins that loop's thread) -- the reverse order
+            # would join the thread before it can send the packet.
             self.c.disconnect()
+            self.c.loop_stop()

@@ -1,5 +1,6 @@
 import logging
 
+from ios2ha_camera import mqtt_io as mqtt_io_module
 from ios2ha_camera.mqtt_io import MqttIO, discovery_payloads
 from ios2ha_camera.settings import CONTROLS, Settings
 from ios2ha_camera.states import STREAM_STATES
@@ -12,10 +13,20 @@ class _Msg:
 
 
 class _Info:
-    """Stand-in for paho's MQTTMessageInfo: wait_for_publish is a no-op."""
+    """Stand-in for paho's MQTTMessageInfo.
+
+    Real paho (2.1.0): `wait_for_publish` raises RuntimeError immediately,
+    before any waiting, whenever the message's rc is not 0 -- e.g. `publish()`
+    was called on a disconnected socket (MQTT_ERR_NO_CONN). `fail=True`
+    reproduces exactly that so a test can exercise it without a real broker.
+    """
+
+    def __init__(self, fail=False):
+        self._fail = fail
 
     def wait_for_publish(self, timeout=None):
-        pass
+        if self._fail:
+            raise RuntimeError("Message publish failed: No connection")
 
 
 class _FakeBroker:
@@ -26,20 +37,28 @@ class _FakeBroker:
     - "refused": raise ConnectionRefusedError, as an unreachable broker would.
     - "silent": return normally but never call on_connect, as a broker that
       accepts the TCP connection but never completes the handshake would.
+
+    `disconnect_after`, if set, simulates the broker dropping the connection
+    partway through teardown: the first `disconnect_after` publishes succeed,
+    every one after that returns an `_Info` whose `wait_for_publish` raises.
     """
 
-    def __init__(self, respond="connack"):
+    def __init__(self, respond="connack", disconnect_after=None):
         self.respond = respond
+        self.disconnect_after = disconnect_after
         self.on_connect = None
         self.connect_timeout = None
         self.connect_calls = 0
+        self.keepalive_used = None
         self.loop_started = False
         self.loop_stopped = False
         self.disconnected = False
         self.published = []
+        self.publish_calls = 0
 
     def connect(self, host, port, keepalive=30):
         self.connect_calls += 1
+        self.keepalive_used = keepalive
         if self.respond == "refused":
             raise ConnectionRefusedError("refused")
         if self.respond == "connack":
@@ -56,8 +75,11 @@ class _FakeBroker:
         self.disconnected = True
 
     def publish(self, topic, payload, retain=False):
+        self.publish_calls += 1
+        if self.disconnect_after is not None and self.publish_calls > self.disconnect_after:
+            return _Info(fail=True)
         self.published.append((topic, payload, retain))
-        return _Info()
+        return _Info(fail=False)
 
 
 def test_close_is_quiet_when_never_connected():
@@ -345,7 +367,84 @@ def test_teardown_gives_up_once_when_the_broker_never_completes_the_handshake(ca
     assert io.c.published == []
     assert io.c.loop_stopped is True
     assert io.c.disconnected is True
-    assert any("MQTT" in r.message for r in caplog.records)
+
+
+def test_teardown_never_raises_when_the_connection_drops_mid_publish(caplog):
+    """Reproduces paho 2.1.0's real behaviour, confirmed against the installed
+    package: MQTTMessageInfo.wait_for_publish raises RuntimeError immediately
+    (before any waiting) whenever the message's rc is not 0 -- e.g. the broker
+    dropped the connection, or the client's own keepalive expired, partway
+    through the discovery-topic loop. This must degrade to one log line
+    reporting how many topics were cleared, never an uncaught exception."""
+    total_topics = len(discovery_payloads(Settings()))
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack", disconnect_after=3)
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=5.0)  # must not raise
+    assert len(io.c.published) == 3
+    assert 3 < total_topics, "fixture assumption: more topics exist than the simulated cutoff"
+    warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("3" in m for m in warnings), warnings
+
+
+def test_teardown_stops_within_one_overall_deadline_not_per_topic_waits(monkeypatch):
+    """A per-topic timeout would let N slow topics run to N * timeout -- with 80+
+    discovery topics that is minutes, directly under "nothing optional may stop
+    the container starting". The budget must cover the whole call. Simulated
+    with a monkeypatched clock, not a real sleep of any length: each fake
+    publish advances the clock by a second, and a 3.5s budget must not be
+    enough for all topics."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mqtt_io_module.time, "monotonic", lambda: clock["t"])
+
+    class _SlowFakeBroker(_FakeBroker):
+        def publish(self, topic, payload, retain=False):
+            clock["t"] += 1.0
+            return super().publish(topic, payload, retain=retain)
+
+    total_topics = len(discovery_payloads(Settings()))
+    io = MqttIO(Settings())
+    io.c = _SlowFakeBroker(respond="connack")
+    io.teardown_discovery(timeout=3.5)
+    assert 0 < len(io.c.published) < total_topics, (
+        "a per-topic (rather than overall) timeout would have cleared every topic here"
+    )
+
+
+def test_teardown_rejects_a_non_positive_timeout_without_raising(caplog):
+    """paho's own `connect_timeout` setter raises ValueError for timeout <= 0
+    (confirmed in the installed package); teardown must never raise, so a bad
+    call here is one log line and no connection attempt, not a crash."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    with caplog.at_level(logging.WARNING):
+        io.teardown_discovery(timeout=0)
+    assert io.c.connect_calls == 0
+    assert any("timeout" in r.message.lower() for r in caplog.records)
+
+
+def test_teardown_keeps_the_connection_alive_for_the_whole_budget():
+    """The hardcoded keepalive=30 from the first draft could let the broker
+    drop the connection mid-teardown on any budget longer than 30s. keepalive
+    must cover at least the whole requested timeout."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    io.teardown_discovery(timeout=45.0)
+    assert io.c.keepalive_used >= 45.0
+
+
+def test_teardown_disconnects_before_stopping_the_loop():
+    """Matches close() (mqtt_io.py) which disconnects, then stops the loop --
+    stopping the loop first would join the network thread before it can send
+    the DISCONNECT packet."""
+    order = []
+    io = MqttIO(Settings())
+    fb = _FakeBroker(respond="connack")
+    fb.disconnect = lambda: order.append("disconnect")
+    fb.loop_stop = lambda: order.append("loop_stop")
+    io.c = fb
+    io.teardown_discovery(timeout=0.2)
+    assert order == ["disconnect", "loop_stop"]
 
 
 def test_stream_state_declares_every_value_the_code_can_produce():
