@@ -5,25 +5,41 @@ name: CI
 # testing configurations that never run. 3.13 is here because pyproject claims
 # ">=3.12" -- if that claim stops being true we should find out, not the user.
 
+#
+# Each commit is tested once:
+# - develop: on push. It is the integration branch that work merges into, and
+#   pull_request checks the merge preview, not the branch after the merge.
+# - main: NOT on push. Every push to main runs auto-release.yml, which calls this
+#   workflow as its release gate, so listing main here would test the same commit
+#   twice.
+# - Pull requests: yes, except develop -> main (see SKIP_DEVELOP_TO_MAIN below).
+
 on:
   push:
-    # develop is the integration branch that work merges into; main only receives
-    # develop. Without develop here, a merge into it would go unverified, since
-    # pull_request checks the merge preview rather than the branch afterwards.
-    branches: [main, develop]
+    branches: [develop]
   pull_request:
   workflow_call:
 
-# A second push to the same branch makes the first run's answer irrelevant.
+# A second push to the same branch makes the first run's answer irrelevant. The
+# workflow name is in the group because, when auto-release calls this workflow,
+# github.workflow is the caller's name. That keeps the release gate from cancelling,
+# or being cancelled by, an ordinary run on the same ref.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
+# SKIP_DEVELOP_TO_MAIN: a develop -> main pull request has the same head commit
+# that the develop push run already tested, and GitHub shows that run's checks on
+# the pull request. If main has commits develop lacks, the merged result differs,
+# but the release gate tests it after the merge and before anything is tagged.
+# Skipped jobs count as passing.
+
 jobs:
   lint:
+    if: ${{ !(github.event_name == 'pull_request' && github.head_ref == 'develop' && github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +57,7 @@ jobs:
         run: ruff check --output-format github .
 
   test:
+    if: ${{ !(github.event_name == 'pull_request' && github.head_ref == 'develop' && github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -70,6 +87,7 @@ jobs:
           path: coverage.xml
 
   docker:
+    if: ${{ !(github.event_name == 'pull_request' && github.head_ref == 'develop' && github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

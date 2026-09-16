@@ -1,7 +1,9 @@
 name: Release
 
-# Publishes a GitHub Release for a tag. Called by auto-release.yml, or run by hand
-# against a tag that already exists.
+# Publishes a GitHub Release for a tag. Three ways in:
+# - called by auto-release.yml after it tags a merge to main;
+# - a version tag pushed by hand (git push origin v1.2.3);
+# - run by hand from the Actions tab against a tag that already exists.
 #
 # Nothing is uploaded to a registry: deploy.sh builds the image on the target host
 # from a checkout, so the Release exists to carry notes and give the version a
@@ -20,6 +22,8 @@ on:
         description: The tag to release, e.g. v1.1.2
         required: true
         type: string
+  push:
+    tags: ["v[0-9]*"]
 
 permissions:
   contents: write
@@ -27,11 +31,32 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # On a tag push there are no inputs; the pushed tag is the ref.
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ env.TAG }}
           fetch-depth: 0
+
+      # Only released code gets a Release. main is where CI gates every commit
+      # (see auto-release.yml), so a tag on a commit main does not contain was
+      # never gated. The version check catches a tag that disagrees with what the
+      # running container would report.
+      - name: Check the tag is on main and matches pyproject.toml
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "::error::$TAG is not on main. Merge it to main first; only commits on main are released."
+            exit 1
+          fi
+          DECLARED=$(python3 -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "v$DECLARED" != "$TAG" ]; then
+            echo "::error::$TAG does not match pyproject.toml, which says $DECLARED."
+            exit 1
+          fi
 
       # CHANGELOG.md is written by hand here, in prose that explains why a change
       # was made. Generating notes from commit subjects would be strictly worse, so
@@ -40,7 +65,6 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
