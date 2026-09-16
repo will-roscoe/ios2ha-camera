@@ -5,7 +5,18 @@ below that is writable live from Home Assistant and takes effect on the next cap
 
 ## Environment
 
-Read by `Settings.from_env`, and coerced to the type of each field's default.
+Read by `Settings.from_env`, apart from a handful of process-level settings
+(`LOG_LEVEL`, `BUFFER_BYTES`, `PHONE_BUNDLE_ID`) that the entry point reads directly.
+Every value is coerced to the type of the field's default.
+
+The table is split by what has to be switched on for a variable to matter.
+**Core** variables matter regardless: the ios2ha-camera supervisor needs them to
+start, capture, stack, archive and serve `/live`, `/live/stacked` and `/still.jpg`
+(plus their `/api/v1/...` equivalents once the API is on) with both other
+interfaces switched off. **MQTT** variables matter only while `EXPOSE_MQTT` is
+true. **API** variables matter only while `EXPOSE_API` is true.
+
+### Core
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -13,14 +24,37 @@ Read by `Settings.from_env`, and coerced to the type of each field's default.
 | `PHONE_PORT` | `8080` | |
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
+| `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves `/live`, `/live/stacked` and `/still.jpg`; also serves every `/api/v1/...` route once `EXPOSE_API` is on — the API shares this port rather than opening its own |
+| `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
+| `LOG_LEVEL` | `INFO` | |
+| `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
+| `EXPOSE_API` | `true` | Turns the JSON API on or off. Same accepted spellings and the same fail-safe on an unrecognised value |
+
+With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving keep
+running, and the media routes keep serving — only discovery, state publishing and
+the JSON API stop. A startup warning names what is off and what still works.
+
+### MQTT
+
+Matters only while `EXPOSE_MQTT` is true (the default). With it false, none of
+these need to be set.
+
+| Variable | Default | Notes |
+|---|---|---|
 | `MQTT_URL` | unset | The broker, as one or more space-separated URLs tried in order when a connection fails. The scheme sets transport, TLS and default port together: `mqtt://` (1883), `mqtts://` (8883, TLS), `ws://` (80, websockets), `wss://` (443, websockets over TLS). A websocket path comes from the URL, `/mqtt` if none. Every entry must use the same scheme, because the transport is fixed when the client starts. Credentials go in `MQTT_USER` / `MQTT_PASSWORD`, never in the URL: a URL containing them is refused at startup so it cannot end up in a log. Example: `mqtts://broker.lan mqtts://broker-2.lan` |
 | `MQTT_HOST` / `MQTT_PORT` | `192.168.1.5` / `1883` | **Deprecated**, the older way to say `mqtt://host:port`. Still used when `MQTT_URL` is unset; when both are set, `MQTT_URL` wins and a warning names what was ignored |
 | `MQTT_USER` / `MQTT_PASSWORD` | — | A broker-local login, such as the Mosquitto add-on's `logins` option. No Home Assistant account is needed; see OPERATIONS.md |
 | `MQTT_PREFIX` | `ios2ha_camera` | Root of every topic |
-| `ARCHIVE_DIR` | `/data/archive` | Inside the container |
-| `LIVE_PORT` | `8099` | `/live` and `/still.jpg` |
-| `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
-| `LOG_LEVEL` | `INFO` | |
+
+### API
+
+Matters only while `EXPOSE_API` is true (the default). The API has no
+configuration of its own beyond the flag in the core table above: it is served
+on `LIVE_PORT`, by the same process, with no separate port or path prefix to set.
+See [docs/home-assistant/integration.md](docs/home-assistant/integration.md) for
+what it serves, and [docs/guarantees.rst](docs/guarantees.rst) for what is
+promised about it.
 
 Secrets belong in the deployment `.env`, never in the repository.
 
