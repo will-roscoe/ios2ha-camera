@@ -610,9 +610,11 @@ class Supervisor:
             self._device_action_done(key)
 
     def _device_action_done(self, key):
-        # Under the same lock _submit checks, so a request arriving as this
-        # action finishes is either kept as its follow-up or finds the key free
-        # -- never refused by an action that has already stopped looking.
+        # Under the same lock _submit checks, so a latest-wins request arriving
+        # as this action finishes is either kept here as its follow-up or finds
+        # the key already free: it cannot be kept after this check and then
+        # never run. A plain repeat in that instant is still refused, exactly
+        # as it would have been a moment earlier.
         with self._device_lock:
             follow_up = self._device_again.pop(key, None)
             if follow_up is None:
