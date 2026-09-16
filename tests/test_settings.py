@@ -166,11 +166,24 @@ def test_expose_flag_typo_keeps_default_and_warns(env_key, attr, caplog):
     assert any(env_key in r.message and "ture" in r.message for r in caplog.records)
 
 
-def test_expose_flags_do_not_affect_other_boolean_coercion():
-    """Only EXPOSE_MQTT/EXPOSE_API get the keep-default-and-warn treatment; every
-    other boolean env var still coerces a typo to False as before."""
-    s = Settings.from_env({"MQTT_USER": "ios2ha"})  # sanity: unrelated field untouched
-    assert s.mqtt_user == "ios2ha"
+def test_only_the_expose_flags_get_the_keep_default_treatment(monkeypatch):
+    """Only EXPOSE_MQTT/EXPOSE_API keep their default and warn on a typo; every
+    other key in _ENV_MAP must still take _coerce_like's older, blunter branch,
+    where any string outside _TRUTHY becomes False.
+
+    None of today's other _ENV_MAP entries default to bool -- checked directly:
+    PHONE_PORT/MQTT_PORT/LIVE_PORT are int, the rest (PHONE_HOST, MQTT_URL,
+    MQTT_HOST, MQTT_USER, MQTT_PASSWORD, MQTT_PREFIX, ARCHIVE_DIR, ...) are str
+    -- so there is no live boolean env var to round-trip through
+    Settings.from_env unmodified. This proves the from_env dispatch itself
+    (only _EXPOSE_ENV_KEYS take the new branch) against a genuine boolean
+    dataclass field, `autofocus`, mapped in for the duration of the test.
+    """
+    import ios2ha_camera.settings as settings_module
+
+    monkeypatch.setitem(settings_module._ENV_MAP, "AUTOFOCUS_ENV_TEST_ONLY", "autofocus")
+    s = Settings.from_env({"AUTOFOCUS_ENV_TEST_ONLY": "ture"})
+    assert s.autofocus is False  # unchanged: _coerce_like still guesses False on a typo
 
 
 def test_both_interfaces_off_message_names_what_is_off_and_what_still_works():
