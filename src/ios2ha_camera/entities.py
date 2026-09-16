@@ -24,9 +24,29 @@ PNG published to their own topics, not a value under `state/`.
 
 from dataclasses import dataclass, field
 
+from . import version
 from .app_open import APP_OPEN_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
+
+
+def device_info():
+    """The device all 86 entities hang off, declared once for both renderers.
+
+    MQTT repeats it inside every discovery payload and the API serves it from
+    `/api/v1/info`, because a component built from the API has to describe the
+    same physical thing the MQTT entities describe -- same name, same model,
+    same running version. Two hand-kept copies of five keys is exactly the drift
+    this module exists to remove, one level down.
+
+    `sw_version` puts the running build on the device page in Home Assistant, so
+    "what is deployed?" is answerable without shell access. Read on each call,
+    as the payload builder always read it, so moving the declaration here cannot
+    change what MQTT publishes.
+    """
+    return {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera",
+            "manufacturer": "ios2ha-camera", "model": "iPhone supervisor",
+            "sw_version": version.full()}
 
 
 @dataclass(frozen=True)

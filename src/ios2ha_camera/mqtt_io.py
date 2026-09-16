@@ -5,8 +5,7 @@ import logging
 
 import paho.mqtt.client as mqtt
 
-from . import version
-from .entities import ENTITIES
+from .entities import ENTITIES, device_info
 from .settings import mqtt_endpoints
 
 log = logging.getLogger(__name__)
@@ -16,11 +15,9 @@ def _e(prefix, comp, obj, cfg):
     topic = f"homeassistant/{comp}/ios2ha/{obj}/config"
     base = {
         "availability_topic": f"{prefix}/available",
-        # sw_version puts the running version on the device page in Home
-        # Assistant, so "what is deployed?" is answerable without shell access.
-        "device": {"identifiers": ["ios2ha_camera"], "name": "iPhone Camera",
-                   "manufacturer": "ios2ha-camera", "model": "iPhone supervisor",
-                   "sw_version": version.full()},
+        # Declared in entities.device_info(), not here: the API serves the same
+        # block from /api/v1/info and the two must describe one device.
+        "device": device_info(),
         # Component in the unique_id because a button and a camera can share an
         # object name (screenshot) and only differ by domain.
         "unique_id": f"ios2ha_{comp}_{obj}",
