@@ -28,6 +28,7 @@ from ios2ha_camera.events import EventHub
 from ios2ha_camera.live import make_live_app
 from ios2ha_camera.ring_buffer import Frame, RingBuffer
 from ios2ha_camera.settings import Settings
+from ios2ha_camera.supervisor import Supervisor
 
 PATH = "/api/v1/events"
 
@@ -619,4 +620,68 @@ def test_make_api_supplies_a_hub_of_its_own():
             resp = await client.get(PATH)
             assert (await _next_event(resp))[1]["state"] == {"a": 1}
             resp.close()
+    _run(run())
+
+
+# -- the supervisor as publisher: the stream and /state must agree -----------
+
+class _MqttThatStallsOnTrue:
+    """A broker client whose publish of `True` stalls until the next publish
+    has been stored and heard, or until a short wait runs out.
+
+    That is the slow network path a real publisher can hit between storing a
+    value and telling the listeners about it, forced here so the interleaving
+    happens on every run rather than once in a thousand. With the publish
+    sequence serialised, the second publisher cannot get in during the stall,
+    and the wait simply runs out.
+    """
+
+    def __init__(self):
+        self.second_done = threading.Event()
+
+    def publish_state(self, d):
+        if d.get("autofocus") is True:
+            self.second_done.wait(0.5)
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def test_two_threads_publishing_one_key_leave_the_stream_agreeing_with_state():
+    """Two threads publish the same key; the value clients were told last must be
+    the value /api/v1/state serves. Otherwise every event client holds one value
+    and a poller another, until that key is next published -- which, for a
+    setting with MQTT off, may be never."""
+    async def run():
+        mq = _MqttThatStallsOnTrue()
+        sup = Supervisor(Settings(), RingBuffer(1_000_000), mq, None)
+        hub = EventHub()
+        sup.add_state_listener(hub.publish)
+        async with TestClient(TestServer(_app(sup.current_state, hub))) as client:
+            resp = await client.get(PATH)
+            name, data = await _next_event(resp)
+            assert name == "snapshot"
+            view = dict(data["state"])
+
+            def first():
+                sup.publish_state({"autofocus": True})
+
+            def second():
+                # Starts once the first has stored its value and is stalled.
+                while sup.current_state().get("autofocus") is not True:
+                    time.sleep(0.001)
+                sup.publish_state({"autofocus": False})
+                mq.second_done.set()
+
+            await asyncio.gather(asyncio.to_thread(first), asyncio.to_thread(second))
+            try:
+                while True:
+                    name, data = await _next_non_keepalive(resp, timeout=0.5)
+                    if name == "state":
+                        view.update(data["state"])
+            except TimeoutError:
+                pass
+            assert view["autofocus"] == sup.current_state()["autofocus"]
+            resp.close()
+        sup.close()
     _run(run())
