@@ -156,8 +156,8 @@ def test_expose_flags_accept_conventional_spellings(env_key, attr, raw, expected
 @pytest.mark.parametrize("env_key,attr", [("EXPOSE_MQTT", "expose_mqtt"), ("EXPOSE_API", "expose_api")])
 def test_expose_flag_typo_keeps_default_and_warns(env_key, attr, caplog):
     """`_coerce_like` treats any string outside `_TRUTHY` as False, which would
-    make EXPOSE_MQTT=ture switch MQTT off without a word -- exactly the failure
-    the design calls out. These two flags must keep their default and warn
+    make EXPOSE_MQTT=ture switch MQTT off without a word and nothing in the
+    log to explain why. These two flags must keep their default and warn
     instead of guessing, and must never raise: nothing optional may stop the
     container starting."""
     with caplog.at_level(logging.WARNING):

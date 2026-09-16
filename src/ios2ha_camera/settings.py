@@ -273,9 +273,10 @@ def _coerce_expose_flag(name, raw, default):
     unrecognised value keeps the default rather than being guessed at.
 
     _coerce_like treats anything outside _TRUTHY as False, which would make
-    EXPOSE_MQTT=ture switch MQTT off without a word -- exactly the failure D8
-    calls out when it rejected a comma-list flag. Nothing optional may stop
-    the container starting, so this warns and carries on rather than raising.
+    EXPOSE_MQTT=ture switch MQTT off without a word -- a typo silently
+    disabling Home Assistant discovery, with nothing in the log to explain
+    why entities vanished. Nothing optional may stop the container starting,
+    so this warns and carries on rather than raising.
     """
     lowered = str(raw).strip().lower()
     if lowered in _TRUTHY:
@@ -289,9 +290,9 @@ def _coerce_expose_flag(name, raw, default):
 def both_interfaces_off_message():
     """The one warning to log when EXPOSE_MQTT and EXPOSE_API are both false.
 
-    Returned rather than logged here so the caller (the wiring task, once
-    startup logging is set up) decides when to log it -- construction is not
-    the place for a log call that only makes sense once both flags are known.
+    Returned rather than logged here so startup code in `__main__`, which is
+    where both flags are read together, decides when to log it -- Settings
+    construction runs before that check is meaningful.
     """
     return (
         "EXPOSE_MQTT and EXPOSE_API are both false: no Home Assistant discovery "
