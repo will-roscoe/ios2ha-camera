@@ -39,6 +39,7 @@ _ENV_MAP = {
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 
 # Controls with a fixed set of values. Home Assistant's select entity keeps a
 # person to these, but a typo from an automation or mosquitto_pub would
@@ -48,6 +49,29 @@ _CHOICES = {
     "white_balance": ("as-shot", "grey-world", "brightest-patch"),
     "render_intent": ("natural", "inspection"),
 }
+
+
+def _coerce_bool(value):
+    """Coerce a Home Assistant boolean control write to a real bool.
+
+    Home Assistant's own switch UI always sends the JSON `true`/`false` it is
+    configured with (mqtt_io.py's payload_on/payload_off), which json.loads has
+    already turned into an actual bool before apply_control ever sees it -- the
+    isinstance check below is what makes that case a no-op. This exists for the
+    non-UI publisher (a script, Node-RED, a hand-typed mosquitto_pub) sending a
+    conventional-looking value that is not valid JSON, e.g. `off`: json.loads
+    fails on it, mqtt_io falls back to the raw string, and a bare setattr used to
+    store that string as-is -- `not "off"` is False, the opposite of what was
+    sent. Anything outside these spellings is rejected rather than guessed at.
+    """
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in _TRUTHY:
+        return True
+    if lowered in _FALSY:
+        return False
+    raise ValueError(f"cannot interpret {value!r} as a boolean")
 
 
 @dataclass
@@ -126,10 +150,30 @@ class Settings:
             return False
         if name in _CHOICES and value not in _CHOICES[name]:
             raise ValueError(f"{name} must be one of {_CHOICES[name]}, not {value!r}")
+        if name in _BOOL_CONTROLS:
+            value = _coerce_bool(value)
         if name == "black_level_override" and value is not None:
-            value = tuple(float(v) for v in value)
+            try:
+                value = tuple(float(v) for v in value)
+            except TypeError as e:
+                # A bare number (or anything else non-iterable) instead of a
+                # 3-tuple. _apply_setting (supervisor.py:411-424) only catches
+                # ValueError to log "rejected control" and republish the true
+                # value -- a TypeError here used to skip that corrective path
+                # entirely and leave Home Assistant showing the rejected write.
+                raise ValueError(
+                    f"black_level_override must be an iterable of numbers, not {value!r}"
+                ) from e
         setattr(self, name, value)
         return True
+
+
+# Boolean controls, derived from the dataclass itself: exactly the CONTROLS
+# fields whose default is an actual bool. Kept off a hand-typed list so it
+# cannot silently drift from the dataclass as fields are added or retyped.
+_BOOL_CONTROLS = {
+    f.name for f in Settings.__dataclass_fields__.values() if f.type is bool
+} & CONTROLS
 
 
 @dataclass(frozen=True)

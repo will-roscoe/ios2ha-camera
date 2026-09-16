@@ -1,4 +1,6 @@
-from ios2ha_camera.settings import Settings
+import pytest
+
+from ios2ha_camera.settings import _BOOL_CONTROLS, Settings
 
 
 def test_defaults_match_spec():
@@ -95,3 +97,50 @@ def test_the_on_demand_controls_are_writable():
     assert s.on_demand is False
     assert s.apply_control("live_max_window_s", 5.0) is True
     assert s.live_max_window_s == 5.0
+
+
+def test_bool_controls_are_derived_from_the_dataclass():
+    """Exactly the CONTROLS whose field defaults to an actual bool -- not a
+    hardcoded list that could silently drift from the dataclass."""
+    assert _BOOL_CONTROLS == {
+        "stacking_allowed", "on_demand", "autofocus", "backgrounding", "auto_start",
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_BOOL_CONTROLS))
+@pytest.mark.parametrize("raw,expected", [
+    ("true", True), ("True", True), ("TRUE", True), ("1", True),
+    ("yes", True), ("on", True), (True, True),
+    ("false", False), ("False", False), ("0", False),
+    ("no", False), ("off", False), (False, False),
+])
+def test_apply_control_coerces_conventional_boolean_spellings(name, raw, expected):
+    """A non-JSON publisher (mosquitto_pub, Node-RED, a hand-typed script) can send
+    these as bare strings, not JSON booleans -- they must land as the same bool
+    Home Assistant's own switch UI would have sent as real JSON true/false."""
+    s = Settings()
+    assert s.apply_control(name, raw) is True
+    assert getattr(s, name) is expected
+
+
+@pytest.mark.parametrize("name", sorted(_BOOL_CONTROLS))
+def test_apply_control_rejects_unparseable_boolean_junk(name):
+    """json.loads fails on a bare `off`/`False`/`no`, so mqtt_io hands apply_control
+    the raw string; storing it unchanged makes `not "off"` False -- the opposite of
+    what was sent. A value that cannot be interpreted must be rejected outright."""
+    s = Settings()
+    before = getattr(s, name)
+    with pytest.raises(ValueError):
+        s.apply_control(name, "banana")
+    assert getattr(s, name) == before  # a rejected write must not touch the stored value
+
+
+def test_apply_control_rejects_a_non_iterable_black_level_override():
+    """tuple(float(v) for v in value) raises TypeError on a bare number, which
+    _apply_setting's `except ValueError` (supervisor.py:411-424) does not catch --
+    the corrective republish meant for exactly this kind of rejected write never
+    runs. Must surface as ValueError instead."""
+    s = Settings()
+    with pytest.raises(ValueError):
+        s.apply_control("black_level_override", 1.0)
+    assert s.black_level_override is None
