@@ -874,4 +874,11 @@ class Supervisor:
             stop.wait(every)
 
     def close(self):
-        self._device_executor.shutdown(wait=False)
+        # Queued device actions are dropped, not left to drain. The worker is a
+        # non-daemon thread the interpreter joins after main() returns, so each
+        # action still queued -- an ONVIF or cable round trip, or a developer
+        # image mount that can block for minutes -- would otherwise run after
+        # the shutdown budget is spent, and the container's grace period would
+        # end in a kill. The one action already running cannot be interrupted
+        # and still finishes.
+        self._device_executor.shutdown(wait=False, cancel_futures=True)

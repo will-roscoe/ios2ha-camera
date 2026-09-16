@@ -103,7 +103,7 @@ class Inline:
     def submit(self, fn, *a):
         fn(*a)
 
-    def shutdown(self, wait=True):
+    def shutdown(self, wait=True, *, cancel_futures=False):
         pass
 
 
@@ -617,8 +617,35 @@ class QueueingExecutor:
     def submit(self, fn, *a):
         self.queued.append((fn, a))
 
-    def shutdown(self, wait=True):
+    def shutdown(self, wait=True, *, cancel_futures=False):
         pass
+
+
+def test_close_drops_device_actions_still_waiting_for_the_worker():
+    """At shutdown only the action already running may finish. The worker is a
+    non-daemon thread that the interpreter joins after main() returns, so every
+    queued action left behind -- each an ONVIF or cable round trip -- would run
+    outside the shutdown budget and push the process past the container's grace
+    period into a kill."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    sup = _sup(device_executor=ex)
+    running, release = threading.Event(), threading.Event()
+    ran = []
+
+    def blocking():
+        running.set()
+        release.wait(5)
+
+    sup._submit("first", blocking)
+    assert running.wait(5)
+    for i in range(5):
+        sup._submit(f"queued_{i}", lambda i=i: ran.append(i))
+    sup.close()
+    release.set()
+    ex.shutdown(wait=True)
+    assert ran == []
 
 
 def test_attempts_to_open_the_app_do_not_pile_up():

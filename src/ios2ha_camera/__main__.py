@@ -207,7 +207,12 @@ def main():
         # up.stop(), two 3 s thread joins and up to 2 s for mqtt.close() -- 17 s
         # in all. An upstream thread still alive after its 5 s is stuck
         # in a probe, which stop() deliberately leaves alone rather than
-        # touching the ingestor from a second thread.
+        # touching the ingestor from a second thread. One term is outside that
+        # sum: sup.close() drops every device action still queued, but the one
+        # already running on the device worker is a cable or ONVIF call that
+        # cannot be interrupted, and the interpreter waits for it after main()
+        # returns. Normally that is well under a second. An action stuck on the
+        # cable can outlast the grace period, and then the container is killed.
         up.stop(timeout=5.0)
         # Its thread is a daemon, so this is tidiness rather than necessity: it
         # unregisters the advertisement instead of leaving BlueZ to notice.
