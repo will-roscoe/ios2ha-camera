@@ -32,6 +32,14 @@ would have woken by itself, and a cable that cannot answer means *unknown*, not 
 starts an hour and 12 a day, ten minutes apart, and a success does not refund that budget — an app
 that dies the moment it opens must not be relaunched all night.
 
+*The app is asked for on the health cadence, not only when something changes.* A phone that has just
+restarted cannot answer over the cable for a minute or two while its developer image remounts, so
+the attempt triggered by the state change can only report that it cannot tell — and a stream state
+that then sits at `backgrounded` never changes again, so nothing asked a second time. Measured the
+hard way: the camera stayed dark for two and a half hours with a perfectly healthy phone on the end
+of the cable. The 30-second health tick now retries while nothing is answering, with a flag so
+attempts cannot pile up behind one that is blocked on the mount's own two-minute timeout.
+
 *Fixed: "is the app running" could not answer honestly.* The process was matched on the last word
 of its bundle id, which for `com.guardianeye.webcam.ios` is `ios` — and that matches `apfs_iosd`,
 present on every iPhone. The app therefore read as running on a phone where it had been deleted,
