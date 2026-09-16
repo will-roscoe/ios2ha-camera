@@ -119,8 +119,10 @@ def _fill(buf, n, val=30, now=None, step=1 / 12):
 
 def _sup(settings=None, buf=None, mqtt=None, archive=None, **kw):
     s = settings or Settings()
+    # Inline unless a test wants to watch what was queued rather than run it.
+    executor = kw.pop("device_executor", None) or Inline()
     return Supervisor(s, buf or RingBuffer(5_000_000), mqtt or FakeMqtt(),
-                      archive or FakeArchive(), device_executor=Inline(), **kw)
+                      archive or FakeArchive(), device_executor=executor, **kw)
 
 
 def test_produce_still_publishes_and_archives():
@@ -522,6 +524,51 @@ def test_a_state_where_the_app_is_answering_does_not_open_it():
     for state in ("streaming_off", "ready", "in_use", "capturing", "stalled"):
         sup.on_stream_state(state)
     assert op.calls == []
+
+
+class QueueingExecutor:
+    """Takes work and never runs it, which is what a blocked cable looks like."""
+
+    def __init__(self):
+        self.queued = []
+
+    def submit(self, fn, *a):
+        self.queued.append((fn, a))
+
+    def shutdown(self, wait=True):
+        pass
+
+
+def test_attempts_to_open_the_app_do_not_pile_up():
+    """A phone that has just rebooted leaves the first attempt blocked on the
+    cable for up to two minutes. Without the guard the health tick would queue
+    another every 30 s behind it."""
+    ex = QueueingExecutor()
+    sup = _sup(opener=FakeOpener(), device_executor=ex)
+    for _ in range(5):
+        sup.on_stream_state("backgrounded")
+    assert len(ex.queued) == 1
+
+
+def test_the_next_attempt_is_allowed_once_the_last_one_finished():
+    op = FakeOpener()
+    sup = _sup(opener=op)           # Inline: each attempt completes at once
+    sup.on_stream_state("backgrounded")
+    sup.on_stream_state("unavailable")
+    assert op.calls == [False, False]
+
+
+def test_a_failed_attempt_does_not_block_every_later_one():
+    """The first attempt after a reboot usually raises: the cable is not ready."""
+    class Boom:
+        state = "unavailable"
+
+        def attempt(self, manual=False):
+            raise RuntimeError("no usbmux")
+
+    sup = _sup(opener=Boom())
+    sup.on_stream_state("backgrounded")
+    assert sup._opening is False
 
 
 def test_the_open_state_is_published():
