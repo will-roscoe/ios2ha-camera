@@ -160,7 +160,14 @@ class LiveStacker:
         # Pruned here, not just inside fps(): the bound on _out_times' size must
         # not depend on fps() being called at some other cadence.
         self._prune_out_times(now)
-        self._latest = Frame(jpeg, now)
+        # _latest is named alongside _acc/_t/_params above as a field two
+        # concurrent generations can touch; the assignment itself is atomic
+        # under the GIL, but taking the lock for it keeps every one of those
+        # named fields covered rather than leaving this one as the exception.
+        # Re-acquired rather than held across tone()/to_jpeg() above: those are
+        # the ~60ms/frame budget this file exists to hit.
+        with self._lock:
+            self._latest = Frame(jpeg, now)
         return jpeg
 
     def refresh_params(self, fps, img=None):

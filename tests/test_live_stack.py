@@ -61,6 +61,27 @@ def test_output_is_half_resolution():
     assert (im.width, im.height) == (1920 // SCALE, 1080 // SCALE)
 
 
+def test_latest_is_set_while_the_lock_is_held(monkeypatch):
+    """_latest was named alongside _acc/_t/_params as a field step() mutates with
+    no lock at all (sweep-correctness.md finding 2), but the earlier fix only
+    serialised the accumulate/params region -- `self._latest = Frame(jpeg, now)`
+    still ran after that lock had already been released. A plain attribute
+    reassignment is atomic under the GIL either way, so this is a compliance
+    check for the named requirement, not a corruption reproduction."""
+    st = LiveStacker(RingBuffer(1 << 22), _settings())
+    seen_locked = []
+    real_frame = live_stack.Frame
+
+    def spy_frame(*a, **kw):
+        seen_locked.append(st._lock.locked())
+        return real_frame(*a, **kw)
+    monkeypatch.setattr(live_stack, "Frame", spy_frame)
+
+    st.step(_frame(40, 1000.0), now=1000.0)
+
+    assert seen_locked == [True]
+
+
 def test_the_warm_up_is_the_running_mean_of_what_it_has_seen():
     """A running mean for the first N frames: frame 1 alone, then the mean of
     2, then of 3 -- each exact as long as the chosen depth N is at least the
