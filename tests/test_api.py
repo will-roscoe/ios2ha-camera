@@ -146,8 +146,12 @@ def test_state_leaves_out_a_value_json_cannot_carry(caplog):
         raise ValueError(f"not JSON: {token}")
 
     assert json.loads(text, parse_constant=refuse) == {"battery": 88}
+    # The whole phrase, not the bare key: "a", "b" and "c" all occur in the
+    # message text itself, so matching the letters alone could never fail.
     logged = " ".join(r.getMessage() for r in caplog.records)
-    assert all(k in logged for k in ("a", "b", "c"))
+    for key in ("a", "b", "c"):
+        assert f"state {key} is not JSON-encodable" in logged
+    assert "state battery " not in logged
 
 
 def test_objects_version_is_stable_across_processes():

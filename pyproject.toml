@@ -26,7 +26,10 @@ dependencies = [
     "numpy>=1.26",
     "pillow>=10.0",
     "opencv-python-headless>=4.9",
-    "paho-mqtt>=2.0",
+    # Capped at the next major: publishing from outside paho's network thread
+    # while that thread may be inside a callback is safe only because
+    # Client.publish never blocks on the lock paho holds around callbacks.
+    "paho-mqtt>=2.0,<3",
     "aiohttp>=3.9",
     # Floor raised to the 11.x line the code is written against and verified on
     # arcturus (11.12.4); the 4.x API differs enough to break phone.py.
