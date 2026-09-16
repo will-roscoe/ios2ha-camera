@@ -31,6 +31,7 @@ needs no DDI, so it stays available even on a freshly rebooted, unmounted phone.
 """
 
 import asyncio
+import threading
 
 TIMEOUT_S = 15  # finite and short: a hung call must never stall the supervisor's health tick
 # auto_mount may need to download the DeveloperDiskImage over the network the first time it
@@ -62,6 +63,17 @@ class PhoneManagerMisuseError(RuntimeError):
 class PhoneManager:
     def __init__(self, bundle_id):
         self.bundle_id = bundle_id
+        # Filled from the phone's own app list on first use; see executable_name.
+        self._executable = None
+        # iOS serves one instruments session at a time. Two threads each opening
+        # their own -- the health tick asking whether the app is running, and the
+        # step that opens it doing the same -- leave both hanging until their
+        # timeouts, and the phone's side stays wedged afterwards: measured on
+        # 2026-09-16, the camera was dark for two and a half hours with a healthy
+        # phone on the end of the cable, and only restarting the container (which
+        # drops the sessions) cleared it. Reentrant because one call may be built
+        # from another, as is_running is from the app list lookup.
+        self._dvt_lock = threading.RLock()
         self._ddi_mounted = False
         # Consecutive failures of calls that need the developer services. One of
         # these wedged every such call for 24 hours on 2026-09-14 while the
@@ -119,15 +131,16 @@ class PhoneManager:
         the battery died. Whether the phone or the process was wedged is still
         unknown, so this assumes neither -- it simply stops trusting the cache.
         """
-        self._call(self._mount_ddi)
-        try:
-            result = self._call(fn)
-        except Exception:
-            self._ddi_mounted = False
-            self.dvt_failures += 1
-            raise
-        self.dvt_failures = 0
-        return result
+        with self._dvt_lock:
+            self._call(self._mount_ddi)
+            try:
+                result = self._call(fn)
+            except Exception:
+                self._ddi_mounted = False
+                self.dvt_failures += 1
+                raise
+            self.dvt_failures = 0
+            return result
 
     def _mount_ddi(self):
         """Mount the DeveloperDiskImage needed by is_running/launch/screenshot. A no-op once
@@ -197,10 +210,45 @@ class PhoneManager:
                 await lockdown.close()
         return self._run(go())
 
+    def _applist(self):
+        async def go():
+            from pymobiledevice3.services.dvt.instruments.application_listing import (
+                ApplicationListing,
+            )
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+            lockdown = await self._lockdown()
+            try:
+                async with DvtProvider(lockdown) as provider:
+                    listing = ApplicationListing(provider)
+                    await listing.connect()
+                    return await listing.applist()
+            finally:
+                await lockdown.close()
+        return self._run(go())
+
+    def executable_name(self):
+        """The app's executable, asked of the phone once and remembered.
+
+        Worth the extra round trip, because guessing it from the bundle id is
+        wrong in a way that hides: taking the last word of
+        `com.guardianeye.webcam.ios` gives "ios", which matches `apfs_iosd` on
+        every iPhone, so "is the app running" answered yes on a phone where the
+        app was not even installed. Asking the device also means swapping the
+        phone, or the app, needs no change here.
+        """
+        if self._executable is None:
+            for app in self._dvt(self._applist) or []:
+                if app.get("CFBundleIdentifier") == self.bundle_id:
+                    self._executable = app.get("ExecutableName") or app.get("CFBundleExecutable")
+                    break
+        if not self._executable:
+            raise PhoneUnavailable(f"{self.bundle_id} is not installed on this phone")
+        return self._executable
+
     def is_running(self):
+        name = self.executable_name().lower()
         procs = self._dvt(self._proclist)
-        needle = self.bundle_id.split(".")[-1].lower()
-        return any(needle in p.get("name", "").lower() for p in procs)
+        return any(p.get("name", "").lower() == name for p in procs)
 
     def _launch(self, bundle_id=None, kill_existing=True):
         bundle_id = bundle_id or self.bundle_id
@@ -221,11 +269,11 @@ class PhoneManager:
     def launch(self):
         """Cold-start the app, killing any running copy.
 
-        Note what this costs: a cold start always leaves **streaming off**, and
-        only a person tapping Start streaming can turn it back on. That is the
-        right behaviour for the relaunch button, whose whole purpose is reviving
-        a dead app, and the wrong behaviour for merely bringing a running app
-        back to the front -- use `foreground()` for that.
+        Note what this costs: a cold start always leaves **streaming off**, so
+        the stream comes back only once `StreamStarter` presses Start streaming
+        (or a person does). That is the right behaviour for the relaunch button,
+        whose whole purpose is reviving a dead app, and the wrong behaviour for
+        merely bringing a running app back to the front -- use `foreground()`.
         """
         pid = self._dvt(lambda: self._launch(kill_existing=True))
         return bool(pid)

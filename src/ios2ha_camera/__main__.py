@@ -7,6 +7,7 @@ import threading
 from aiohttp import web
 
 from . import version
+from .app_open import AppOpener
 from .archive import Archive
 from .ingest import Ingestor
 from .keyboard import Keyboard
@@ -70,9 +71,16 @@ def main():
     keyboard = Keyboard()
     log.info("keyboard: %s", keyboard.start())
     starter = StreamStarter(_stream_probe(s), keyboard, phone.is_running,
-                            allowed=lambda: bool(getattr(s, "auto_start", True)))
+                            allowed=lambda: bool(getattr(s, "auto_start", True)),
+                            foreground=phone.foreground)
+    # Never while the battery policy has deliberately backgrounded the app:
+    # that pause is meant to be held, and the policy foregrounds it itself for
+    # the next capture. `sup` is late-bound here for the reason given above.
+    opener = AppOpener(phone.is_running, phone.launch, foreground=phone.foreground,
+                       allowed=lambda: (bool(getattr(s, "auto_start", True))
+                                        and not sup.backgrounding.backgrounded))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
-                     starter=starter, keyboard=keyboard)
+                     starter=starter, keyboard=keyboard, opener=opener)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 

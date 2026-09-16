@@ -6,6 +6,7 @@ import logging
 import paho.mqtt.client as mqtt
 
 from . import version
+from .app_open import APP_OPEN_STATES
 from .settings import mqtt_endpoints
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
@@ -150,6 +151,11 @@ _SENSORS = [
     # do: a value the code can produce but discovery does not list fails silently.
     dict(obj="stream_start", name="Stream start", device_class="enum",
          options=list(STREAM_START_STATES), category="diagnostic", icon="mdi:play-network"),
+    # The step before it: whether the app itself had to be opened. Separate
+    # because the two fail for different reasons -- no app at all, against an
+    # app that is open but will not take the keys.
+    dict(obj="app_open", name="App open", device_class="enum",
+         options=list(APP_OPEN_STATES), category="diagnostic", icon="mdi:cellphone-play"),
     dict(obj="stream_start_attempts", name="Stream start attempts (1 h)", unit="attempts",
          state_class="measurement", category="diagnostic", icon="mdi:counter"),
     # Consecutive failures of calls needing the phone's developer services. Zero

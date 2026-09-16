@@ -45,6 +45,23 @@ ADVERT_NAME = "ios2ha-kbd"
 KEYBOARD_APPEARANCE = 0x03C1
 POLL_S = 10.0
 
+# Fixed attribute handles, requested from BlueZ rather than left to it.
+#
+# A real keyboard's handles live in its firmware, so power-cycling it changes
+# nothing and the phone's cached HID description still fits. Ours are built at
+# registration, and BlueZ hands out fresh ones each time rather than reusing the
+# old: measured 0x00b8 -> 0x00cc -> 0x00e0 across three container restarts on
+# 2026-09-16. iOS reconnects and re-discovers but never re-reads the report map,
+# so it keeps matching our reports against the handles it learned at pairing --
+# and every restart silently broke the keyboard until it was paired again.
+# Pinning them makes each registration reproduce the same database.
+#
+# Spaced by two because each characteristic takes a declaration and a value
+# handle, and set well clear of the services BlueZ registers for itself.
+HID_HANDLE = 0x0200
+BATTERY_HANDLE = 0x0220
+DEVINFO_HANDLE = 0x0230
+
 
 class _Reports:
     """Turns key names into notified HID reports, holding each key long enough.
@@ -306,7 +323,12 @@ class Keyboard:
 
         adapter = await self._iface(ADAPTER, "org.bluez.GattManager1")
         await adapter.call_register_application(APP_ROOT, {})
-        log.info("keyboard registered with BlueZ")
+        # BlueZ writes back the handle it really used, so this says whether the
+        # requested ones were honoured. They must not move between restarts: iOS
+        # never re-reads the report map, so a moved report handle silently breaks
+        # the pairing until the phone is paired again.
+        log.info("keyboard registered with BlueZ (report handle 0x%04x, asked for 0x%04x)",
+                 self._report._handle, HID_HANDLE + 0x08)
 
         agents = await self._iface("/org/bluez", "org.bluez.AgentManager1")
         await agents.call_register_agent(AGENT_PATH, "NoInputNoOutput")
@@ -381,31 +403,35 @@ def _build_objects(on_subscribed):
     Returns (services, characteristics, descriptors, input_report): the first
     three are exported and listed for BlueZ, the last is what `press` notifies.
     """
-    hid = _Service(f"{APP_ROOT}/service0", HID_UUID)
-    battery = _Service(f"{APP_ROOT}/service1", BATTERY_UUID)
-    devinfo = _Service(f"{APP_ROOT}/service2", DEVINFO_UUID)
+    hid = _Service(f"{APP_ROOT}/service0", HID_UUID, HID_HANDLE)
+    battery = _Service(f"{APP_ROOT}/service1", BATTERY_UUID, BATTERY_HANDLE)
+    devinfo = _Service(f"{APP_ROOT}/service2", DEVINFO_UUID, DEVINFO_HANDLE)
 
     # encrypt-read: iOS only bonds with (and trusts) a HID device whose
     # characteristics require an encrypted link.
     info = _Chrc(f"{hid.path}/char0", "2a4a", ["encrypt-read"], hid.path,
-                 bytes([0x11, 0x01, 0x00, 0x02]))
-    report_map = _Chrc(f"{hid.path}/char1", "2a4b", ["encrypt-read"], hid.path, REPORT_MAP)
+                 bytes([0x11, 0x01, 0x00, 0x02]), handle=HID_HANDLE + 0x02)
+    report_map = _Chrc(f"{hid.path}/char1", "2a4b", ["encrypt-read"], hid.path, REPORT_MAP,
+                       handle=HID_HANDLE + 0x04)
     control = _Chrc(f"{hid.path}/char2", "2a4c", ["encrypt-write", "write-without-response"],
-                    hid.path, bytes([0]))
+                    hid.path, bytes([0]), handle=HID_HANDLE + 0x06)
     input_report = _Chrc(f"{hid.path}/char3", "2a4d", ["encrypt-read", "notify"], hid.path,
-                         bytes(8), on_subscribed)
+                         bytes(8), on_subscribed, handle=HID_HANDLE + 0x08)
     protocol = _Chrc(f"{hid.path}/char4", "2a4e", ["encrypt-read", "write-without-response"],
-                     hid.path, bytes([0x01]))
+                     hid.path, bytes([0x01]), handle=HID_HANDLE + 0x0C)
     # Report ID 1, type 1 (input): without this the phone cannot match the
-    # notifications to the report map.
+    # notifications to the report map. Sits just after the report's own value
+    # handle, where a client expects to find it.
     reference = _Desc(f"{input_report.path}/desc0", "2908", ["encrypt-read"],
-                      input_report.path, bytes([0x01, 0x01]))
+                      input_report.path, bytes([0x01, 0x01]), handle=HID_HANDLE + 0x0A)
 
-    level = _Chrc(f"{battery.path}/char0", "2a19", ["read", "notify"], battery.path, bytes([100]))
+    level = _Chrc(f"{battery.path}/char0", "2a19", ["read", "notify"], battery.path, bytes([100]),
+                  handle=BATTERY_HANDLE + 0x02)
     # PnP id: USB vendor source, Linux Foundation, so the phone has something to
     # show rather than an unnamed accessory.
     pnp = _Chrc(f"{devinfo.path}/char0", "2a50", ["read"], devinfo.path,
-                bytes([0x02, 0x6B, 0x1D, 0x46, 0x02, 0x01, 0x00]))
+                bytes([0x02, 0x6B, 0x1D, 0x46, 0x02, 0x01, 0x00]),
+                handle=DEVINFO_HANDLE + 0x02)
 
     return ([hid, battery, devinfo],
             [info, report_map, control, input_report, protocol, level, pnp],
@@ -421,9 +447,9 @@ def _build_objects(on_subscribed):
 
 
 class _Service(ServiceInterface):
-    def __init__(self, path, uuid):
+    def __init__(self, path, uuid, handle=0):
         super().__init__("org.bluez.GattService1")
-        self.path, self._uuid = path, uuid
+        self.path, self._uuid, self._handle = path, uuid, handle
 
     @dbus_property(access=PropertyAccess.READ, name="UUID")
     def uuid(self) -> "s":  # noqa: F722,F821
@@ -433,18 +459,36 @@ class _Service(ServiceInterface):
     def primary(self) -> "b":  # noqa: F722,F821
         return True
 
+    @dbus_property(access=PropertyAccess.READWRITE, name="Handle")
+    def handle(self) -> "q":  # noqa: F722,F821
+        return self._handle
+
+    @handle.setter  # BlueZ writes back what it actually allocated
+    def handle(self, value: "q"):  # noqa: F722,F821
+        self._handle = value
+
     def managed(self):
         return {"org.bluez.GattService1": {
-            "UUID": Variant("s", self._uuid), "Primary": Variant("b", True)}}
+            "UUID": Variant("s", self._uuid), "Primary": Variant("b", True),
+            "Handle": Variant("q", self._handle)}}
 
 
 class _Chrc(ServiceInterface):
-    def __init__(self, path, uuid, flags, service_path, value=b"", on_subscribed=None):
+    def __init__(self, path, uuid, flags, service_path, value=b"", on_subscribed=None, handle=0):
         super().__init__("org.bluez.GattCharacteristic1")
         self.path, self._uuid, self._flags = path, uuid, flags
         self._service, self._value = service_path, bytes(value)
         self._on_subscribed = on_subscribed
+        self._handle = handle
         self.notifying = False
+
+    @dbus_property(access=PropertyAccess.READWRITE, name="Handle")
+    def handle(self) -> "q":  # noqa: F722,F821
+        return self._handle
+
+    @handle.setter  # BlueZ writes back what it actually allocated
+    def handle(self, value: "q"):  # noqa: F722,F821
+        self._handle = value
 
     @dbus_property(access=PropertyAccess.READ, name="UUID")
     def uuid(self) -> "s":  # noqa: F722,F821
@@ -496,14 +540,24 @@ class _Chrc(ServiceInterface):
         return {"org.bluez.GattCharacteristic1": {
             "UUID": Variant("s", self._uuid),
             "Service": Variant("o", self._service),
-            "Flags": Variant("as", self._flags)}}
+            "Flags": Variant("as", self._flags),
+            "Handle": Variant("q", self._handle)}}
 
 
 class _Desc(ServiceInterface):
-    def __init__(self, path, uuid, flags, chrc_path, value=b""):
+    def __init__(self, path, uuid, flags, chrc_path, value=b"", handle=0):
         super().__init__("org.bluez.GattDescriptor1")
         self.path, self._uuid, self._flags = path, uuid, flags
         self._chrc, self._value = chrc_path, bytes(value)
+        self._handle = handle
+
+    @dbus_property(access=PropertyAccess.READWRITE, name="Handle")
+    def handle(self) -> "q":  # noqa: F722,F821
+        return self._handle
+
+    @handle.setter  # BlueZ writes back what it actually allocated
+    def handle(self, value: "q"):  # noqa: F722,F821
+        self._handle = value
 
     @dbus_property(access=PropertyAccess.READ, name="UUID")
     def uuid(self) -> "s":  # noqa: F722,F821
@@ -525,7 +579,8 @@ class _Desc(ServiceInterface):
         return {"org.bluez.GattDescriptor1": {
             "UUID": Variant("s", self._uuid),
             "Characteristic": Variant("o", self._chrc),
-            "Flags": Variant("as", self._flags)}}
+            "Flags": Variant("as", self._flags),
+            "Handle": Variant("q", self._handle)}}
 
 
 class _ObjectManager(ServiceInterface):
