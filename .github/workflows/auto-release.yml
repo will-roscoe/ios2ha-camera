@@ -3,26 +3,31 @@ name: Auto Release
 # Reads the Conventional Commit messages since the last version tag, decides the
 # next SemVer, tags it, and publishes the Release.
 #
-# DELIBERATELY MANUAL FOR NOW. This repository has never run this bump logic, and a
-# release mistake is public and awkward to take back: you can delete a Release, but
-# not un-pull it from anyone who already fetched the tag. So the automatic
-# `push: branches: [main]` trigger is commented out below rather than enabled.
+# Runs on every push to main, which in practice means every develop -> main merge.
+# A merge that carries no feat/fix/perf/breaking commit releases nothing. A merge
+# that does is only tagged if pyproject.toml already declares the version the
+# commits imply, so a forgotten bump fails loudly instead of publishing a tag that
+# disagrees with what the running container reports.
 #
-# Run it from the Actions tab, check that the tag it picks is the one you expected,
-# and once a few releases have gone out the way you wanted, uncomment the trigger.
+# This is also main's only CI run: the `ci` job below is the release gate, and
+# ci.yml deliberately does not run on pushes to main as well.
 #
-# The `dry-run` input computes and prints the next version without tagging anything,
-# which is the safe way to see what a merge would have done.
+# A tag pushed by this workflow does not trigger release.yml's own tag trigger
+# (GitHub does not start workflows from GITHUB_TOKEN pushes), so the release job
+# below calls it directly. A tag pushed by hand goes through that trigger instead.
+#
+# From the Actions tab, the `dry-run` input (on by default) computes and prints the
+# next version without tagging anything, which shows what a merge would do.
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry-run:
         description: Compute the next version and stop, without tagging
         type: boolean
         default: true
-  # push:
-  #   branches: [main]
 
 # Never run two auto-releases at once: they would race on tag creation.
 concurrency:
