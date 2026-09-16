@@ -89,7 +89,7 @@ def _run(coro):
     asyncio.run(coro)
 
 
-# -- the brief's four --------------------------------------------------------
+# -- what a client is promised: a snapshot, then only changes ----------------
 
 def test_a_new_subscriber_receives_a_full_snapshot_first():
     """Mirrors MQTT retained state: a reconnecting client must not need a separate GET,
@@ -203,7 +203,7 @@ def test_objects_changed_is_emitted_when_the_registry_version_changes():
     _run(run())
 
 
-# -- changed keys only -------------------------------------------------------
+# -- what counts as a change -------------------------------------------------
 
 def test_republishing_unchanged_values_emits_nothing():
     """The health loop republishes its whole dict every tick whether or not
@@ -324,6 +324,26 @@ def test_publishing_from_a_plain_thread_is_delivered_and_never_blocks():
     _run(run())
 
 
+def test_nothing_a_publisher_passes_can_raise_back_at_it():
+    """`publish` is called from paho's network thread and from the health and
+    ingest threads. An exception there does not just lose an event, it takes
+    down the loop that was publishing -- so a bad argument is logged and
+    dropped, and the keys around it still go out."""
+    async def run():
+        hub = EventHub()
+        async with TestClient(TestServer(_app(dict, hub))) as client:
+            resp = await client.get(PATH)
+            await _next_event(resp)
+            for bad in ("not a mapping", 17, object(), [("a", 1)]):
+                await asyncio.to_thread(hub.publish, bad)
+            # One unencodable value costs that key, not the publish.
+            await _publish(hub, {"ok": 1, "bad": object(), "temp": float("nan"),
+                                 "over": float("inf")})
+            assert await _next_event(resp) == ("state", {"state": {"ok": 1}})
+            resp.close()
+    _run(run())
+
+
 def test_publishing_with_no_loop_is_silently_dropped():
     """Before the server starts there is nobody to tell, and the first
     subscriber's snapshot covers anything published in the meantime."""
@@ -418,6 +438,60 @@ def test_no_delta_is_lost_to_a_client_connecting_mid_stream():
 
 # -- keepalive, the phone, leaks and shutdown ---------------------------------
 
+async def _as_deployed(server):
+    """Start `server` the way the service runs, not the way aiohttp's test
+    harness does.
+
+    `TestServer` starts its runner with `handler_cancellation=True`, so a
+    dropped connection cancels the request task for it. `web.run_app` leaves
+    that off, which is the default and what the service uses: there, nothing
+    wakes a handler when its connection goes -- it finds out at its next write.
+    A lifecycle test run under the harness default would pass on cancellation
+    the deployment never performs.
+    """
+    await server.start_server()
+    server.runner.server.handler_cancellation = False
+    return server
+
+
+def test_an_aborted_client_ends_at_once_not_at_its_next_keepalive():
+    """A stream parked waiting for events is aborted when its queue fills and at
+    shutdown. Aborting the socket alone is not felt by a task waiting on the
+    queue -- with nothing cancelling it, it would find out at its next write, a
+    keepalive later, which is longer than the service's whole stop grace period.
+
+    Deliberately runs with the shipped keepalive, not a tiny test one: a test
+    that injects 50 ms cannot tell a prompt end from a late one.
+    """
+    async def run():
+        hub = EventHub()
+        assert hub._keepalive_s >= 15.0, "this test is only meaningful with the real interval"
+        server = await _as_deployed(TestServer(_app(dict, hub)))
+        async with TestClient(server) as client:
+            resp = await client.get(PATH)
+            await _next_event(resp)
+            await _wait_until(lambda: hub.client_count == 1)
+            t0 = time.monotonic()
+            for c in list(hub._clients):
+                c.abort()
+            await _wait_until(lambda: hub.client_count == 0, timeout=2.0)
+            assert time.monotonic() - t0 < 2.0
+            resp.close()
+    _run(run())
+
+
+def test_the_stream_asks_nginx_not_to_buffer_it():
+    """nginx buffers a proxied response by default, which would hold back the
+    keepalives that exist to stop a proxy closing the connection."""
+    async def run():
+        hub = EventHub()
+        async with TestClient(TestServer(_app(dict, hub))) as client:
+            resp = await client.get(PATH)
+            assert resp.headers["X-Accel-Buffering"] == "no"
+            resp.close()
+    _run(run())
+
+
 def test_a_quiet_stream_sends_keepalives():
     """A Cloudflare tunnel closes an HTTP connection that says nothing for about
     100 s, and the state can be quiet for much longer than that."""
@@ -484,7 +558,7 @@ def test_nothing_is_left_behind_after_a_disconnect(how):
         hub = EventHub(keepalive_s=0.05,
                        write_timeout_s=0.2 if how == "write_times_out" else 60.0,
                        queue_size=4 if how == "queue_overflows" else 1000)
-        server = TestServer(_app(dict, hub))
+        server = await _as_deployed(TestServer(_app(dict, hub)))
         async with TestClient(server) as client:
             baseline = set(asyncio.all_tasks())
             resp = await client.get(PATH)
@@ -509,7 +583,8 @@ def test_shutdown_ends_open_streams_without_waiting_out_the_keepalive():
         hub = EventHub(keepalive_s=60.0)
         server = TestServer(_app(dict, hub))
         client = TestClient(server)
-        await client.start_server()
+        await _as_deployed(server)
+        await client.start_server()   # the server is already up; this starts the session
         try:
             resp = await client.get(PATH)
             await _next_event(resp)

@@ -68,7 +68,9 @@ _CLOSE = object()  # queued to end a stream cleanly at shutdown
 
 def _event(name, payload):
     # json.dumps never emits a raw newline (it escapes them inside strings), so
-    # the whole payload is one `data:` line, which is what SSE requires.
+    # the whole payload is one `data:` line, which is what SSE requires. Every
+    # value here has already been through `_served`, so nothing reaches this
+    # that json cannot encode.
     body = json.dumps(payload, separators=(",", ":"))
     return f"event: {name}\ndata: {body}\n\n".encode()
 
@@ -86,12 +88,16 @@ def _served(d):
 
     A value that cannot be encoded is logged and left out rather than raised:
     this runs on publisher threads that must never fail because of a client
-    interface.
+    interface. `allow_nan=False` puts NaN and the infinities in that category
+    rather than letting them out as the bare `NaN` and `Infinity` tokens
+    Python's json writes by default, which are not JSON and which a browser's
+    `JSON.parse` -- and so a client written against this stream -- rejects.
     """
     out = {}
     for key, value in d.items():
         try:
-            text = json.dumps(value, sort_keys=True, separators=(",", ":"))
+            text = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                              allow_nan=False)
         except (TypeError, ValueError):
             log.exception("state %s is not JSON-encodable; not sent to event clients", key)
             continue
@@ -109,9 +115,23 @@ class _Client:
         self.writing = False
 
     def abort(self):
-        """End the connection now. Not `close()`: that waits to flush the send
-        buffer first, which for a client that stopped reading is never."""
+        """End the connection now, and end the request task with it.
+
+        `transport.abort()` rather than `close()`, because `close()` flushes the
+        send buffer first and for a client that stopped reading that never
+        finishes. The queue is emptied and given the same close marker a clean
+        shutdown uses, because aborting the transport alone is not felt by a
+        task parked on `queue.get()` -- it would only find out at its next
+        write, a whole keepalive interval later, which for a service being shut
+        down is longer than it has.
+        """
         self.gone = True
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self.queue.put_nowait(_CLOSE)
         if self.transport is not None:
             self.transport.abort()
 
@@ -156,20 +176,33 @@ class EventHub:
 
         Callable from any thread and never blocks: it encodes on the caller's
         thread and hands the rest to the event loop. `d` need not be a delta --
-        republishing a whole unchanged dict emits nothing -- but the state it
-        carries must already be readable through the route's `state` callable
-        when this is called, or a client connecting in between could miss it.
+        republishing a whole unchanged dict emits nothing.
+
+        **Every value in `d` must already be readable through the route's
+        `state` callable before this is called.** A client connecting in between
+        reads `state()` and the hub folds that read in as a publish of its own,
+        so a `state` that still shows the old value there both loses this change
+        for the connecting client and broadcasts the stale one to every client
+        already connected. Publish after the value is stored, never before.
+
+        Nothing a caller passes can raise out of here. The callers are the
+        health and ingest threads and paho's network thread, where an exception
+        does not merely lose an event: it tears down the loop that was
+        publishing, and the camera goes with it.
         """
-        loop = self._loop
-        if loop is None or not d:
-            return
-        served = _served(d)
-        if not served:
-            return
         try:
-            loop.call_soon_threadsafe(self._apply_state, served)
-        except RuntimeError:
-            pass  # the loop closed after it was read above; nobody is listening
+            loop = self._loop
+            if loop is None or not d:
+                return
+            served = _served(d)
+            if not served:
+                return
+            try:
+                loop.call_soon_threadsafe(self._apply_state, served)
+            except RuntimeError:
+                pass  # the loop closed after it was read above; nobody is listening
+        except Exception:
+            log.exception("could not publish %r to event clients", d)
 
     def set_objects_version(self, version):
         """Record the descriptors' fingerprint; tell clients if it changed.
@@ -251,7 +284,15 @@ class EventHub:
             raise web.HTTPServiceUnavailable(text="shutting down")
         client = self._subscribe(request, state)
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream",
-                                           "Cache-Control": "no-store"})
+                                           "Cache-Control": "no-store",
+                                           # nginx buffers a proxied response by
+                                           # default, which holds events (and the
+                                           # keepalives meant to stop a proxy
+                                           # closing the connection) until the
+                                           # buffer fills. This is the header it
+                                           # reads to stop doing that; anything
+                                           # else ignores it.
+                                           "X-Accel-Buffering": "no"})
         try:
             await resp.prepare(request)
             while not client.gone:
