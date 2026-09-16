@@ -62,6 +62,8 @@ class PhoneManagerMisuseError(RuntimeError):
 class PhoneManager:
     def __init__(self, bundle_id):
         self.bundle_id = bundle_id
+        # Filled from the phone's own app list on first use; see executable_name.
+        self._executable = None
         self._ddi_mounted = False
         # Consecutive failures of calls that need the developer services. One of
         # these wedged every such call for 24 hours on 2026-09-14 while the
@@ -197,10 +199,45 @@ class PhoneManager:
                 await lockdown.close()
         return self._run(go())
 
+    def _applist(self):
+        async def go():
+            from pymobiledevice3.services.dvt.instruments.application_listing import (
+                ApplicationListing,
+            )
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+            lockdown = await self._lockdown()
+            try:
+                async with DvtProvider(lockdown) as provider:
+                    listing = ApplicationListing(provider)
+                    await listing.connect()
+                    return await listing.applist()
+            finally:
+                await lockdown.close()
+        return self._run(go())
+
+    def executable_name(self):
+        """The app's executable, asked of the phone once and remembered.
+
+        Worth the extra round trip, because guessing it from the bundle id is
+        wrong in a way that hides: taking the last word of
+        `com.guardianeye.webcam.ios` gives "ios", which matches `apfs_iosd` on
+        every iPhone, so "is the app running" answered yes on a phone where the
+        app was not even installed. Asking the device also means swapping the
+        phone, or the app, needs no change here.
+        """
+        if self._executable is None:
+            for app in self._dvt(self._applist) or []:
+                if app.get("CFBundleIdentifier") == self.bundle_id:
+                    self._executable = app.get("ExecutableName") or app.get("CFBundleExecutable")
+                    break
+        if not self._executable:
+            raise PhoneUnavailable(f"{self.bundle_id} is not installed on this phone")
+        return self._executable
+
     def is_running(self):
+        name = self.executable_name().lower()
         procs = self._dvt(self._proclist)
-        needle = self.bundle_id.split(".")[-1].lower()
-        return any(needle in p.get("name", "").lower() for p in procs)
+        return any(p.get("name", "").lower() == name for p in procs)
 
     def _launch(self, bundle_id=None, kill_existing=True):
         bundle_id = bundle_id or self.bundle_id

@@ -32,6 +32,18 @@ would have woken by itself, and a cable that cannot answer means *unknown*, not 
 starts an hour and 12 a day, ten minutes apart, and a success does not refund that budget — an app
 that dies the moment it opens must not be relaunched all night.
 
+*Fixed: "is the app running" could not answer honestly.* The process was matched on the last word
+of its bundle id, which for `com.guardianeye.webcam.ios` is `ios` — and that matches `apfs_iosd`,
+present on every iPhone. The app therefore read as running on a phone where it had been deleted,
+and every part of the recovery that asks the question first was quietly built on it. The executable
+name now comes from the phone's own app list, looked up once by bundle id and remembered, so it is
+exact and stays right when the phone or the app is swapped.
+
+*Also new: a running app that answers nothing is brought to the front.* After a phone restart iOS
+relaunches Guardian Eye by itself, backgrounded and serving nothing — a process exists, so a cold
+start would be both wrong and destructive. That case is fronted instead, never while the battery
+policy has deliberately backgrounded the app, since that pause is meant to be held.
+
 The three fixes below make the keyboard half of that reliable.
 
 *The keyboard survives a container restart, and can recover an app that has stopped listening.*

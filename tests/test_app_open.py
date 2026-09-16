@@ -38,11 +38,11 @@ class Launch:
         return True
 
 
-def _opener(running, launch=None, allowed=lambda: True, now=None):
+def _opener(running, launch=None, allowed=lambda: True, now=None, foreground=None):
     now = now or [1000.0]
     launch = launch or Launch()
-    opener = AppOpener(running, launch, clock=lambda: now[0], sleep=lambda s: None,
-                       allowed=allowed)
+    opener = AppOpener(running, launch, foreground=foreground, clock=lambda: now[0],
+                       sleep=lambda s: None, allowed=allowed)
     return opener, launch, now
 
 
@@ -52,12 +52,41 @@ def test_an_app_that_is_gone_is_cold_started():
     assert launch.calls == 1
 
 
-def test_a_running_app_is_left_alone():
+def test_a_running_app_is_never_cold_started():
     """The guard that matters: a cold start kills the running copy, so an app
     that is merely suspended would lose the stream it is holding."""
     o, launch, _ = _opener(Running(True))
     assert o.attempt() == "not_needed"
     assert launch.calls == 0
+
+
+def test_a_running_app_that_is_not_answering_is_brought_to_the_front():
+    """Measured after a phone reboot: iOS relaunches the app by itself, but
+    backgrounded and serving nothing, so there is a process and no stream."""
+    fronted = []
+    o, launch, _ = _opener(Running(True), foreground=lambda: fronted.append(1))
+    assert o.attempt() == "fronted"
+    assert fronted == [1]
+    assert launch.calls == 0
+
+
+def test_a_foreground_that_fails_is_reported():
+    def boom():
+        raise RuntimeError("the cable went away")
+    o, _, _ = _opener(Running(True), foreground=boom)
+    assert o.attempt() == "failed_launch"
+
+
+def test_fronting_spends_the_budget_too():
+    """Otherwise an app that comes to the front and still serves nothing is
+    fronted again on every state change, for ever."""
+    now = [1000.0]
+    fronted = []
+    o, _, _ = _opener(Running(True), foreground=lambda: fronted.append(1), now=now)
+    assert o.attempt() == "fronted"
+    now[0] += 60
+    assert o.attempt() == "rate_limited"
+    assert fronted == [1]
 
 
 def test_a_cable_that_cannot_answer_is_not_a_dead_app():

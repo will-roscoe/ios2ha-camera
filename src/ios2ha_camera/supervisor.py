@@ -506,6 +506,13 @@ class Supervisor:
         # re-checks all of it anyway; this is only the trigger.
         if state == "streaming_off" and self.starter is not None:
             self._submit("start_streaming", lambda: self.starter.attempt(False))
+        # Nothing answered on the app's page at all, which is what a phone that
+        # rebooted looks like. Asked here as well as on the battery tick so the
+        # app is opened in seconds rather than after the next five-minute
+        # sweep. The opener re-checks over the cable, where a suspended app
+        # still counts as running, so a deliberate backgrounding is left alone.
+        if state in ("backgrounded", "unavailable") and self.opener is not None:
+            self._submit("open_app", lambda: self.opener.attempt(False))
 
     def health_state(self, now=None):
         now = time.time() if now is None else now

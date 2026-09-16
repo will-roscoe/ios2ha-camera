@@ -18,7 +18,7 @@ import time
 log = logging.getLogger(__name__)
 
 # Every value attempt() can return, for the Home Assistant enum.
-APP_OPEN_STATES = ("idle", "opening", "opened", "not_needed", "rate_limited",
+APP_OPEN_STATES = ("idle", "opening", "opened", "fronted", "not_needed", "rate_limited",
                    "paused", "failed_launch", "unavailable")
 
 # How long to give the app before asking whether it came up.
@@ -39,10 +39,14 @@ class AppOpener:
     starts it. `allowed()` is the pause switch.
     """
 
-    def __init__(self, is_running, launch, clock=time.monotonic, sleep=time.sleep,
-                 allowed=lambda: True):
+    def __init__(self, is_running, launch, foreground=None, clock=time.monotonic,
+                 sleep=time.sleep, allowed=lambda: True):
         self._is_running = is_running
         self._launch = launch
+        # Measured after a phone reboot on 2026-09-16: iOS brings the app back
+        # by itself, but backgrounded and serving nothing. Cold starting it
+        # would work and cost more, so the running case is fronted instead.
+        self._foreground = foreground
         self._clock = clock
         self._sleep = sleep
         self._allowed = allowed
@@ -73,9 +77,20 @@ class AppOpener:
         if running is None:
             return self._done("unavailable")
         if running:
-            # Suspended counts as running: iOS wakes it, and a cold start here
-            # would throw away a stream that is merely paused.
-            return self._done("not_needed")
+            # A cold start would kill the running copy and any stream with it,
+            # so a running app is only ever brought to the front.
+            if self._foreground is None:
+                return self._done("not_needed")
+            self._attempts.append(now)
+            self.state = "opening"
+            log.info("open app: the app is running but not answering; bringing it to the front")
+            try:
+                self._foreground()
+            except Exception as e:
+                log.warning("open app: could not bring the app to the front (%s: %s)",
+                            type(e).__name__, e)
+                return self._done("failed_launch")
+            return self._done("fronted")
 
         self._attempts.append(now)
         self.state = "opening"

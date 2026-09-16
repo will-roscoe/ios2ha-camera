@@ -505,6 +505,25 @@ def test_a_cable_that_cannot_answer_does_not_trigger_a_cold_start():
     assert op.calls == []
 
 
+def test_a_state_with_nothing_answering_opens_the_app():
+    """What a rebooted phone looks like from the network side. Waiting for the
+    next five-minute battery sweep would leave the camera dark for no reason."""
+    for state in ("backgrounded", "unavailable"):
+        op = FakeOpener()
+        _sup(opener=op).on_stream_state(state)
+        assert op.calls == [False], state
+
+
+def test_a_state_where_the_app_is_answering_does_not_open_it():
+    """`streaming_off` is an app that is open and idle -- the keys' job, not a
+    relaunch, which would kill it. The rest are already streaming."""
+    op = FakeOpener()
+    sup = _sup(opener=op)
+    for state in ("streaming_off", "ready", "in_use", "capturing", "stalled"):
+        sup.on_stream_state(state)
+    assert op.calls == []
+
+
 def test_the_open_state_is_published():
     op = FakeOpener()
     sup = _sup(phone=FakePhone(running=False), opener=op)

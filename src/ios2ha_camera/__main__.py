@@ -73,8 +73,12 @@ def main():
     starter = StreamStarter(_stream_probe(s), keyboard, phone.is_running,
                             allowed=lambda: bool(getattr(s, "auto_start", True)),
                             foreground=phone.foreground)
-    opener = AppOpener(phone.is_running, phone.launch,
-                       allowed=lambda: bool(getattr(s, "auto_start", True)))
+    # Never while the battery policy has deliberately backgrounded the app:
+    # that pause is meant to be held, and the policy foregrounds it itself for
+    # the next capture. `sup` is late-bound here for the reason given above.
+    opener = AppOpener(phone.is_running, phone.launch, foreground=phone.foreground,
+                       allowed=lambda: (bool(getattr(s, "auto_start", True))
+                                        and not sup.backgrounding.backgrounded))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
                      starter=starter, keyboard=keyboard, opener=opener)
     stacker = LiveStacker(buf, s)
