@@ -282,6 +282,31 @@ phone that keys cannot fix is not worth poking all night.
 **`button.ios2ha_camera_start_streaming`** presses now, ignoring both the switch and the budget,
 because a person asking is an explicit instruction. It still obeys every guard above.
 
+### Before the keys: opening the app
+
+Pressing Start streaming needs an app that is open and idle, so a step before it makes the app
+present at all. After a phone restart iOS relaunches Guardian Eye by itself, backgrounded and
+serving nothing, so the usual repair is to bring it to the front rather than to cold start it — a
+cold start kills the running copy, and with it any stream it was holding.
+
+That step runs when nothing is answering on the app's page, on the 30-second health tick as well as
+on a state change, because a phone that has just booted cannot answer over the cable for a minute or
+two and its state then stops changing. It is budgeted at three starts an hour and twelve a day, ten
+minutes apart, and a success does not refund the budget: an app that dies as soon as it opens must
+not be relaunched all night.
+
+| `app_open` | What it means |
+|---|---|
+| `idle` | Nothing attempted since startup |
+| `opening` | A launch or a foreground is going out now |
+| `opened` | The app was not running and was cold started |
+| `fronted` | The app was running but answering nothing, so it was brought to the front |
+| `not_needed` | The app is already running, and there is no way to front it |
+| `paused` | The auto-start switch is off, or the battery policy has deliberately backgrounded the app |
+| `rate_limited` | Budget spent; a person is needed |
+| `failed_launch` | The launch or foreground was refused, or the app still is not running afterwards |
+| `unavailable` | The cable could not say whether the app is running. Not the same as "it is not" — nothing is launched on a guess, because that would kill a stream that was merely suspended |
+
 **One-time setup on the phone**, all of it needed before any of this works:
 
 1. **No passcode** (Settings → Face ID & Passcode → Turn Passcode Off). After a restart a passcode

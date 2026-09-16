@@ -108,9 +108,13 @@ buffered rather than waiting for a fresh session. The hold is released — and t
 close — before stacking and rendering run, which is 10–20 s of CPU the phone no longer has to stay
 connected for.
 
-**Getting the phone back, in two parts.** Bringing the phone back — cable, app running, app in front
-— is done over the USB cable by the flows that already exist (`Upstream` sessions,
-`Backgrounding.foreground`, the relaunch button, the cable self-heal). *Starting the stream* is a
+**Getting the phone back, in three parts.** Bringing the phone back — cable, app running, app in
+front — is done over the USB cable by the flows that already exist (`Upstream` sessions,
+`Backgrounding.foreground`, the relaunch button, the cable self-heal). *Making the app present* when
+none of those has, which is what a restarted phone needs, is `app_open.AppOpener`: it cold starts the
+app when the phone says it is not running, and brings it to the front when it is running but
+answering nothing, never acting on a cable that cannot answer and never while the battery policy has
+deliberately backgrounded the app. *Starting the stream* is a third
 separate step, `stream_start.StreamStarter`, because Guardian Eye only starts streaming from a
 button on its own screen. That step drives `keyboard.Keyboard`, a Bluetooth LE keyboard the host
 emulates through BlueZ, which iOS Full Keyboard Access acts on. It is kept narrow on purpose: it
