@@ -160,16 +160,25 @@ class MqttIO:
         self.c.on_connect_fail = self._on_connect_fail
 
     def _on_connect(self, c, u, flags, rc, props=None):
-        c.subscribe(f"{self.s.mqtt_prefix}/set/#")
-        for topic, cfg in discovery_payloads(self.s):
-            # Published as built, with no None-stripping: `"name": null` is a
-            # meaningful value that marks an entity as its device's main
-            # feature, and is not the same as leaving the key out. The builders
-            # omit keys that do not apply.
-            c.publish(topic, json.dumps(cfg), retain=True)
-        self.set_available(True)
+        # Guarded for the same reason as _on_message: this also runs on paho's
+        # network thread, which re-raises a callback exception and takes the
+        # connection down with it. discovery_payloads raises on purpose for an
+        # entity it cannot render, and that must cost the discovery, not every
+        # later control.
+        try:
+            c.subscribe(f"{self.s.mqtt_prefix}/set/#")
+            for topic, cfg in discovery_payloads(self.s):
+                # Published as built, with no None-stripping: `"name": null` is
+                # a meaningful value that marks an entity as its device's main
+                # feature, and is not the same as leaving the key out. The
+                # builders omit keys that do not apply.
+                c.publish(topic, json.dumps(cfg), retain=True)
+            self.set_available(True)
+        except Exception:
+            log.exception("MQTT connect handling failed")
         # Runs on every (re)connect, so the supervisor can republish state that a
-        # broker restart dropped.
+        # broker restart dropped. Separately guarded, so a discovery failure
+        # above does not also cost the replay.
         try:
             self.on_connected()
         except Exception:

@@ -105,6 +105,39 @@ def test_a_raising_control_handler_never_escapes_the_message_callback():
     io._on_message(None, None, _Msg("ios2ha_camera/set/interval_s", b"300"))
 
 
+class _RaisingClient(_FakeBroker):
+    def subscribe(self, topic):
+        raise OSError("socket gone")
+
+
+def test_a_failing_subscribe_never_escapes_the_connect_callback(caplog):
+    """The connect callback runs on paho's network thread too: an exception
+    there tears the loop down and leaves the camera uncontrollable."""
+    connected = []
+    io = MqttIO(Settings(), on_connected=lambda: connected.append(True))
+    with caplog.at_level(logging.ERROR):
+        io._on_connect(_RaisingClient(), None, None, 0)
+    assert connected == [True], "the state replay must still run"
+    assert any("connect" in r.getMessage() for r in caplog.records)
+
+
+def test_a_discovery_payload_that_cannot_be_built_never_escapes_the_connect_callback(
+        monkeypatch, caplog):
+    """discovery_payloads raises on a domain it has no renderer for, by design."""
+    def boom(s):
+        raise ValueError("x: no discovery renderer for domain 'fan'")
+
+    monkeypatch.setattr(mqtt_io_module, "discovery_payloads", boom)
+    connected = []
+    io = MqttIO(Settings(), on_connected=lambda: connected.append(True))
+    client = _FakeBroker()
+    client.subscribe = lambda topic: None
+    with caplog.at_level(logging.ERROR):
+        io._on_connect(client, None, None, 0)
+    assert connected == [True]
+    assert any("connect" in r.getMessage() for r in caplog.records)
+
+
 def test_control_payloads_decode_to_the_right_python_types():
     seen = []
     io = MqttIO(Settings(), on_control=lambda n, v: seen.append((n, v)))
