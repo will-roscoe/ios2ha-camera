@@ -288,8 +288,18 @@ probe, so "does the app answer with a frame" is asked the same way everywhere it
 Writes the display JPEG under `YYYY/MM/DD/HHMMSS.jpg` via a temporary file and an atomic rename, so
 a reader never sees a half-written frame, and reports free space.
 
+### `entities.py`
+Every entity the service publishes, declared once: object id, domain, display name, unit, device
+class, options, range and the state key it reads. `mqtt_io` renders these into Home Assistant
+discovery payloads, and a Home Assistant custom component in its own repository will read the same
+declaration, so the two cannot drift apart as they would have done with a hand-kept copy each. It
+also carries `MEDIA`, the video and image the HTTP server offers, where `holds_phone` records which
+of them keep the phone's connection open while a viewer is attached.
+
 ### `mqtt_io.py`
-The MQTT client and the Home Assistant discovery payloads. State is **retained**, so Home Assistant
+The MQTT client, and the renderer that turns `entities.ENTITIES` into Home Assistant discovery
+payloads -- one small builder per domain, so a declared entity of a kind nothing renders raises
+rather than being silently left unpublished. State is **retained**, so Home Assistant
 shows real values immediately after its own restart rather than "unknown" until the next interval,
 and an `on_connected` callback republishes controls, measurements and the last still on every
 reconnect. `connect_async` means a broker that is down at startup does not stop capture. `close()`

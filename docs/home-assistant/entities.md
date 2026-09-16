@@ -2,7 +2,7 @@
 
 :::{note}
 Scaffolded, not yet written. This page should be generated from the entity
-definitions in `ios2ha_camera.mqtt_io` rather than typed out, so it cannot drift
+definitions in `ios2ha_camera.entities` rather than typed out, so it cannot drift
 from what the service actually publishes.
 :::
 
