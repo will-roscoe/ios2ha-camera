@@ -40,7 +40,7 @@ version, `{"api": 1, "mqtt": 1}` interface versions, the device block, and a
 | `state` | `GET` | Every current value, keyed by object id |
 | `control` | `POST` to `/api/v1/control/{name}` | One verb for every writable entity: `{"value": ...}` in, `{"ok": true or false, ...}` out |
 | `media` | `GET` | The same media descriptors `objects` embeds, on their own |
-| `events` | — | **Not served yet.** Named in `routes` so a client can find it the moment it exists; a request today gets a 404 |
+| `events` | `GET` | Server-Sent Events: a full snapshot on connect, then only the values that changed — see [Events](#events) |
 
 A `control` response of `200` means the write was accepted and handed to the
 supervisor, not that it has taken effect — read `state` back to confirm, the same
@@ -48,6 +48,38 @@ way a Home Assistant automation would watch an MQTT state topic settle. A reject
 write (an out-of-range number, an option outside a select's list, an unknown or
 read-only name) comes back as a `4xx` with an `error` string and, where it makes
 sense, the value currently in effect.
+
+## Events
+
+`GET /api/v1/events` is a `text/event-stream` that stays open. One connection is
+enough for every entity: there is nothing to poll.
+
+```
+event: snapshot
+data: {"objects_version": "sha256:...", "state": {"phone_battery": 81, ...}}
+
+event: state
+data: {"state": {"phone_battery": 80}}
+
+event: objects_changed
+data: {"objects_version": "sha256:..."}
+
+: keepalive
+```
+
+The `snapshot` arrives first and carries every value, exactly as a reconnecting
+MQTT client gets the retained topics, so no separate `GET /api/v1/state` is
+needed. After it, a `state` event carries only the keys whose value changed; a
+value republished unchanged sends nothing. `objects_changed` means a cached
+`objects` document is stale and should be refetched — comparing the
+`objects_version` in a snapshot with the cached one catches the same thing across
+a restart. The comment line is a keepalive, sent every 20 seconds or so, because
+a proxy will close a connection that says nothing for long enough.
+
+A client that stops reading is disconnected rather than being sent a partial
+stream: a missed delta would leave it displaying a wrong value with nothing to
+tell it so, where a disconnect is visible and a reconnect brings a fresh
+snapshot. Reconnect and carry on.
 
 ## Media
 

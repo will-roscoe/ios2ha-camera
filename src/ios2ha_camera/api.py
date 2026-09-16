@@ -37,6 +37,7 @@ from aiohttp import web
 
 from . import version
 from .entities import ENTITIES, MEDIA, device_info
+from .events import EventHub
 
 log = logging.getLogger(__name__)
 
@@ -50,11 +51,8 @@ PREFIX = "/api/v1"
 INFO = PREFIX + "/info"
 
 # Every route except `info` itself, which is the one a client is told to
-# hardcode. `events` has no handler registered yet, but is named here anyway: a
-# client discovers every path from this map, so `events`'s path has to be fixed
-# now rather than sprung on it once the handler exists. Until then it 404s,
-# which a client can read and retry later, where a client that never learns the
-# name cannot ask at all.
+# hardcode; a client discovers every other path from this map. `events` is the
+# SSE stream served by `events.EventHub`.
 ROUTES = {
     "objects": PREFIX + "/objects",
     "state": PREFIX + "/state",
@@ -202,7 +200,7 @@ def _refused(status, error, **extra):
                              status=status, headers=_NO_STORE)
 
 
-def add_api_routes(app, state, settings, on_control=lambda n, v: None):
+def add_api_routes(app, state, settings, *, events, on_control=lambda n, v: None):
     """Register the API on an application the caller owns.
 
     `state` is called per request and returns the current values keyed by object
@@ -210,6 +208,12 @@ def add_api_routes(app, state, settings, on_control=lambda n, v: None):
     `Supervisor.handle_control` in the live service. Both are callables rather
     than the supervisor itself, which is what keeps this module independently
     testable and free of a second opinion about the state.
+
+    `events` is the `EventHub` behind `/api/v1/events`; whoever publishes state
+    feeds it with `events.publish(d)`. It is required here, not defaulted, because
+    a hub created silently in here is one nothing publishes to: every client
+    would get its snapshot and then never hear another change. Its snapshots
+    come from the same `state` as `/api/v1/state`.
 
     `settings` is not read yet. It is in the signature now because optional auth
     (deliberately deferred, not forgotten) lands on this surface: adding it
@@ -238,7 +242,7 @@ def add_api_routes(app, state, settings, on_control=lambda n, v: None):
 
         200 means accepted and dispatched, not applied: `handle_control` is
         fire-and-forget by necessity, so a caller that wants confirmation reads
-        `/state` (or, later, the event stream) rather than this response.
+        `/state` or the event stream rather than this response.
         """
         name = request.match_info["name"]
         e = _WRITABLE.get(name)
@@ -275,13 +279,30 @@ def add_api_routes(app, state, settings, on_control=lambda n, v: None):
     app.router.add_get(INFO, get_info)
     app.router.add_get(ROUTES["objects"], get_objects)
     app.router.add_get(ROUTES["media"], get_media)
+    async def get_events(request):
+        return await events.serve(request, state)
+
     app.router.add_get(ROUTES["state"], get_state)
+    # Not add_get: that also answers HEAD, and a HEAD has no body to stream, so
+    # the handler would hold the connection open with nothing to say until
+    # shutdown.
+    app.router.add_route("GET", ROUTES["events"], get_events)
     app.router.add_post(ROUTES["control"], post_control)
+    # Set once: within a process the registry never changes. Every snapshot
+    # carries it, which is how a client reconnecting after a restart notices a
+    # registry that did.
+    events.set_objects_version(objects_version())
+    events.attach(app)
     return app
 
 
-def make_api(state, settings, on_control=lambda n, v: None):
+def make_api(state, settings, on_control=lambda n, v: None, events=None):
     """A standalone application serving the API, for tests and for a deployment
     that wants it on its own port. The live service calls `add_api_routes` on the
-    application already serving the media routes instead."""
-    return add_api_routes(web.Application(), state, settings, on_control=on_control)
+    application already serving the media routes instead.
+
+    Without `events` it gets a hub of its own, which nothing publishes to: its
+    stream serves a snapshot and keepalives only."""
+    return add_api_routes(web.Application(), state, settings,
+                          events=events if events is not None else EventHub(),
+                          on_control=on_control)
