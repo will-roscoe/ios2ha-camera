@@ -330,13 +330,13 @@ The interval loop and the wiring. Beyond the obvious:
 Reads the environment, builds everything, starts the threads, and hands the main thread to the live
 server. `web.run_app` returns on SIGTERM, which is how the container stops the process.
 
-**The shutdown budget.** Compose allows 20 s from SIGTERM before it SIGKILLs. `run_app` is given
+**The shutdown budget.** Compose allows 30 s from SIGTERM before it SIGKILLs. `run_app` is given
 `shutdown_timeout=2.0`, but a `/live` viewer waiting for a frame can sit out that timeout *twice* —
 once while aiohttp waits for handlers to finish, once again after cancelling them — measured 4.0 s,
 not 2. Then `up.stop(timeout=5.0)`, `keyboard.stop(timeout=3.0)`, two 3 s thread joins (capture,
-health) and up to 2 s for `mqtt.close()`: 4 + 5 + 3 + 3 + 3 + 2 = 20 s, the entire budget with no
-headroom. Each term is a worst case and they have not been seen together, but the arithmetic leaves
-nothing spare. A device action already running when the stop arrives is waited for after `main()`
+health) and up to 2 s for `mqtt.close()`: 4 + 5 + 3 + 3 + 3 + 2 = 20 s, leaving 10 s of
+headroom. Each term is a worst case and they have not been seen together. The grace period used
+to be 20 s, which left no headroom at all. A device action already running when the stop arrives is waited for after `main()`
 returns, outside this sum; queued ones are dropped. An upstream
 thread still alive after its 5 s is presumed stuck inside a probe's own timeout, and `stop()`
 deliberately leaves it alone rather than touching the ingestor from a second thread, which is the
