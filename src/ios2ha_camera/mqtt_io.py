@@ -283,14 +283,20 @@ class MqttIO:
         single log line, never the endless retry EXPOSE_MQTT exists to stop.
         Topics come from discovery_payloads(self.s), the same registry
         _on_connect publishes from, so nothing cleared here can drift from what
-        would have been created.
+        would have been created. The retained `<prefix>/available` message is
+        cleared as well, after them and within the same deadline.
         """
         if timeout <= 0:
             # paho's own connect_timeout setter raises ValueError for this; catch
             # it here so a bad call is one log line, not a crash during startup.
             log.warning("MQTT teardown skipped: timeout must be positive, got %r", timeout)
             return
-        topics = [topic for topic, _cfg in discovery_payloads(self.s)]
+        discovery = [topic for topic, _cfg in discovery_payloads(self.s)]
+        # The retained availability message goes too, and last: left behind, a
+        # broker keeps announcing a device that has no entities, and cleared
+        # before them, a teardown cut short would leave entities whose
+        # availability topic is already gone.
+        topics = discovery + [f"{self.s.mqtt_prefix}/available"]
         ep = self._endpoints[self._endpoint]
         connected = threading.Event()
         original_on_connect = self.c.on_connect
@@ -350,11 +356,11 @@ class MqttIO:
                     break
                 cleared += 1
             if gave_up:
-                log.warning("MQTT teardown stopped after clearing %d of %d discovery topics: %s",
+                log.warning("MQTT teardown stopped after clearing %d of %d retained topics: %s",
                             cleared, len(topics), gave_up)
             else:
-                log.info("MQTT discovery cleared: %d entities removed (EXPOSE_MQTT=false)",
-                         cleared)
+                log.info("MQTT discovery cleared: %d entities removed and availability "
+                         "retracted (EXPOSE_MQTT=false)", len(discovery))
         finally:
             self.c.on_connect = original_on_connect
             # Matches close(), a few lines up: disconnect (which sends the

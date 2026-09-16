@@ -364,11 +364,27 @@ def test_teardown_clears_exactly_the_topics_discovery_would_publish():
     io.c = _FakeBroker(respond="connack")
     io.teardown_discovery(timeout=0.2)
     expected_topics = {topic for topic, _cfg in discovery_payloads(Settings())}
+    expected_topics.add(f"{Settings().mqtt_prefix}/available")
     published_topics = {topic for topic, _payload, _retain in io.c.published}
     assert published_topics == expected_topics
     for _topic, payload, retain in io.c.published:
         assert payload == "", "a non-empty payload would not delete the entity"
         assert retain is True, "a non-retained clear leaves the old retained config in place"
+
+
+def test_teardown_retracts_the_retained_availability_last(caplog):
+    """Left behind, the retained `online` has a broker announcing a device that
+    no longer has any entities. Cleared after the entities, within the same
+    deadline, so a teardown cut short never leaves entities with no
+    availability topic behind them."""
+    io = MqttIO(Settings())
+    io.c = _FakeBroker(respond="connack")
+    with caplog.at_level(logging.INFO):
+        io.teardown_discovery(timeout=0.2)
+    topic, payload, retain = io.c.published[-1]
+    assert (topic, payload, retain) == (f"{Settings().mqtt_prefix}/available", "", True)
+    total = len(discovery_payloads(Settings()))
+    assert any(f"{total} entities removed" in r.getMessage() for r in caplog.records)
 
 
 def test_teardown_makes_exactly_one_connection_attempt():
