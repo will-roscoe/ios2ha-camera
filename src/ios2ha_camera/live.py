@@ -197,8 +197,15 @@ def _reject_undeclared_params(handler, accepted):
     async def wrapped(request):
         extra = sorted(set(request.query.keys()) - accepted)
         if extra:
-            raise web.HTTPBadRequest(
-                text=f"unexpected query parameter(s): {extra}; accepted: {sorted(accepted)}")
+            # The envelope every other /api/v1 refusal uses, so a client needs
+            # one error parser -- and this is the route most likely to be sent
+            # a stray query string.
+            return web.json_response(
+                {"ok": False,
+                 "error": f"unexpected query parameter(s): {extra}; "
+                          f"accepted: {sorted(accepted)}",
+                 "accepted": sorted(accepted)},
+                status=400, headers={"Cache-Control": "no-store"})
         return await handler(request)
     return wrapped
 

@@ -425,9 +425,13 @@ def test_new_paths_reject_an_undeclared_query_parameter_with_the_accepted_list()
             for path in (_API_PATH["live"], _API_PATH["stacked"], _API_PATH["still"]):
                 resp = await client.get(path + "?width=640")
                 assert resp.status == 400, path
-                body = await resp.text()
-                assert "width" in body
-                assert "[]" in body
+                # The same envelope as every other /api/v1 refusal, so a client
+                # needs one error parser for the whole API.
+                assert resp.content_type == "application/json", path
+                body = await resp.json()
+                assert body["ok"] is False
+                assert "width" in body["error"]
+                assert body["accepted"] == []
     asyncio.run(run())
 
 

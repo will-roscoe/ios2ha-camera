@@ -190,6 +190,27 @@ def _unacceptable(e, value):
     return None
 
 
+def _encodable(d):
+    """`d` without the values JSON cannot carry, each one logged.
+
+    Python's json writes NaN and the infinities as bare `NaN` and `Infinity`
+    tokens, which are not JSON: a client's parser rejects the whole document
+    for one of them, not just that key. Leaving the key out costs one entity
+    showing unknown, and is what the event stream does for the same value,
+    so the two routes serve the same keys.
+    """
+    out = {}
+    for key, value in d.items():
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError):
+            log.exception("state %s is not JSON-encodable; left out of %s",
+                          key, ROUTES["state"])
+            continue
+        out[key] = value
+    return out
+
+
 def _refused(status, error, **extra):
     """A refusal a person can act on: why, and enough to fix the call.
 
@@ -234,7 +255,7 @@ def add_api_routes(app, state, settings, *, events, on_control=lambda n, v: None
                                  headers=_NO_STORE)
 
     async def get_state(request):
-        return web.json_response(state(), headers=_NO_STORE)
+        return web.json_response(_encodable(state()), headers=_NO_STORE)
 
     async def post_control(request):
         """One verb over the whole vocabulary: every switch, number, select and

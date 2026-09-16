@@ -127,6 +127,29 @@ def test_state_is_whatever_the_state_callable_returns():
     assert doc == snapshot
 
 
+def test_state_leaves_out_a_value_json_cannot_carry(caplog):
+    """Python's json writes NaN and the infinities as bare tokens that are not
+    JSON, so one such value would break a client's parse of the whole document.
+    Left out and logged instead, as the event stream already does."""
+    snapshot = {"battery": 88, "a": float("nan"), "b": float("inf"), "c": object()}
+
+    async def run():
+        async with TestClient(TestServer(_api(lambda: snapshot))) as client:
+            resp = await client.get("/api/v1/state")
+            return resp.status, await resp.text()
+
+    with caplog.at_level("ERROR"):
+        status, text = asyncio.run(run())
+    assert status == 200
+
+    def refuse(token):
+        raise ValueError(f"not JSON: {token}")
+
+    assert json.loads(text, parse_constant=refuse) == {"battery": 88}
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert all(k in logged for k in ("a", "b", "c"))
+
+
 def test_objects_version_is_stable_across_processes():
     """A reconnecting client compares this against its cached copy to decide
     whether to refetch, so a value that changed per run would make the cache
