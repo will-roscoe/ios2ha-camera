@@ -179,6 +179,8 @@ class Supervisor:
         # read whole on reconnect, so every access goes through the lock.
         self._last_state = {}
         self._state_lock = threading.Lock()
+        # Appended to during startup and never removed; see add_state_listener.
+        self._state_listeners = []
         self._last_jpeg = None
         # Both optional: without them the supervisor behaves exactly as before,
         # which is what happens when the D-Bus proxy or BlueZ is missing.
@@ -206,6 +208,50 @@ class Supervisor:
         with self._state_lock:
             self._last_state.update(d)
         self.mqtt.publish_state(d)
+        # Told last, and never before the values above are stored: a listener
+        # may be asked for the current state the instant it hears a change --
+        # by a client of its own, on a thread of its own -- and told first it
+        # would answer with the value it has just been told replaced. Outside
+        # the lock too, since answering that question takes the same lock.
+        for listener in self._state_listeners:
+            try:
+                listener(d)
+            except Exception:
+                # Some of these calls arrive on paho's network thread, where an
+                # exception does not merely lose one event: it tears down the
+                # connection and leaves the camera deaf to every later control.
+                log.exception("state listener failed")
+
+    def add_state_listener(self, fn):
+        """Also hand every published state to `fn`, as a plain dict.
+
+        For an interface alongside MQTT that must not be able to disagree with
+        it: both are fed from this one call, so there is a single order of
+        events rather than two that can drift.
+
+        Listeners are added during startup and never removed, which is why the
+        list needs no lock. Appending cannot disturb a publish already walking
+        it, and a publish that races the registration simply does not reach the
+        new listener -- which costs nothing, because a listener added a moment
+        ago has no client it could already have told anything.
+        """
+        self._state_listeners.append(fn)
+
+    def current_state(self):
+        """A copy of the values last published, for an interface that is asked
+        for state rather than told it.
+
+        A copy, taken under the lock, because the capture, health, device and
+        MQTT network threads all write these while a reader is reading them.
+
+        Deliberately not `health_state()`: that measures, which takes time and
+        may reach the phone, and its caller is the event loop serving the live
+        view, which nothing may block. It is also no fresher in practice -- the
+        health loop publishes everything it measures on its own tick, so this
+        holds exactly what the broker holds.
+        """
+        with self._state_lock:
+            return dict(self._last_state)
 
     def _event(self, d):
         self.mqtt.publish_event(d)
@@ -229,6 +275,10 @@ class Supervisor:
         with self._state_lock:
             snapshot = dict(self._last_state)
         if snapshot:
+            # Straight to the client rather than through publish_state: this
+            # replay exists because a broker restart drops retained values, and
+            # anything else listening never lost them, so it would be handed a
+            # long list of things that have not changed.
             self.mqtt.publish_state(snapshot)
         if self._last_jpeg is not None:
             self.mqtt.publish_still(self._last_jpeg)

@@ -762,6 +762,81 @@ def test_publish_controls_republishes_the_last_still_and_measurements():
     assert "subject_level" in mq.published
 
 
+def test_current_state_answers_with_everything_published_so_far():
+    sup = _sup()
+    sup.publish_controls()
+    sup.publish_state({"phone_battery": 81})
+    state = sup.current_state()
+    assert state["phone_battery"] == 81
+    assert {c for c in CONTROLS if c != "black_level_override"} <= set(state)
+
+
+def test_current_state_hands_out_a_copy():
+    """Every capture, health and device thread writes the remembered state while
+    whoever asked is reading it, so the answer cannot be the live dict."""
+    sup = _sup()
+    sup.publish_state({"phone_battery": 81})
+    taken = sup.current_state()
+    taken["phone_battery"] = 0
+    taken["invented"] = True
+    assert sup.current_state() == {"phone_battery": 81}
+
+
+def test_a_state_listener_hears_every_publish():
+    sup = _sup()
+    heard = []
+    sup.add_state_listener(heard.append)
+    sup.publish_state({"phone_battery": 81})
+    sup.publish_state({"exposure": 0.5})
+    assert heard == [{"phone_battery": 81}, {"exposure": 0.5}]
+
+
+def test_a_listener_is_told_only_once_the_value_can_be_read_back():
+    """A listener feeding a second interface may be asked for the current state
+    the instant it hears a change -- by its own new client, on its own thread.
+    Told first, it would answer with the value it has just been told replaced."""
+    sup = _sup()
+    seen = []
+    sup.add_state_listener(lambda d: seen.append(sup.current_state()))
+    sup.publish_state({"phone_battery": 81})
+    assert seen == [{"phone_battery": 81}]
+
+
+def test_a_listener_that_raises_costs_only_its_own_events(caplog):
+    """These calls arrive on paho's network thread among others, where an
+    exception does not merely lose the event: it takes the connection down."""
+    mq = FakeMqtt()
+    sup = _sup(mqtt=mq)
+    second = []
+
+    def broken(d):
+        raise RuntimeError("no")
+
+    sup.add_state_listener(broken)
+    sup.add_state_listener(second.append)
+    with caplog.at_level("ERROR"):
+        sup.publish_state({"phone_battery": 81})
+    assert mq.published == {"phone_battery": 81}
+    assert second == [{"phone_battery": 81}]
+    assert sup.current_state() == {"phone_battery": 81}
+    assert any("listener" in r.getMessage() for r in caplog.records)
+
+
+def test_the_reconnect_replay_is_not_repeated_to_listeners():
+    """The replay exists because a broker restart drops retained values. A
+    listener holding the same values already has them, and sending the lot again
+    on every reconnect would be a burst of changes that changed nothing."""
+    mq = FakeMqtt()
+    sup = _sup(mqtt=mq)
+    sup.publish_state({"phone_battery": 81})
+    heard = []
+    sup.add_state_listener(heard.append)
+    before = len(mq.states)
+    sup.publish_controls()
+    assert len(mq.states) > before + 1          # the controls, then the whole snapshot
+    assert len(heard) == 1 and "phone_battery" not in heard[0]
+
+
 def test_reconnect_republish_survives_concurrent_state_writes():
     """publish_controls runs on the MQTT network thread while capture and
     health threads are still writing. Handing it the live dict raises

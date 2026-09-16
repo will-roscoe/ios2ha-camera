@@ -1,7 +1,8 @@
+import inspect
 import logging
 
 from ios2ha_camera import mqtt_io as mqtt_io_module
-from ios2ha_camera.mqtt_io import MqttIO, discovery_payloads
+from ios2ha_camera.mqtt_io import MqttIO, NullMqttIO, discovery_payloads
 from ios2ha_camera.settings import CONTROLS, Settings
 from ios2ha_camera.states import STREAM_STATES
 
@@ -460,3 +461,45 @@ def test_stream_state_declares_every_value_the_code_can_produce():
     assert set(cfg["options"]) == set(STREAM_STATES)
     for expected in ("ready", "backgrounded", "unavailable", "in_use", "capturing"):
         assert expected in cfg["options"]
+
+
+# -- the stand-in used when MQTT is switched off -----------------------------
+
+def test_the_stand_in_answers_every_call_the_service_makes():
+    """The supervisor publishes unconditionally. Asking "is MQTT on?" at each of
+    these call sites would put the flag in a dozen places that do not otherwise
+    care about it; the answer is which object was handed over at startup."""
+    io = NullMqttIO()
+    io.connect()
+    io.loop_start()
+    io.publish_state({"phone_battery": 81})
+    io.publish_state({"phone_battery": 81}, retain=False)
+    io.publish_event({"error": "x"})
+    io.publish_still(b"jpeg")
+    io.publish_screenshot(b"png")
+    io.set_available(True)
+    io.loop_stop()
+    io.close()
+    io.close(timeout=0.1)
+
+
+def test_the_stand_in_matches_the_real_client_call_for_call():
+    """A method the real client grows and this one does not is an AttributeError
+    at whatever hour the deployment with MQTT off next restarts."""
+    real = {n for n in vars(MqttIO) if not n.startswith("_")}
+    # teardown_discovery is the deliberate exception: clearing the retained
+    # discovery topics needs a broker, so a copy here that quietly did nothing
+    # would report success for entities that were never removed. __main__ uses a
+    # real client for it.
+    shared = real - {"teardown_discovery"}
+    assert shared <= {n for n in vars(NullMqttIO) if not n.startswith("_")}
+    assert not hasattr(NullMqttIO, "teardown_discovery")
+    for name in sorted(shared):
+        assert (inspect.signature(getattr(NullMqttIO, name))
+                == inspect.signature(getattr(MqttIO, name))), name
+
+
+def test_the_stand_in_needs_no_broker_settings():
+    """It is chosen precisely when the broker settings are not being used, and
+    must not be able to fail on one that is malformed."""
+    assert inspect.signature(NullMqttIO) == inspect.Signature()

@@ -354,3 +354,49 @@ class MqttIO:
             # would join the thread before it can send the packet.
             self.c.disconnect()
             self.c.loop_stop()
+
+
+class NullMqttIO:
+    """Stands in for MqttIO when EXPOSE_MQTT is false: the same calls, no broker.
+
+    The supervisor publishes its state, its events, its stills and its
+    availability without knowing whether anyone is listening, and guarding each
+    of those call sites with the flag would scatter the question "is MQTT on?"
+    across a module that does not otherwise care. It is answered once instead,
+    by which of these two objects startup hands over.
+
+    Nothing is queued for a connection that might come later: with discovery off
+    there is no consumer for any of it, and the supervisor remembers its own
+    values either way, so the JSON API still answers with real ones.
+
+    `teardown_discovery` is deliberately absent. Clearing the retained discovery
+    topics needs a real broker, and a copy of it here that quietly did nothing
+    would report success for entities that were never removed.
+    """
+
+    def connect(self):
+        pass
+
+    def loop_start(self):
+        pass
+
+    def loop_stop(self):
+        pass
+
+    def publish_still(self, jpeg):
+        pass
+
+    def publish_screenshot(self, png):
+        pass
+
+    def publish_state(self, d, retain=True):
+        pass
+
+    def publish_event(self, d):
+        pass
+
+    def set_available(self, ok):
+        pass
+
+    def close(self, timeout=2.0):
+        pass
