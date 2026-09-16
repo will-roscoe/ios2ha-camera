@@ -476,6 +476,24 @@ def test_a_dvt_failure_clears_the_mount_cache_so_the_next_call_remounts(monkeypa
     assert pm.dvt_failures == 0
 
 
+def test_a_mount_failure_counts_as_a_dvt_failure(monkeypatch):
+    """self._call(self._mount_ddi) used to sit outside the try/except that counts
+    failures, so a wedged mount step -- the exact shape of the 2026-09-14 outage --
+    left dvt_failures frozen even though every developer call kept failing."""
+    pm = phone.PhoneManager("com.example.app")
+    monkeypatch.setattr(pm, "_mount_ddi",
+                        lambda: (_ for _ in ()).throw(RuntimeError("mount wedged")))
+    for expected in (1, 2, 3):
+        with pytest.raises(phone.PhoneUnavailable):
+            pm._dvt(lambda: "unreachable")
+        assert pm.dvt_failures == expected
+
+    # Once the mount recovers, a success still resets the counter to 0.
+    monkeypatch.setattr(pm, "_mount_ddi", lambda: None)
+    assert pm._dvt(lambda: "ok") == "ok"
+    assert pm.dvt_failures == 0
+
+
 def test_developer_calls_never_overlap(monkeypatch):
     """iOS serves one instruments session at a time, and opening a second while
     the first is in flight hangs both until their timeouts -- then leaves the
