@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 
 import paho.mqtt.client as mqtt
 
@@ -257,3 +258,58 @@ class MqttIO:
             log.warning("could not publish offline availability", exc_info=True)
         self.c.disconnect()
         self.c.loop_stop()
+
+    def teardown_discovery(self, timeout=5.0):
+        """Delete every MQTT-discovered entity: publish an empty retained payload
+        to each discovery topic, which is how Home Assistant's MQTT integration
+        forgets an entity -- without it the registry keeps ghosts and their
+        entity ids stay reserved. For EXPOSE_MQTT=false, so the wiring task calls
+        this once instead of running the supervisor's normal MQTT lifecycle.
+
+        A native-only deployment may have no broker at all, so this makes
+        exactly one connection attempt bounded by `timeout` and gives up with a
+        single log line -- never the endless retry EXPOSE_MQTT exists to stop.
+        Topics come from discovery_payloads(self.s), the same registry
+        _on_connect publishes from, so nothing cleared here can drift from what
+        would have been created.
+        """
+        topics = [topic for topic, _cfg in discovery_payloads(self.s)]
+        ep = self._endpoints[self._endpoint]
+        connected = threading.Event()
+        original_on_connect = self.c.on_connect
+
+        def _on_connect(c, u, flags, rc, props=None):
+            if rc == 0:
+                connected.set()
+
+        self.c.on_connect = _on_connect
+        self.c.connect_timeout = timeout
+        try:
+            try:
+                self.c.connect(ep.host, ep.port, keepalive=30)
+            except OSError as e:
+                # Refused, unresolvable or timed out at the socket level -- all
+                # ordinary for a deployment with no broker, not a fault.
+                log.warning("MQTT teardown skipped: %s:%s unreachable (%s)", ep.host, ep.port, e)
+                return
+            # connect() only opens the socket and sends CONNECT; the CONNACK that
+            # confirms it -- what _on_connect above is waiting for -- is only
+            # processed once the network loop is running (see paho's own
+            # docstring on connect()). Restoring on_connect before this point
+            # would hand that CONNACK to the real discovery-publishing handler
+            # instead, and connected.wait() below would time out even on a
+            # perfectly reachable broker.
+            self.c.loop_start()
+            if not connected.wait(timeout):
+                log.warning("MQTT teardown skipped: no response from %s:%s within %.0fs",
+                            ep.host, ep.port, timeout)
+                return
+            for topic in topics:
+                info = self.c.publish(topic, "", retain=True)
+                info.wait_for_publish(timeout)
+            log.info("MQTT discovery cleared: %d entities removed (EXPOSE_MQTT=false)",
+                     len(topics))
+        finally:
+            self.c.on_connect = original_on_connect
+            self.c.loop_stop()
+            self.c.disconnect()

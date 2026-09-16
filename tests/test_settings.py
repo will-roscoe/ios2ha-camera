@@ -1,6 +1,8 @@
+import logging
+
 import pytest
 
-from ios2ha_camera.settings import _BOOL_CONTROLS, Settings
+from ios2ha_camera.settings import _BOOL_CONTROLS, Settings, both_interfaces_off_message
 
 
 def test_defaults_match_spec():
@@ -133,6 +135,49 @@ def test_apply_control_rejects_unparseable_boolean_junk(name):
     with pytest.raises(ValueError):
         s.apply_control(name, "banana")
     assert getattr(s, name) == before  # a rejected write must not touch the stored value
+
+
+def test_expose_flags_default_true():
+    s = Settings()
+    assert s.expose_mqtt is True
+    assert s.expose_api is True
+
+
+@pytest.mark.parametrize("env_key,attr", [("EXPOSE_MQTT", "expose_mqtt"), ("EXPOSE_API", "expose_api")])
+@pytest.mark.parametrize("raw,expected", [
+    ("true", True), ("True", True), ("1", True), ("yes", True), ("on", True),
+    ("false", False), ("False", False), ("0", False), ("no", False), ("off", False),
+])
+def test_expose_flags_accept_conventional_spellings(env_key, attr, raw, expected):
+    s = Settings.from_env({env_key: raw})
+    assert getattr(s, attr) is expected
+
+
+@pytest.mark.parametrize("env_key,attr", [("EXPOSE_MQTT", "expose_mqtt"), ("EXPOSE_API", "expose_api")])
+def test_expose_flag_typo_keeps_default_and_warns(env_key, attr, caplog):
+    """`_coerce_like` treats any string outside `_TRUTHY` as False, which would
+    make EXPOSE_MQTT=ture switch MQTT off without a word -- exactly the failure
+    the design calls out. These two flags must keep their default and warn
+    instead of guessing, and must never raise: nothing optional may stop the
+    container starting."""
+    with caplog.at_level(logging.WARNING):
+        s = Settings.from_env({env_key: "ture"})
+    assert getattr(s, attr) is True  # default, unchanged
+    assert any(env_key in r.message and "ture" in r.message for r in caplog.records)
+
+
+def test_expose_flags_do_not_affect_other_boolean_coercion():
+    """Only EXPOSE_MQTT/EXPOSE_API get the keep-default-and-warn treatment; every
+    other boolean env var still coerces a typo to False as before."""
+    s = Settings.from_env({"MQTT_USER": "ios2ha"})  # sanity: unrelated field untouched
+    assert s.mqtt_user == "ios2ha"
+
+
+def test_both_interfaces_off_message_names_what_is_off_and_what_still_works():
+    msg = both_interfaces_off_message()
+    assert "EXPOSE_MQTT" in msg and "EXPOSE_API" in msg
+    for still_working in ("capture", "archive", "/live", "/live/stacked", "/still.jpg"):
+        assert still_working in msg, f"{still_working!r} missing from: {msg!r}"
 
 
 def test_apply_control_rejects_a_non_iterable_black_level_override():

@@ -36,10 +36,18 @@ _ENV_MAP = {
     "MQTT_PREFIX": "mqtt_prefix",
     "ARCHIVE_DIR": "archive_dir",
     "LIVE_PORT": "live_port",
+    "EXPOSE_MQTT": "expose_mqtt",
+    "EXPOSE_API": "expose_api",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
+
+# EXPOSE_MQTT / EXPOSE_API get their own coercion (see _coerce_expose_flag)
+# rather than _coerce_like's blanket "anything not in _TRUTHY is False": a typo
+# here must not silently switch an interface off, only every other boolean env
+# var keeps that behaviour.
+_EXPOSE_ENV_KEYS = {"EXPOSE_MQTT", "EXPOSE_API"}
 
 # Controls with a fixed set of values. Home Assistant's select entity keeps a
 # person to these, but a typo from an automation or mosquitto_pub would
@@ -90,6 +98,12 @@ class Settings:
     mqtt_prefix: str = "ios2ha_camera"
     archive_dir: str = "/data/archive"
     live_port: int = 8099
+    # Which interfaces reach Home Assistant. Media routes are always served --
+    # they are the camera -- so turning both off is a loud warning, not a
+    # refusal: stills are still captured and archived. Not in CONTROLS: these
+    # pick which network surface exists at all, not something to flip live.
+    expose_mqtt: bool = True
+    expose_api: bool = True
     interval_s: int = 600
     stacking_mode: str = "auto"          # off | fixed | auto
     stacking_allowed: bool = True
@@ -131,7 +145,10 @@ class Settings:
         for key, attr in _ENV_MAP.items():
             if key not in env:
                 continue
-            setattr(s, attr, _coerce_like(getattr(s, attr), env[key]))
+            if key in _EXPOSE_ENV_KEYS:
+                setattr(s, attr, _coerce_expose_flag(key, env[key], getattr(s, attr)))
+            else:
+                setattr(s, attr, _coerce_like(getattr(s, attr), env[key]))
         # Remembered so mqtt_endpoints() can name which deprecated variables an
         # MQTT_URL overrode. Not a dataclass field: it is provenance, not a setting.
         s._mqtt_alias_env = tuple(k for k in ("MQTT_HOST", "MQTT_PORT") if k in env)
@@ -249,6 +266,38 @@ def mqtt_endpoints(settings):
                         "is" if len(ignored) == 1 else "are")
         return parse_mqtt_urls(settings.mqtt_url)
     return [MqttEndpoint("mqtt", settings.mqtt_host, settings.mqtt_port, "tcp", False, "/mqtt")]
+
+
+def _coerce_expose_flag(name, raw, default):
+    """Coerce EXPOSE_MQTT / EXPOSE_API: conventional spellings only, and an
+    unrecognised value keeps the default rather than being guessed at.
+
+    _coerce_like treats anything outside _TRUTHY as False, which would make
+    EXPOSE_MQTT=ture switch MQTT off without a word -- exactly the failure D8
+    calls out when it rejected a comma-list flag. Nothing optional may stop
+    the container starting, so this warns and carries on rather than raising.
+    """
+    lowered = str(raw).strip().lower()
+    if lowered in _TRUTHY:
+        return True
+    if lowered in _FALSY:
+        return False
+    log.warning("%s=%r is not true/false; keeping the default (%s)", name, raw, default)
+    return default
+
+
+def both_interfaces_off_message():
+    """The one warning to log when EXPOSE_MQTT and EXPOSE_API are both false.
+
+    Returned rather than logged here so the caller (the wiring task, once
+    startup logging is set up) decides when to log it -- construction is not
+    the place for a log call that only makes sense once both flags are known.
+    """
+    return (
+        "EXPOSE_MQTT and EXPOSE_API are both false: no Home Assistant discovery "
+        "and no JSON API. Nothing else changes: capture, stacking and archive "
+        "continue, and /live, /live/stacked and /still.jpg keep serving."
+    )
 
 
 def _coerce_like(default, raw):
