@@ -11,12 +11,37 @@ name: Docs
 # intended, on the condition that no credential ever reaches it, which the
 # credential scan below enforces rather than leaves to memory.
 
+#
+# Runs only when a change could alter the rendered site. That covers the Sphinx
+# sources; the root Markdown files that docs/ includes (README, CONFIGURATION,
+# OPERATIONS, ARCHITECTURE, CHANGELOG); src/, because autodoc, viewcode and the
+# entities table all read it; pyproject.toml, which carries the version the site
+# shows; and this workflow and its credential scan. main has no required status
+# checks, so a run the filter skips cannot leave a pull request stuck waiting.
+
 on:
   push:
     # The deploy job below is still restricted to main, so develop builds the docs
     # and checks them for credentials without publishing anything.
     branches: [main, develop]
+    paths:
+      - "docs/**"
+      - "*.md"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+      - ".github/scripts/check_docs_secrets.py"
   pull_request:
+    # Keep in step with the list above.
+    paths:
+      - "docs/**"
+      - "*.md"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+      - ".github/scripts/check_docs_secrets.py"
+  # To republish the site by hand, for example after changing the Pages settings.
+  workflow_dispatch:
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -27,6 +52,10 @@ permissions:
 
 jobs:
   build:
+    # A develop -> main pull request has the same head commit that the develop
+    # push run already built; the push to main after the merge builds and
+    # publishes it.
+    if: ${{ !(github.event_name == 'pull_request' && github.head_ref == 'develop' && github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
