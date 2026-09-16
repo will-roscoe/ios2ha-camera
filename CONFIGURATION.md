@@ -11,10 +11,14 @@ Every value is coerced to the type of the field's default.
 
 The table is split by what has to be switched on for a variable to matter.
 **Core** variables matter regardless: the ios2ha-camera supervisor needs them to
-start, capture, stack, archive and serve `/live`, `/live/stacked` and `/still.jpg`
-(plus their `/api/v1/...` equivalents once the API is on) with both other
-interfaces switched off. **MQTT** variables matter only while `EXPOSE_MQTT` is
-true. **API** variables matter only while `EXPOSE_API` is true.
+start, capture, stack, archive and serve all six media paths — `/live`,
+`/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`,
+`/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — with both other
+interfaces switched off. Those six are never gated by either flag: they are the
+camera. **MQTT** variables matter only while `EXPOSE_MQTT` is true. **API**
+variables matter only while `EXPOSE_API` is true, and cover the JSON routes
+under `/api/v1/` only — not the media paths above, which share the prefix but
+not the flag.
 
 ### Core
 
@@ -25,15 +29,18 @@ true. **API** variables matter only while `EXPOSE_API` is true.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
-| `LIVE_PORT` | `8099` | The one HTTP port. Always serves `/live`, `/live/stacked` and `/still.jpg`; also serves every `/api/v1/...` route once `EXPOSE_API` is on — the API shares this port rather than opening its own |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
 | `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
 | `EXPOSE_API` | `true` | Turns the JSON API on or off. Same accepted spellings and the same fail-safe on an unrecognised value |
 
-With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving keep
-running, and the media routes keep serving — only discovery, state publishing and
-the JSON API stop. A startup warning names what is off and what still works.
+With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving
+keep running, and all six media paths keep serving, unauthenticated, exactly as
+before: turning `EXPOSE_API` off removes only the JSON routes named above, not
+anything under `/api/v1/stream/...` or `/api/v1/snapshot/...`. Only discovery,
+state publishing and those JSON routes stop. A startup warning names what is
+off and what still works.
 
 ### MQTT
 
@@ -49,10 +56,15 @@ these need to be set.
 
 ### API
 
-Matters only while `EXPOSE_API` is true (the default). The API has no
-configuration of its own beyond the flag in the core table above: it is served
-on `LIVE_PORT`, by the same process, with no separate port or path prefix to set.
-See [docs/home-assistant/integration.md](docs/home-assistant/integration.md) for
+Matters only while `EXPOSE_API` is true (the default), and only for the JSON
+routes: `/api/v1/info`, `/objects`, `/state`, `/control/{name}` and `/media`
+(the descriptor list). The media paths under `/api/v1/stream/...` and
+`/api/v1/snapshot/...` are not part of this — they are in the Core table above,
+served unconditionally alongside `/live`, `/live/stacked` and `/still.jpg` —
+so turning this flag off does not close them. The API has no configuration of
+its own beyond the flag in the core table above: it is served on `LIVE_PORT`,
+by the same process, with no separate port or path prefix to set. See
+[docs/home-assistant/integration.md](docs/home-assistant/integration.md) for
 what it serves, and [docs/guarantees.rst](docs/guarantees.rst) for what is
 promised about it.
 

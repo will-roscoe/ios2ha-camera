@@ -20,7 +20,9 @@ to integration users as an upgrade.
 
 Served on `LIVE_PORT` (see {doc}`../supervisor/configuration`), the same port
 `/live` and `/still.jpg` already use, while `EXPOSE_API` is true (the default).
-There is no separate port or path prefix to configure.
+There is no separate port or path prefix to configure. `EXPOSE_API` covers the
+JSON routes in this section only — the media paths in the next section are
+served unconditionally, whatever either flag is set to.
 
 **There is no authentication.** Anything that can reach the port can read every
 value the supervisor knows and write every control it exposes. Treat the port
@@ -55,6 +57,14 @@ see {doc}`../guarantees` for why those three paths are permanent. The
 `holds_phone` field is the one worth reading before building a dashboard: the
 still costs the phone nothing to fetch, while either stream holds its connection
 open for as long as something is watching.
+
+**The six media paths themselves — the three above, plus their `/api/v1/stream/live`,
+`/api/v1/stream/stacked` and `/api/v1/snapshot/still` equivalents — are not
+gated by `EXPOSE_API`.** They are served unconditionally, because they are the
+camera; only the JSON routes in the section above turn off with the flag.
+Setting `EXPOSE_API=false` does not close any `/api/v1/stream/...` or
+`/api/v1/snapshot/...` path, and none of the six carries authentication either
+way.
 
 ## Versioning
 
