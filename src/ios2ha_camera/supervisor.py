@@ -151,8 +151,11 @@ class Supervisor:
         # health tick: it is a usbmux round trip, and asking every 30 s would
         # spend the cable on a question whose answer changes rarely.
         self._app_running = None
-        # True while an attempt to open the app is queued or running.
-        self._opening = False
+        # Device actions queued or running, by dedup key, and the one follow-up
+        # a latest-wins action has waiting; see _submit.
+        self._device_lock = threading.Lock()
+        self._device_busy = set()
+        self._device_again = {}
         self.s = settings
         # Reads the switch and both thresholds live, because all three are Home
         # Assistant controls that can change between one capture and the next.
@@ -499,7 +502,9 @@ class Supervisor:
                     log.warning("rejected control %s: %s", name, e)
                     self.publish_state({name: getattr(self.s, name, None)})
                     return
-                self._submit(name, lambda: self._autofocus(on))
+                # A value, not a press: a second write is a different request,
+                # and only the last one matters.
+                self._submit(name, lambda: self._autofocus(on), latest_wins=True)
             else:
                 self._apply_setting(name, value)
         except Exception:
@@ -527,8 +532,46 @@ class Supervisor:
         log.info("control %s = %r", name, stored)
         self.publish_state({name: stored})
 
-    def _submit(self, name, fn):
-        self._device_executor.submit(self._run_device_action, name, fn)
+    def _submit(self, name, fn, *, key=None, latest_wins=False):
+        """Queue `fn` for the device worker, unless the same action is already
+        queued or running. Returns whether anything was queued.
+
+        Nothing authenticates a control, and the worker is a single thread with
+        an unbounded queue that the backgrounding hooks share. Without this, a
+        misfiring automation or a button that fires twice parks one device
+        round trip per press ahead of those hooks, and backgrounding silently
+        stops while the app keeps streaming. With it, each action has at most
+        one entry in play, whichever interface asked.
+
+        `key` says which requests are the same action, `name` by default. A
+        repeat is refused and logged: the entry already in play does what it
+        asked for. `latest_wins` is for an action carrying a value, where a
+        later request is not a repeat but a change of mind. That request is
+        kept, replacing any request already kept for the same key, and runs
+        once the action in play finishes, so the last value asked for is the
+        one applied and at most two runs are ever in play for the key.
+        """
+        key = key or name
+        with self._device_lock:
+            if key in self._device_busy:
+                if latest_wins:
+                    self._device_again[key] = (name, fn)
+                    log.info("device action %r is already queued or running; "
+                             "the latest request will run after it", name)
+                else:
+                    log.info("device action %r is already queued or running; "
+                             "ignoring the repeat", name)
+                return False
+            self._device_busy.add(key)
+        try:
+            self._device_executor.submit(self._run_device_action, name, fn, key)
+        except RuntimeError:
+            # The worker has been shut down: nothing more will ever run.
+            with self._device_lock:
+                self._device_busy.discard(key)
+            log.info("device action %r not queued: shutting down", name)
+            return False
+        return True
 
     def _maybe_open_app(self):
         """Ask the opener, unless it is already busy.
@@ -538,24 +581,42 @@ class Supervisor:
         blocked for as long as the mount's own timeout. Without this guard the
         health tick would queue a fresh one every 30 s behind it.
         """
-        if self.opener is None or self._opening:
+        # _submit would refuse a second attempt anyway; checked here first only
+        # so that a mount blocking for minutes does not log a refusal on every
+        # tick. An unlocked read: a stale answer only means one such log line.
+        if self.opener is None or "open_app" in self._device_busy:
             return
-        self._opening = True
         self._submit("open_app", self._open_app)
 
     def _open_app(self):
-        try:
-            self.opener.attempt(False)
-        finally:
-            self._opening = False
+        self.opener.attempt(False)
 
-    def _run_device_action(self, name, fn):
+    def _run_device_action(self, name, fn, key):
         try:
             fn()
         except Exception as e:
             log.exception("device action %r failed", name)
             self._event({"ts": time.time(), "control": name,
                          "error": f"{type(e).__name__}: {e}"})
+        finally:
+            self._device_action_done(key)
+
+    def _device_action_done(self, key):
+        # Under the same lock _submit checks, so a request arriving as this
+        # action finishes is either kept as its follow-up or finds the key free
+        # -- never refused by an action that has already stopped looking.
+        with self._device_lock:
+            follow_up = self._device_again.pop(key, None)
+            if follow_up is None:
+                self._device_busy.discard(key)
+                return
+        # The key stays busy: the follow-up takes over its place.
+        try:
+            self._device_executor.submit(self._run_device_action, *follow_up, key)
+        except RuntimeError:
+            with self._device_lock:
+                self._device_busy.discard(key)
+            log.info("device action %r not queued: shutting down", follow_up[0])
 
     def _screenshot(self):
         if self.phone is None:
@@ -623,7 +684,11 @@ class Supervisor:
         # flow's job, and the active states are already streaming. The starter
         # re-checks all of it anyway; this is only the trigger.
         if state == "streaming_off" and self.starter is not None:
-            self._submit("start_streaming", lambda: self.starter.attempt(False))
+            # Its own key: this attempt honours the pause switch and the rate
+            # limit, so it must not swallow a person's press, which overrides
+            # both. Reported under the button's name all the same.
+            self._submit("start_streaming", lambda: self.starter.attempt(False),
+                         key="start_streaming:automatic")
         # Nothing answered on the app's page at all, which is what a phone that
         # rebooted looks like. Asked here as well as on the battery tick so the
         # app is opened in seconds rather than after the next five-minute

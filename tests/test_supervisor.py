@@ -648,6 +648,125 @@ def test_close_drops_device_actions_still_waiting_for_the_worker():
     assert ran == []
 
 
+class GatedPhone(FakePhone):
+    """A phone whose first screenshot blocks until released: an action that is
+    still running on the device worker."""
+
+    def __init__(self):
+        super().__init__()
+        self.running, self.release = threading.Event(), threading.Event()
+        self.shots = 0
+
+    def screenshot(self):
+        self.shots += 1
+        self.running.set()
+        self.release.wait(5)
+        return super().screenshot()
+
+
+class GatedOnvif(FakeOnvif):
+    """ONVIF whose first call blocks until released."""
+
+    def __init__(self):
+        super().__init__()
+        self.running, self.release = threading.Event(), threading.Event()
+
+    def set_autofocus(self, mode):
+        self.running.set()
+        self.release.wait(5)
+        return super().set_autofocus(mode)
+
+
+@pytest.mark.parametrize("button", ["screenshot", "relaunch_app", "prepare_phone",
+                                    "start_streaming"])
+def test_repeated_presses_queue_one_device_action(button, caplog):
+    """A misfiring automation or a double-firing dashboard button must not park
+    device work ahead of the backgrounding hooks, which share the one worker."""
+    ex = QueueingExecutor()
+    sup = _sup(phone=FakePhone(), starter=FakeStarter(), device_executor=ex)
+    with caplog.at_level("INFO"):
+        for _ in range(10):
+            sup.handle_control(button, None)
+    assert len(ex.queued) == 1
+    assert any(button in r.getMessage() and "already" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_a_press_while_the_same_action_runs_is_refused():
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    phone = GatedPhone()
+    mq = FakeMqtt()
+    sup = _sup(phone=phone, mqtt=mq, device_executor=ex)
+    sup.handle_control("screenshot", None)
+    assert phone.running.wait(5)
+    sup.handle_control("screenshot", None)
+    phone.release.set()
+    ex.shutdown(wait=True)
+    assert phone.shots == 1
+    assert len(mq.screenshots) == 1
+
+
+def test_a_press_after_the_action_finished_runs_again():
+    phone = FakePhone()
+    mq = FakeMqtt()
+    sup = _sup(phone=phone, mqtt=mq)      # Inline: each press completes at once
+    sup.handle_control("screenshot", None)
+    sup.handle_control("screenshot", None)
+    assert len(mq.screenshots) == 2
+
+
+def test_different_device_actions_do_not_refuse_each_other():
+    ex = QueueingExecutor()
+    sup = _sup(phone=FakePhone(), device_executor=ex)
+    sup.handle_control("screenshot", None)
+    sup.handle_control("relaunch_app", None)
+    assert len(ex.queued) == 2
+
+
+def test_a_press_is_not_refused_because_an_automatic_start_is_pending():
+    """The automatic attempt honours the pause switch and the rate limit and may
+    decline; a person pressing the button overrides both, so it is a different
+    request and must not be swallowed by the automatic one."""
+    ex = QueueingExecutor()
+    starter = FakeStarter()
+    sup = _sup(starter=starter, device_executor=ex)
+    sup.on_stream_state("streaming_off")
+    sup.on_stream_state("streaming_off")
+    sup.handle_control("start_streaming", None)
+    assert len(ex.queued) == 2
+    for fn, a in ex.queued:
+        fn(*a)
+    assert sorted(starter.calls) == [False, True]
+
+
+def test_autofocus_changed_while_a_change_is_running_ends_on_the_last_request():
+    """A switch carries a value, so a later write is a different request, not a
+    repeat: dropping it would leave the camera on the earlier value. Writes made
+    while one is running collapse into a single follow-up carrying the latest."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ex = ThreadPoolExecutor(max_workers=1)
+    onvif = GatedOnvif()
+    sup = _sup(onvif=onvif, device_executor=ex)
+    sup.s.autofocus = True
+    sup.handle_control("autofocus", False)
+    assert onvif.running.wait(5)
+    for v in (True, False, True, False):
+        sup.handle_control("autofocus", v)
+    onvif.release.set()
+    # The follow-up is submitted as the first finishes, so shutting the worker
+    # down any earlier would refuse it.
+    deadline = time.monotonic() + 5
+    while len(onvif.calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    ex.shutdown(wait=True)
+    assert onvif.calls == ["MANUAL", "MANUAL"]
+    assert sup.s.autofocus is False
+    assert sup.current_state()["autofocus"] is False
+
+
 def test_attempts_to_open_the_app_do_not_pile_up():
     """A phone that has just rebooted leaves the first attempt blocked on the
     cable for up to two minutes. Without the guard the health tick would queue
@@ -672,12 +791,18 @@ def test_a_failed_attempt_does_not_block_every_later_one():
     class Boom:
         state = "unavailable"
 
+        def __init__(self):
+            self.calls = 0
+
         def attempt(self, manual=False):
+            self.calls += 1
             raise RuntimeError("no usbmux")
 
-    sup = _sup(opener=Boom())
+    op = Boom()
+    sup = _sup(opener=op)
     sup.on_stream_state("backgrounded")
-    assert sup._opening is False
+    sup.on_stream_state("unavailable")
+    assert op.calls == 2
 
 
 def test_the_open_state_is_published():
