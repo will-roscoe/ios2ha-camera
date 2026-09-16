@@ -59,11 +59,18 @@ class _Reports:
         self._gap_s = gap_s
         self._sleep = sleep
 
-    def press(self, keys):
+    def _plan(self, keys):
+        """The reports to send, or None if any name is unknown."""
         try:
-            downs = [report(k) for k in keys]
+            return [report(k) for k in keys]
         except UnknownKey as e:
             log.warning("refusing the whole sequence: unknown key %s", e)
+            return None
+
+    def press(self, keys):
+        """Blocking form, used by the tests and anything already on the loop's thread."""
+        downs = self._plan(keys)
+        if downs is None:
             return False
         for i, down in enumerate(downs):
             if not self._notifier.notify(down):
@@ -76,6 +83,25 @@ class _Reports:
             self._notifier.notify(RELEASE)
             if i + 1 < len(downs):
                 self._sleep(self._gap_s)
+        return True
+
+    async def apress(self, keys):
+        """The same sequence, awaited on the bus's own loop.
+
+        Notifications must be emitted from the loop thread; this is the form the
+        supervisor's worker reaches through `Keyboard.press`.
+        """
+        downs = self._plan(keys)
+        if downs is None:
+            return False
+        for i, down in enumerate(downs):
+            if not self._notifier.notify(down):
+                log.warning("key %r not sent: no host subscribed", keys[i])
+                return False
+            await asyncio.sleep(self._hold_s)
+            self._notifier.notify(RELEASE)
+            if i + 1 < len(downs):
+                await asyncio.sleep(self._gap_s)
         return True
 
 
@@ -241,10 +267,24 @@ class Keyboard:
         return "unavailable"
 
     def press(self, keys):
-        """Send a key sequence. Blocks the calling thread until it is out."""
-        if self._reports is None or not self.connected():
+        """Send a key sequence. Blocks the calling thread until it is out.
+
+        The work runs on the keyboard's own loop, never on the caller's thread:
+        dbus-fast is asyncio, and emitting a signal from a foreign thread does
+        not reach the bus. Keys "sent" that way vanish silently, which is what
+        happened on 2026-09-16 -- the phone stayed subscribed and nothing moved.
+        """
+        if self._reports is None or self._loop is None or not self.connected():
             return False
-        return self._reports.press(keys)
+        future = asyncio.run_coroutine_threadsafe(self._reports.apress(keys), self._loop)
+        # Long enough for the whole sequence: each key is held then followed by
+        # a gap, plus a margin for a slow bus.
+        budget = len(keys) * (self._hold_ms / 1000.0 + self._gap_s) + 15.0
+        try:
+            return future.result(timeout=budget)
+        except Exception as e:
+            log.warning("key sequence failed: %s: %s", type(e).__name__, e)
+            return False
 
     # -- bus plumbing ---------------------------------------------------------
 
