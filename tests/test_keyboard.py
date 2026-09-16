@@ -72,6 +72,27 @@ def test_an_unknown_key_sends_nothing_at_all():
     assert n.sent == []
 
 
+def test_the_awaited_form_sends_the_same_reports():
+    """`press` from the supervisor's worker goes through this, because dbus-fast
+    is asyncio and a signal emitted from a foreign thread never reaches the bus:
+    on 2026-09-16 every key was "sent" and the phone never moved."""
+    import asyncio
+
+    n = FakeNotifier()
+    r = _Reports(n, hold_ms=1, gap_s=0.0)
+    assert asyncio.run(r.apress(["tab", "space"])) is True
+    assert [v for _, v in n.sent] == [report("tab"), RELEASE, report("space"), RELEASE]
+
+
+def test_the_awaited_form_refuses_an_unknown_key_too():
+    import asyncio
+
+    n = FakeNotifier()
+    r = _Reports(n, hold_ms=1, gap_s=0.0)
+    assert asyncio.run(r.apress(["tab", "nonsense"])) is False
+    assert n.sent == []
+
+
 class FakeAdManager:
     def __init__(self):
         self.registered = False

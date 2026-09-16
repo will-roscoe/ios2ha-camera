@@ -18,6 +18,17 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.4.1 — 2026-09-16
+
+**The keys never left the host.** 2.4.0 sent its key presses from the supervisor's device worker,
+but the Bluetooth stack it uses is asyncio: a notification emitted from a foreign thread never
+reaches the bus. Every attempt looked perfect — the phone stayed subscribed, no error was raised,
+`press` reported success — and nothing moved on the phone. Verified on the device: three attempts,
+and the screen was byte-identical throughout.
+
+Key sequences now run on the keyboard's own event loop, with the caller waiting for the result. The
+spike this was ported from did the same thing, which is why it worked; the port lost it.
+
 ## 2.4.0 — 2026-09-16
 
 **The supervisor can now start the stream itself, so the camera comes back after a power cut with
