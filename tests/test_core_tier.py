@@ -37,11 +37,15 @@ from ios2ha_camera.settings import Settings, both_interfaces_off_message
 from ios2ha_camera.supervisor import Supervisor
 from ios2ha_camera.upstream import Upstream
 
-# The six media paths CONFIGURATION.md's Core table names as served
-# unconditionally -- the two flags under test gate the JSON API only.
+# The seven media paths CONFIGURATION.md's Core table names as served
+# unconditionally -- the two flags under test gate the JSON API only. The
+# screenshot route is among them even though this tier has no phone management
+# to take one: it is advertised in MEDIA either way, so it answers 503 "no
+# screenshot yet" rather than 404, and the advertised list stays true.
 MEDIA_PATHS = {
     "/live", "/live/stacked", "/still.jpg",
     "/api/v1/stream/live", "/api/v1/stream/stacked", "/api/v1/snapshot/still",
+    "/api/v1/snapshot/screenshot",
 }
 
 
@@ -108,7 +112,7 @@ def test_the_core_tier_captures_archives_and_serves_with_nothing_optional(tmp_pa
         with caplog.at_level(logging.INFO):
             hub = main_module._start_interfaces(s, sup, app, mqtt)
 
-        # No SSE hub, and the router carries only the six media paths: the JSON
+        # No SSE hub, and the router carries only the seven media paths: the JSON
         # routes that EXPOSE_API would have added were never registered.
         assert hub is None
         paths = {r.resource.canonical for r in app.router.routes()}

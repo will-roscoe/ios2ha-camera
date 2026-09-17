@@ -125,6 +125,56 @@ def test_still_route_says_so_when_there_is_nothing_at_all():
     asyncio.run(run())
 
 
+def test_screenshot_route_serves_the_last_screenshot():
+    """The phone's screen, as the button last captured it.
+
+    Same contract as /still.jpg: served from memory, so asking for it never
+    drives the phone. Taking a new one is the button's job, not this route's.
+    """
+    png = b"\x89PNG\r\n\x1a\nscreenshot"
+
+    async def run():
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: png)
+        async with TestClient(TestServer(app)) as client:
+            r = await client.get("/api/v1/snapshot/screenshot")
+            assert r.status == 200
+            assert r.headers["Content-Type"] == "image/png"
+            assert await r.read() == png
+    asyncio.run(run())
+
+
+def test_screenshot_route_says_so_before_the_first_press():
+    """No fallback, unlike the still: a raw camera frame is not a screenshot,
+    and showing one would answer a different question than the one asked."""
+    buf = RingBuffer(1_000_000)
+    buf.append(Frame(b"\xff\xd8\xffraw-frame\xff\xd9", ts=1.0))
+
+    async def run():
+        app = make_live_app(buf, latest_screenshot=lambda: None)
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/api/v1/snapshot/screenshot")).status == 503
+    asyncio.run(run())
+
+
+def test_screenshot_route_refuses_an_undeclared_parameter():
+    async def run():
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"png")
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/api/v1/snapshot/screenshot?t=1")).status == 400
+    asyncio.run(run())
+
+
+def test_screenshot_route_never_holds_the_connection():
+    up = FakeUpstream()
+
+    async def run():
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"png", upstream=up)
+        async with TestClient(TestServer(app)) as client:
+            assert (await client.get("/api/v1/snapshot/screenshot")).status == 200
+        assert up.events == []
+    asyncio.run(run())
+
+
 class FakeUpstream:
     """Stands in for Upstream: records hold()/release() without touching the
     phone, so these tests can check a viewer's hold lifecycle in isolation.

@@ -109,6 +109,8 @@ def test_media_declares_whether_it_holds_the_phone():
          "url": "/api/v1/stream/stacked", "holds_phone": True, "params": {}},
         {"id": "still", "kind": "snapshot", "formats": ["jpeg"],
          "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}},
+        {"id": "screenshot", "kind": "snapshot", "formats": ["png"],
+         "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}},
     ]
     assert len(doc["media"]) == len(MEDIA)
 

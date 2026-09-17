@@ -392,4 +392,11 @@ MEDIA = (
                 path="/api/v1/stream/stacked", holds_phone=True),
     MediaSource(id="still", kind="snapshot", formats=("jpeg",),
                 path="/api/v1/snapshot/still", holds_phone=False),
+    # The phone's screen as the screenshot button last captured it. Like the
+    # still it is served from memory, so asking for it costs the phone nothing;
+    # taking a new one is the button's job. Before the first press the route
+    # answers 503 rather than falling back to a camera frame, which would be an
+    # answer to a different question.
+    MediaSource(id="screenshot", kind="snapshot", formats=("png",),
+                path="/api/v1/snapshot/screenshot", holds_phone=False),
 )
