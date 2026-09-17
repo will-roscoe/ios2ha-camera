@@ -219,7 +219,8 @@ def main():
         # cable can outlast the grace period, and then the container is killed.
         up.stop(timeout=5.0)
         # Its thread is a daemon, so this is tidiness rather than necessity: it
-        # unregisters the advertisement instead of leaving BlueZ to notice.
+        # unregisters the advertisement instead of leaving BlueZ to notice, and
+        # ends its own poll rather than leaving asyncio to complain about it.
         keyboard.stop(timeout=3.0)
         sup.close()
         for t in threads:
