@@ -16,6 +16,7 @@ can be replaced without a config change.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
@@ -44,6 +45,10 @@ AGENT_PATH = "/org/ios2ha/kbd/agent"
 ADVERT_NAME = "ios2ha-kbd"
 KEYBOARD_APPEARANCE = 0x03C1
 POLL_S = 10.0
+# How long shutdown waits for BlueZ to take the advertisement back. Well inside
+# the 3 s __main__ allows the keyboard, because the rest of the stop has to fit
+# there too.
+UNREGISTER_TIMEOUT_S = 1.5
 
 # Fixed attribute handles, requested from BlueZ rather than left to it.
 #
@@ -145,9 +150,15 @@ class _Advertiser:
         self._register()
 
     def stop(self):
+        """Stop advertising, returning whatever the unregister is waiting on.
+
+        Shutdown awaits it; the other callers below are reacting to a host
+        coming and going, where there is nothing to wait for.
+        """
         self._want = False
         if self._m.registered:
-            self._m.unregister()
+            return self._m.unregister()
+        return None
 
     def retry(self):
         """Called on a timer: the adapter refuses to advertise while it still
@@ -214,7 +225,7 @@ class _AdManager:
 
     def unregister(self):
         self.registered = False
-        self._loop.create_task(self._unregister_coro())
+        return self._loop.create_task(self._unregister_coro())
 
 
 class Keyboard:
@@ -237,6 +248,7 @@ class Keyboard:
         self._connected_paths = {}
         self._ready = threading.Event()
         self._error = None
+        self._poll_task = None
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -247,10 +259,37 @@ class Keyboard:
         return self.state()
 
     def stop(self, timeout=5.0):
-        if self._loop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        """Unregister the advertisement, end the poll, then stop the loop.
+
+        Stopping the loop on its own left the poll task pending, which asyncio
+        reported as "Task was destroyed but it is pending!" on every shutdown,
+        and left the advertisement registered until the bus connection dropped.
+        The thread is a daemon, so a shutdown that outlasts `timeout` costs the
+        caller nothing beyond the wait.
+        """
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(lambda: loop.create_task(self._shutdown()))
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+
+    async def _shutdown(self):
+        if self._advertiser is not None:
+            try:
+                pending = self._advertiser.stop()
+                if pending is not None:
+                    await asyncio.wait_for(pending, UNREGISTER_TIMEOUT_S)
+            except (TimeoutError, asyncio.CancelledError):
+                # BlueZ is slow or gone. The advertisement goes with the bus
+                # connection anyway, and the caller's budget is a few seconds.
+                log.info("keyboard: gave up unregistering the advertisement")
+            except Exception as e:
+                log.info("keyboard: unregistering failed: %s: %s", type(e).__name__, e)
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._poll_task
+        self._loop.stop()
 
     def _run(self):
         self._loop = asyncio.new_event_loop()
@@ -263,7 +302,7 @@ class Keyboard:
             self._ready.set()
             return
         self._ready.set()
-        self._loop.create_task(self._poll())
+        self._poll_task = self._loop.create_task(self._poll())
         try:
             self._loop.run_forever()
         finally:
