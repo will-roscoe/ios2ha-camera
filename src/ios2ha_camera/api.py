@@ -63,9 +63,10 @@ ROUTES = {
 
 # Nothing served here is cacheable: `/state` is live, and a stale `/objects` or
 # `/info` held by a proxy after a restart is a component building entities that
-# no longer exist. Set explicitly because the deployment is reached through a
-# Cloudflare tunnel, which is free to apply its own heuristics to a response
-# that does not say. Same reasoning as the still route in live.py.
+# no longer exist. Set explicitly because any proxy or tunnel placed in front of
+# the service (a Cloudflare tunnel, say) is free to apply its own heuristics to
+# a response that does not say. The API itself is meant for the LAN. Same
+# reasoning as the still route in live.py.
 _NO_STORE = {"Cache-Control": "no-store"}
 
 # The entire control vocabulary: the numbers, selects and switches that carry a

@@ -91,7 +91,10 @@ class Settings:
     # One or more space-separated broker URLs; see parse_mqtt_urls. When empty,
     # the deprecated mqtt_host / mqtt_port below say the same thing.
     mqtt_url: str = ""
-    mqtt_host: str = "192.168.1.5"
+    # localhost rather than any real address: with the compose file's host
+    # networking that is a broker on the same machine, and anything else has
+    # to be said explicitly.
+    mqtt_host: str = "localhost"
     mqtt_port: int = 1883
     mqtt_user: str = "ios2ha"
     mqtt_password: str = ""

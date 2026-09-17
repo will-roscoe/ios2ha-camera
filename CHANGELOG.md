@@ -23,6 +23,20 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.6.1 — 2026-09-17
+
+**`MQTT_HOST` now defaults to `localhost`.** It defaulted to a specific address on the developer's
+own network, which is no kind of default: an install that set neither `MQTT_URL` nor `MQTT_HOST`
+would have gone looking for a broker on somebody else's LAN. `localhost` is a broker on the same
+machine, which is what the compose file's host networking makes it, and anything else was always
+going to have to be said explicitly. An install that already sets either variable is unaffected.
+
+Documentation: the four pages that were outlines are written — installing the service (Compose,
+standalone Docker and bare Python, plus what the USB cable and the Bluetooth keyboard each buy),
+connecting it over MQTT (a broker-local login and an ACL narrowing it to the two prefixes the
+service uses), how releases work now that a merge to `main` publishes one, and an upgrading page
+listing every version that needs the reader to do something.
+
 ## 2.6.0 — 2026-09-16
 
 **A second way in: a versioned JSON API, with live updates, alongside MQTT.** Until now the only
