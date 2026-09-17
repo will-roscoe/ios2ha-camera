@@ -15,7 +15,7 @@ not in Home Assistant's own user database:
 ```yaml
 logins:
   - username: ios2ha
-    password: change-me
+    password: <your-password>
 ```
 
 Any other broker works the same way through its own password file —
@@ -23,7 +23,7 @@ Any other broker works the same way through its own password file —
 does not have to be the one Home Assistant itself uses. Anywhere both Home
 Assistant and the service can reach is enough.
 
-One thing worth knowing before you pick a password: add-on logins are stored
+One thing worth knowing before you choose what to put there: add-on logins are stored
 as **plain text** in the add-on's own options, readable by anything with
 access to Home Assistant's Supervisor API. Give this account its own password,
 used nowhere else, rather than reusing one that matters.
