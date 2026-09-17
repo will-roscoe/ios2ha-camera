@@ -23,6 +23,22 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.7.0 — 2026-09-17
+
+**The phone screenshot is now served over HTTP**, at `/api/v1/snapshot/screenshot`, and appears in the
+media list as a fourth source (`kind: snapshot`, `formats: ["png"]`, `holds_phone: false`). It was
+previously published only as a retained MQTT topic, so the `screenshot` camera entity could not be built
+by anything that speaks the JSON API rather than MQTT -- which is every native Home Assistant
+integration.
+
+It serves the image the **Phone screenshot** button last captured, from memory, exactly as `/still.jpg`
+serves the last stacked still: asking for it never drives the phone and never takes a new screenshot,
+because taking one is the button's job. Before the first press it answers `503` rather than falling back
+to a camera frame, which would answer a different question than the one asked.
+
+Nothing is removed and no existing path moves, so `interfaces.api` stays at `1`: a client that ignores
+media ids it does not recognise, as the guarantees ask, sees no change at all.
+
 ## 2.6.2 — 2026-09-17
 
 **Stopping the Bluetooth keyboard now ends cleanly.** `stop()` stopped the keyboard's event loop

@@ -131,19 +131,27 @@ snapshot. Reconnect and carry on.
 
 ## Media
 
-`objects`'s `media` list, and `GET /api/v1/media` on its own, describe the same
+`objects`'s `media` list, and `GET /api/v1/media` on its own, describe the
 streams and still that `/live`, `/live/stacked` and `/still.jpg` already serve —
-see {doc}`../guarantees` for why those three paths are permanent. The
-`holds_phone` field is the one worth reading before building a dashboard: the
-still costs the phone nothing to fetch, while either stream holds its connection
-open for as long as something is watching.
+see {doc}`../guarantees` for why those three paths are permanent — plus one that
+has no older path, the phone screenshot at `/api/v1/snapshot/screenshot`. The
+`holds_phone` field is the one worth reading before building a dashboard: both
+snapshots cost the phone nothing to fetch, while either stream holds its
+connection open for as long as something is watching.
 
-**The six media paths themselves — the three above, plus their `/api/v1/stream/live`,
-`/api/v1/stream/stacked` and `/api/v1/snapshot/still` equivalents — are not
-gated by `EXPOSE_API`.** They are served unconditionally, because they are the
-camera; only the JSON routes in the section above turn off with the flag.
-Setting `EXPOSE_API=false` does not close any `/api/v1/stream/...` or
-`/api/v1/snapshot/...` path, and none of the six carries authentication either
+The screenshot is the image the **Phone screenshot** button last captured, the
+same one its retained MQTT topic carries. Asking for it never drives the phone
+and never takes a new one: that is the button's job. Before the first press it
+answers `503`, deliberately rather than falling back to a camera frame, which
+would answer a different question than the one asked.
+
+**The seven media paths themselves — the three older paths, their
+`/api/v1/stream/live`, `/api/v1/stream/stacked` and `/api/v1/snapshot/still`
+equivalents, and `/api/v1/snapshot/screenshot` — are not gated by
+`EXPOSE_API`.** They are served unconditionally, because they are the camera;
+only the JSON routes in the section above turn off with the flag. Setting
+`EXPOSE_API=false` does not close any `/api/v1/stream/...` or
+`/api/v1/snapshot/...` path, and none of the seven carries authentication either
 way.
 
 ## Moving from MQTT to the component

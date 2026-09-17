@@ -413,6 +413,15 @@ def test_screenshot_publishes_a_png():
     assert sup.mqtt.screenshots and sup.mqtt.screenshots[0].startswith(b"\x89PNG")
 
 
+def test_screenshot_is_also_kept_for_the_http_route():
+    """The MQTT topic is retained, so the HTTP route has to hold the same last
+    image or the two would disagree about what the last screenshot was."""
+    sup = _sup(phone=FakePhone())
+    assert sup.last_screenshot_png is None, "nothing before the first press"
+    sup.handle_control("screenshot", "PRESS")
+    assert sup.last_screenshot_png == sup.mqtt.screenshots[-1]
+
+
 def test_relaunch_app_calls_the_phone_and_reports_whether_it_was_running():
     """This button is for a dead app; relaunching a live one loses the stream
     it was already serving, so the event has to say which happened."""

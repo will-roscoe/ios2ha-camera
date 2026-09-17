@@ -171,7 +171,8 @@ def main():
     # stream are mounted onto this same application when they are switched on:
     # one port serves the media routes and the interfaces alike.
     app = make_live_app(buf, latest_still=lambda: sup.last_still_jpeg,
-                        upstream=up, stacker=stacker)
+                        upstream=up, stacker=stacker,
+                        latest_screenshot=lambda: sup.last_screenshot_png)
 
     # Version first, and on its own line: "what is actually running" is the
     # first question asked when an unattended service misbehaves.
