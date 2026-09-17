@@ -70,7 +70,9 @@ def test_without_mqtt_url_the_deprecated_host_and_port_still_work():
 
 
 def test_with_nothing_set_the_defaults_apply():
-    assert mqtt_endpoints(Settings()) == [MqttEndpoint("mqtt", "192.168.1.5", 1883, "tcp", False, "/mqtt")]
+    """localhost, not any one household's broker address: an unconfigured
+    install should try the host it runs on, never someone else's LAN."""
+    assert mqtt_endpoints(Settings()) == [MqttEndpoint("mqtt", "localhost", 1883, "tcp", False, "/mqtt")]
 
 
 def test_mqtt_url_wins_over_the_aliases_and_says_so(caplog):
