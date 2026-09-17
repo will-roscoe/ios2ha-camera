@@ -53,6 +53,7 @@ UPSTREAM = web.AppKey("upstream", object)
 STACKER = web.AppKey("stacker", object)
 BROADCAST_TASK = web.AppKey("broadcast_task", list)
 LATEST_STILL = web.AppKey("latest_still", object)
+LATEST_SCREENSHOT = web.AppKey("latest_screenshot", object)
 
 BOUNDARY = "frame"
 FPS_CAP = 12
@@ -234,6 +235,22 @@ async def _still(request):
                         headers={"Cache-Control": "no-cache"})
 
 
+async def _screenshot(request):
+    """The phone's screen, as the screenshot button last captured it.
+
+    Served from memory like /still.jpg, so a camera thumbnail costs the phone
+    nothing. There is deliberately no fallback: before the first press this is
+    a 503, because a camera frame is not a screenshot and showing one would
+    answer a different question than the one asked.
+    """
+    provider = request.app.get(LATEST_SCREENSHOT)
+    png = provider() if provider is not None else None
+    if png is None:
+        raise web.HTTPServiceUnavailable(text="no screenshot yet")
+    return web.Response(body=png, content_type="image/png",
+                        headers={"Cache-Control": "no-cache"})
+
+
 async def _start_broadcast(app):
     app[BROADCAST_TASK] = [asyncio.ensure_future(_broadcast(app, source, clients))
                            for source, clients in app[SOURCES]]
@@ -246,7 +263,8 @@ async def _stop_broadcast(app):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
+def make_live_app(buffer, latest_still=None, upstream=None, stacker=None,
+                  latest_screenshot=None):
     """`latest_still` is a callable returning the most recent stacked still as
     JPEG bytes, or None before the first one; it backs the /still.jpg route.
 
@@ -265,10 +283,17 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     permanent public interface and keep accepting any query string; only the
     new paths refuse an undeclared parameter with a 400, via
     `_reject_undeclared_params`.
+
+    `latest_screenshot` is the same arrangement for the phone's screen: a
+    callable returning the most recent screenshot as PNG bytes, or None before
+    the screenshot button has been pressed, backing
+    `/api/v1/snapshot/screenshot`. It has no older path to keep working, so it
+    is registered under its `entities.MEDIA` path only.
     """
     app = web.Application()
     app[BUFFER] = buffer
     app[LATEST_STILL] = latest_still
+    app[LATEST_SCREENSHOT] = latest_screenshot
     app[UPSTREAM] = upstream
     app[STACKER] = stacker
     app[SOURCES] = []
@@ -294,6 +319,9 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None):
     app.router.add_get("/still.jpg", _still)
     app.router.add_get(_MEDIA_BY_ID["still"].path,
                        _reject_undeclared_params(_still, set(_MEDIA_BY_ID["still"].params)))
+    app.router.add_get(
+        _MEDIA_BY_ID["screenshot"].path,
+        _reject_undeclared_params(_screenshot, set(_MEDIA_BY_ID["screenshot"].params)))
     app.on_startup.append(_start_broadcast)
     app.on_cleanup.append(_stop_broadcast)
     return app

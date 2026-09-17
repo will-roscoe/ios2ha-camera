@@ -191,6 +191,7 @@ class Supervisor:
         # Appended to during startup and never removed; see add_state_listener.
         self._state_listeners = []
         self._last_jpeg = None
+        self._last_screenshot_png = None
         # Both optional: without them the supervisor behaves exactly as before,
         # which is what happens when the D-Bus proxy or BlueZ is missing.
         self.starter = starter
@@ -198,6 +199,16 @@ class Supervisor:
         self.opener = opener
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
+
+    @property
+    def last_screenshot_png(self):
+        """The most recent phone screenshot, or None before the first press.
+
+        Read by the live server's /api/v1/snapshot/screenshot, so the camera
+        entity shows the same image the retained MQTT topic carries, without
+        touching the phone.
+        """
+        return self._last_screenshot_png
 
     @property
     def last_still_jpeg(self):
@@ -631,7 +642,11 @@ class Supervisor:
     def _screenshot(self):
         if self.phone is None:
             raise RuntimeError("phone management is not configured")
-        self.mqtt.publish_screenshot(self.phone.screenshot())
+        png = self.phone.screenshot()
+        # Kept as well as published: the MQTT topic is retained, and the HTTP
+        # route needs the same last-known image to serve without the phone.
+        self._last_screenshot_png = png
+        self.mqtt.publish_screenshot(png)
 
     def _relaunch(self):
         if self.phone is None:
