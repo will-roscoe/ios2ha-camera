@@ -23,6 +23,16 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.6.2 — 2026-09-17
+
+**Stopping the Bluetooth keyboard now ends cleanly.** `stop()` stopped the keyboard's event loop
+outright, which left its ten-second poll task pending -- asyncio logged `Task was destroyed but it is
+pending!` on every container stop -- and left the advertisement registered with BlueZ until the bus
+connection happened to drop, even though shutdown claimed to have unregistered it. It now
+unregisters the advertisement first, waiting up to 1.5 s for BlueZ, then cancels the poll and stops
+the loop. A slow or missing BlueZ cannot hold shutdown open: the wait is bounded and the thread is a
+daemon.
+
 ## 2.6.1 — 2026-09-17
 
 **`MQTT_HOST` now defaults to `localhost`.** It defaulted to a specific address on the developer's

@@ -1,14 +1,16 @@
 """The two decisions inside the emulated keyboard that are worth testing.
 
 `_Reports` turns key names into notified reports with the right timing, and
-`_Advertiser` decides when to advertise. The dbus-fast glue around them has no
-branches of its own and is covered by the on-device verification instead.
+`_Advertiser` decides when to advertise, and stopping has to leave nothing
+behind. The dbus-fast glue around them has no branches of its own and is
+covered by the on-device verification instead.
 """
 
+import asyncio
 import time
 
 from ios2ha_camera.hid import RELEASE, report
-from ios2ha_camera.keyboard import HID_UUID, _Advertiser, _Reports
+from ios2ha_camera.keyboard import HID_UUID, Keyboard, _Advertiser, _Reports
 
 
 class FakeNotifier:
@@ -174,3 +176,63 @@ def test_retry_does_nothing_while_a_host_is_attached():
     m.calls.clear()
     a.retry()
     assert m.calls == []
+
+
+# -- shutdown ---------------------------------------------------------------
+#
+# The keyboard owns a loop on its own thread. Stopping it used to stop that loop
+# outright, which left the poll task pending -- asyncio then logged "Task was
+# destroyed but it is pending!" on every container stop -- and left the
+# advertisement registered with BlueZ, although __main__ claimed otherwise.
+
+
+class _SlowAdvertiser:
+    """Stands in for the real one: records the stop, and takes a moment over it."""
+
+    def __init__(self, delay=0.0):
+        self.stopped = False
+        self._delay = delay
+
+    def stop(self):
+        self.stopped = True
+
+        async def unregister():
+            await asyncio.sleep(self._delay)
+
+        return asyncio.get_running_loop().create_task(unregister())
+
+
+def _started_keyboard(advertiser):
+    kb = Keyboard()
+
+    async def fake_setup():
+        kb._advertiser = advertiser
+
+    kb._setup = fake_setup
+    assert kb.start(timeout=5.0) is not None
+    return kb
+
+
+def test_stopping_cancels_the_poll_task_rather_than_abandoning_it():
+    kb = _started_keyboard(_SlowAdvertiser())
+    poll = kb._poll_task
+    kb.stop(timeout=5.0)
+    assert poll.cancelled() or poll.done()
+    assert not kb._thread.is_alive()
+
+
+def test_stopping_unregisters_the_advertisement():
+    adv = _SlowAdvertiser()
+    kb = _started_keyboard(adv)
+    kb.stop(timeout=5.0)
+    assert adv.stopped is True
+
+
+def test_an_unregister_that_hangs_does_not_hold_the_shutdown_open():
+    """BlueZ can be slow or gone; the caller's budget is a few seconds, and an
+    advertisement dies with the bus connection anyway."""
+    kb = _started_keyboard(_SlowAdvertiser(delay=30.0))
+    started = time.monotonic()
+    kb.stop(timeout=10.0)
+    assert time.monotonic() - started < 5.0
+    assert not kb._thread.is_alive()
