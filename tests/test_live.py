@@ -131,15 +131,15 @@ def test_screenshot_route_serves_the_last_screenshot():
     Same contract as /still.jpg: served from memory, so asking for it never
     drives the phone. Taking a new one is the button's job, not this route's.
     """
-    png = b"\x89PNG\r\n\x1a\nscreenshot"
+    jpeg = b"\xff\xd8\xffscreenshot\xff\xd9"
 
     async def run():
-        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: png)
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: jpeg)
         async with TestClient(TestServer(app)) as client:
             r = await client.get("/api/v1/snapshot/screenshot")
             assert r.status == 200
-            assert r.headers["Content-Type"] == "image/png"
-            assert await r.read() == png
+            assert r.headers["Content-Type"] == "image/jpeg"
+            assert await r.read() == jpeg
     asyncio.run(run())
 
 
@@ -158,7 +158,7 @@ def test_screenshot_route_says_so_before_the_first_press():
 
 def test_screenshot_route_refuses_an_undeclared_parameter():
     async def run():
-        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"png")
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"jpeg")
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/api/v1/snapshot/screenshot?t=1")).status == 400
     asyncio.run(run())
@@ -168,7 +168,7 @@ def test_screenshot_route_never_holds_the_connection():
     up = FakeUpstream()
 
     async def run():
-        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"png", upstream=up)
+        app = make_live_app(RingBuffer(1000), latest_screenshot=lambda: b"jpeg", upstream=up)
         async with TestClient(TestServer(app)) as client:
             assert (await client.get("/api/v1/snapshot/screenshot")).status == 200
         assert up.events == []

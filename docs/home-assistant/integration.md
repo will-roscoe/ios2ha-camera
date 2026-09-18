@@ -145,6 +145,12 @@ and never takes a new one: that is the button's job. Before the first press it
 answers `503`, deliberately rather than falling back to a camera frame, which
 would answer a different question than the one asked.
 
+It is served as JPEG. The phone hands back a lossless full-resolution PNG, which
+on a 2436x1125 screen is about 9.5 MB -- too much to sit on a retained MQTT
+message, and far too much to fetch every time a dashboard draws a thumbnail.
+Re-encoding is what `formats` is there to tell you: read it rather than assuming
+a format from the path.
+
 **The seven media paths themselves — the three older paths, their
 `/api/v1/stream/live`, `/api/v1/stream/stacked` and `/api/v1/snapshot/still`
 equivalents, and `/api/v1/snapshot/screenshot` — are not gated by
