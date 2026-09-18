@@ -85,7 +85,9 @@ class FakePhone:
         return self._battery
 
     def screenshot(self):
-        return b"\x89PNG\r\n\x1a\n fake"
+        # A real PNG, not a stub: the supervisor re-encodes what the phone gives
+        # it, so a fake that Pillow cannot open would not exercise that at all.
+        return _png(8, 8)
 
     def is_running(self):
         if self._running_error:
@@ -105,6 +107,13 @@ class Inline:
 
     def shutdown(self, wait=True, *, cancel_futures=False):
         pass
+
+
+def _png(w, h):
+    """A real PNG, since the supervisor re-encodes whatever the phone returns."""
+    out = io.BytesIO()
+    Image.fromarray(np.zeros((h, w, 3), np.uint8)).save(out, "PNG")
+    return out.getvalue()
 
 
 def _fill(buf, n, val=30, now=None, step=1 / 12):
@@ -407,19 +416,32 @@ def test_autofocus_rejects_unparseable_junk_before_touching_the_device_executor(
     assert sup.mqtt.published["autofocus"] is False, "Home Assistant must be corrected back"
 
 
-def test_screenshot_publishes_a_png():
+def test_screenshot_publishes_a_jpeg_not_the_phones_png():
+    """The phone hands back a lossless full-resolution PNG -- ~9.5 MB on a real
+    screen -- which is no size for a retained MQTT message or a thumbnail."""
     sup = _sup(phone=FakePhone())
     sup.handle_control("screenshot", "PRESS")
-    assert sup.mqtt.screenshots and sup.mqtt.screenshots[0].startswith(b"\x89PNG")
+    assert sup.mqtt.screenshots
+    assert sup.mqtt.screenshots[0].startswith(b"\xff\xd8\xff"), "JPEG, not PNG"
 
 
 def test_screenshot_is_also_kept_for_the_http_route():
     """The MQTT topic is retained, so the HTTP route has to hold the same last
     image or the two would disagree about what the last screenshot was."""
     sup = _sup(phone=FakePhone())
-    assert sup.last_screenshot_png is None, "nothing before the first press"
+    assert sup.last_screenshot_jpeg is None, "nothing before the first press"
     sup.handle_control("screenshot", "PRESS")
-    assert sup.last_screenshot_png == sup.mqtt.screenshots[-1]
+    assert sup.last_screenshot_jpeg == sup.mqtt.screenshots[-1]
+
+
+def test_a_screenshot_that_is_not_an_image_is_a_failure_not_a_publish():
+    """Publishing undecodable bytes would put garbage on a retained topic."""
+    phone = FakePhone()
+    phone.screenshot = lambda: b"not an image"
+    sup = _sup(phone=phone)
+    sup.handle_control("screenshot", "PRESS")
+    assert sup.mqtt.screenshots == []
+    assert sup.last_screenshot_jpeg is None
 
 
 def test_relaunch_app_calls_the_phone_and_reports_whether_it_was_running():

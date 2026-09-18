@@ -244,10 +244,10 @@ async def _screenshot(request):
     answer a different question than the one asked.
     """
     provider = request.app.get(LATEST_SCREENSHOT)
-    png = provider() if provider is not None else None
-    if png is None:
+    jpeg = provider() if provider is not None else None
+    if jpeg is None:
         raise web.HTTPServiceUnavailable(text="no screenshot yet")
-    return web.Response(body=png, content_type="image/png",
+    return web.Response(body=jpeg, content_type="image/jpeg",
                         headers={"Cache-Control": "no-cache"})
 
 
