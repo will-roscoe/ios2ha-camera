@@ -23,6 +23,23 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.8.0 — 2026-09-18
+
+**The phone screenshot is now JPEG rather than PNG**, on both the HTTP route and the retained MQTT
+topic. The phone hands back a lossless full-resolution screenshot, which on a 2436x1125 screen measured
+9.46 MB: no size for a retained MQTT message, and far too much for Home Assistant to fetch every time it
+draws a camera thumbnail. Re-encoded at quality 90 -- chosen above the 85 the live stack uses because a
+phone screen is mostly text, which is where JPEG artefacts show worst -- the same screenshot is about
+260 KB, a 36-fold reduction.
+
+The media descriptor now says `"formats": ["jpeg"]`, which is the field to read rather than assuming a
+format from the path. This corrects the PNG that 2.7.0 shipped earlier the same day; both the JSON API
+and MQTT still answer on the same paths and topics, so `interfaces.api` and `interfaces.mqtt` both stay
+at `1` and nothing that was working stops.
+
+A screenshot the service cannot decode is now a failed button press rather than a publish, so
+undecodable bytes can no longer land on a retained topic.
+
 ## 2.7.0 — 2026-09-17
 
 **The phone screenshot is now served over HTTP**, at `/api/v1/snapshot/screenshot`, and appears in the

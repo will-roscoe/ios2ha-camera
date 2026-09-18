@@ -34,6 +34,11 @@ from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, _coerce_bool
 from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
+# A phone screen is mostly text, which is where JPEG artefacts show worst, so
+# this sits above the 85 the live stack uses. On a 2436x1125 screenshot it turns
+# ~9.5 MB of PNG into ~260 KB.
+SCREENSHOT_JPEG_QUALITY = 90
+
 log = logging.getLogger(__name__)
 
 
@@ -191,7 +196,7 @@ class Supervisor:
         # Appended to during startup and never removed; see add_state_listener.
         self._state_listeners = []
         self._last_jpeg = None
-        self._last_screenshot_png = None
+        self._last_screenshot_jpeg = None
         # Both optional: without them the supervisor behaves exactly as before,
         # which is what happens when the D-Bus proxy or BlueZ is missing.
         self.starter = starter
@@ -201,14 +206,14 @@ class Supervisor:
             max_workers=1, thread_name_prefix="device")
 
     @property
-    def last_screenshot_png(self):
+    def last_screenshot_jpeg(self):
         """The most recent phone screenshot, or None before the first press.
 
         Read by the live server's /api/v1/snapshot/screenshot, so the camera
         entity shows the same image the retained MQTT topic carries, without
         touching the phone.
         """
-        return self._last_screenshot_png
+        return self._last_screenshot_jpeg
 
     @property
     def last_still_jpeg(self):
@@ -642,11 +647,12 @@ class Supervisor:
     def _screenshot(self):
         if self.phone is None:
             raise RuntimeError("phone management is not configured")
-        png = self.phone.screenshot()
-        # Kept as well as published: the MQTT topic is retained, and the HTTP
-        # route needs the same last-known image to serve without the phone.
-        self._last_screenshot_png = png
-        self.mqtt.publish_screenshot(png)
+        # Converted once, then used for both: the retained MQTT message and the
+        # HTTP route must be the same image, and the phone's lossless PNG is
+        # ~9.5 MB, which is no size for either.
+        jpeg = render.png_to_jpeg(self.phone.screenshot(), SCREENSHOT_JPEG_QUALITY)
+        self._last_screenshot_jpeg = jpeg
+        self.mqtt.publish_screenshot(jpeg)
 
     def _relaunch(self):
         if self.phone is None:

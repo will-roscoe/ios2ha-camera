@@ -177,3 +177,20 @@ def to_jpeg(rgb, quality=92):
     b = io.BytesIO()
     Image.fromarray(rgb).save(b, "JPEG", quality=quality)
     return b.getvalue()
+
+
+def png_to_jpeg(png, quality):
+    """Re-encode PNG bytes as JPEG bytes.
+
+    The phone hands back a lossless full-resolution screenshot, which for a
+    2436x1125 screen is about 9.5 MB -- far too much to publish as a retained
+    MQTT message or to fetch every time a dashboard draws a thumbnail. Raises
+    if the bytes are not an image the way any other decode failure would; a
+    screenshot that cannot be read is a failed screenshot, not one to publish
+    unconverted.
+    """
+    out = io.BytesIO()
+    # convert(): a screenshot may carry an alpha channel, which JPEG has no room
+    # for and Pillow refuses to guess about.
+    Image.open(io.BytesIO(png)).convert("RGB").save(out, "JPEG", quality=quality)
+    return out.getvalue()

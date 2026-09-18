@@ -397,6 +397,6 @@ MEDIA = (
     # taking a new one is the button's job. Before the first press the route
     # answers 503 rather than falling back to a camera frame, which would be an
     # answer to a different question.
-    MediaSource(id="screenshot", kind="snapshot", formats=("png",),
+    MediaSource(id="screenshot", kind="snapshot", formats=("jpeg",),
                 path="/api/v1/snapshot/screenshot", holds_phone=False),
 )
