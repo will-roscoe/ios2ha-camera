@@ -38,11 +38,18 @@ the ones that bite:
 | Situation | Commit type suggests | The surface rule says | What to do |
 |---|---|---|---|
 | Internal capability, no new entity | `feat:` → minor | patch | Add `+:patch` |
+| Fixing something *by adding* an entity | `fix:` → patch | **minor** | Add `+:minor` |
 | Renaming an entity id | `refactor:` → no release | **major** | Add `+:major` |
 | Changing a payload's units or shape | `fix:` → patch | **major** | Add `+:major` |
 | Improving an entity's *display name* | either | patch | Nothing; ids are pinned with `default_entity_id` precisely so names can change freely |
 
 When the two disagree, the surface rule wins and you say so with an override.
+
+Forgetting the override does not silently ship the wrong number: the release workflow
+compares the version the commits imply against `pyproject.toml` and fails if they
+disagree, after the merge has already landed on `main`. Recovering means tagging by hand,
+which the tag-triggered release workflow accepts because it validates the tag against
+`pyproject.toml` rather than against the commit log. Cheaper to add the token.
 
 ### Release-override directives
 
