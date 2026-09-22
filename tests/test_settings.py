@@ -117,7 +117,7 @@ def test_bool_controls_are_derived_from_the_dataclass():
     hardcoded list that could silently drift from the dataclass."""
     assert _BOOL_CONTROLS == {
         "stacking_allowed", "on_demand", "autofocus", "backgrounding", "auto_start",
-        "auto_reboot",
+        "auto_reboot", "emergency_keyboard",
     }
 
 

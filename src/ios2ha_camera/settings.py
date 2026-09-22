@@ -16,7 +16,7 @@ CONTROLS = {
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
-    "auto_reboot",
+    "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
 
 # Discovery publishes one number entity per channel, so the per-channel names
@@ -147,6 +147,12 @@ class Settings:
     # which is what you want while debugging one; the Home Assistant button
     # still reboots, because a person is asking.
     auto_reboot: bool = True
+    # The keyboard route to backgrounding, used only when the developer channel
+    # has failed and the battery is below the floor below. Off leaves a phone
+    # with a wedged developer channel to drain, which is the honest trade: keys
+    # are blind, and Will's ruling is that they are for emergencies only.
+    emergency_keyboard: bool = True
+    emergency_below_pct: float = 15.0
 
     @classmethod
     def from_env(cls, env):
