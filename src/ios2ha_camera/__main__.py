@@ -18,6 +18,7 @@ from .live_stack import LiveStacker
 from .mqtt_io import MqttIO, NullMqttIO
 from .onvif import OnvifClient
 from .phone import PhoneManager
+from .reboot import PhoneRebooter
 from .ring_buffer import RingBuffer
 from .settings import Settings, both_interfaces_off_message
 from .stream_start import StreamStarter
@@ -156,8 +157,17 @@ def main():
     opener = AppOpener(phone.is_running, phone.launch, foreground=phone.foreground,
                        allowed=lambda: (bool(getattr(s, "auto_start", True))
                                         and not sup.backgrounding.backgrounded))
+    # The recovery of last resort, for the wedge seen on 2026-09-14 and
+    # 2026-09-18: the developer image mounter hangs and the DVT handshake is
+    # refused while plain lockdown still answers, and nothing in software
+    # recovers it. `phone.battery` is the reachability check for exactly that
+    # reason -- it is the one call that needs no developer image.
+    rebooter = PhoneRebooter(phone.reboot, phone.dvt_ok,
+                             reachable=lambda: phone.battery() is not None,
+                             allowed=lambda: bool(getattr(s, "auto_reboot", True)))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
-                     starter=starter, keyboard=keyboard, opener=opener)
+                     starter=starter, keyboard=keyboard, opener=opener,
+                     rebooter=rebooter)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 

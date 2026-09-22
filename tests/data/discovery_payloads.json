@@ -218,6 +218,23 @@
     "name": "Prepare phone",
     "unique_id": "ios2ha_button_prepare_phone"
   },
+  "homeassistant/button/ios2ha/reboot_phone/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/reboot_phone",
+    "default_entity_id": "button.ios2ha_camera_reboot_phone",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "restart",
+    "entity_category": "config",
+    "name": "Reboot phone",
+    "unique_id": "ios2ha_button_reboot_phone"
+  },
   "homeassistant/button/ios2ha/relaunch_app/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/relaunch_app",
@@ -1443,6 +1460,55 @@
     "suggested_display_precision": 2,
     "unique_id": "ios2ha_sensor_noise"
   },
+  "homeassistant/sensor/ios2ha/phone_reboot/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_phone_reboot",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:restart",
+    "name": "Phone reboot",
+    "options": [
+      "idle",
+      "not_needed",
+      "rebooting",
+      "recovered",
+      "still_wedged",
+      "given_up",
+      "rate_limited",
+      "paused",
+      "unavailable",
+      "failed_reboot"
+    ],
+    "state_topic": "ios2ha_camera/state/phone_reboot",
+    "unique_id": "ios2ha_sensor_phone_reboot"
+  },
+  "homeassistant/sensor/ios2ha/phone_reboots/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_phone_reboots",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "diagnostic",
+    "icon": "mdi:counter",
+    "name": "Phone reboots (24 h)",
+    "state_class": "measurement",
+    "state_topic": "ios2ha_camera/state/phone_reboots",
+    "unique_id": "ios2ha_sensor_phone_reboots",
+    "unit_of_measurement": "reboots"
+  },
   "homeassistant/sensor/ios2ha/snr/config": {
     "availability_topic": "ios2ha_camera/available",
     "default_entity_id": "sensor.ios2ha_camera_snr",
@@ -1632,6 +1698,26 @@
     "state_topic": "ios2ha_camera/state/wb_gain_r",
     "suggested_display_precision": 3,
     "unique_id": "ios2ha_sensor_wb_gain_r"
+  },
+  "homeassistant/switch/ios2ha/auto_reboot/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/auto_reboot",
+    "default_entity_id": "switch.ios2ha_camera_auto_reboot",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:restart-alert",
+    "name": "Auto reboot wedged phone",
+    "payload_off": "false",
+    "payload_on": "true",
+    "state_topic": "ios2ha_camera/state/auto_reboot",
+    "unique_id": "ios2ha_switch_auto_reboot"
   },
   "homeassistant/switch/ios2ha/auto_start/config": {
     "availability_topic": "ios2ha_camera/available",

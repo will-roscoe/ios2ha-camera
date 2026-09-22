@@ -199,6 +199,44 @@ class PhoneManager:
             "health_pct": round(100 * raw_max / design, 1) if raw_max and design else None,
         }
 
+    def _diagnostics_restart(self):
+        async def go():
+            from pymobiledevice3.services.diagnostics import DiagnosticsService
+            lockdown = await self._lockdown()
+            try:
+                return await DiagnosticsService(lockdown).restart()
+            finally:
+                await lockdown.close()
+        return self._run(go())
+
+    def reboot(self):
+        """Restart the phone. The only known cure for wedged developer services.
+
+        Deliberately a plain lockdown call, like `battery()` and unlike anything
+        routed through `_dvt`: when the DeveloperDiskImage mounter is what hangs,
+        a recovery that needed the image could never run. Proven 2026-09-22,
+        which cleared a wedge four days old.
+
+        The phone comes back with the app backgrounded and the image unmounted,
+        both of which the existing steps handle: `_dvt` re-mounts on the next
+        call and `AppOpener` fronts the app.
+        """
+        self._ddi_mounted = False
+        self._call(self._diagnostics_restart)
+
+    def dvt_ok(self):
+        """Whether a developer call works right now, without changing anything.
+
+        `is_running` is the cheapest true DVT round trip: it mounts the image
+        first, like everything else in `_dvt`, so it answers for both halves of
+        the wedge -- the mounter that hangs and the handshake that is refused.
+        """
+        try:
+            self.is_running()
+        except Exception:
+            return False
+        return True
+
     def _proclist(self):
         async def go():
             from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo

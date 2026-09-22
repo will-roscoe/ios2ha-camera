@@ -30,6 +30,7 @@ import numpy as np
 from . import measure, render, stack
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
+from .reboot import WEDGE_FOR_S
 from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, _coerce_bool
 from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
@@ -142,7 +143,7 @@ class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
-                 starter=None, keyboard=None, opener=None):
+                 starter=None, keyboard=None, opener=None, rebooter=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -202,6 +203,7 @@ class Supervisor:
         self.starter = starter
         self.keyboard = keyboard
         self.opener = opener
+        self.rebooter = rebooter
         self._device_executor = device_executor or ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="device")
 
@@ -504,6 +506,11 @@ class Supervisor:
                 # manual=True: a person asking overrides the pause switch and
                 # the rate limit, though never the guards around the keys.
                 self._submit(name, lambda: self.starter.attempt(True))
+            elif name == "reboot_phone":
+                if self.rebooter is None:
+                    raise RuntimeError("the rebooter is not configured")
+                # manual=True: overrides the switch, the budget and the latch.
+                self._submit(name, lambda: self.rebooter.attempt(True))
             elif name == "autofocus":
                 try:
                     # The same coercion the other four boolean controls get via
@@ -614,6 +621,23 @@ class Supervisor:
 
     def _open_app(self):
         self.opener.attempt(False)
+
+    def _maybe_reboot_phone(self):
+        """Feed the rebooter, and queue a reboot once the wedge is certain.
+
+        The observation happens every tick and costs nothing -- it is a counter
+        the phone manager already keeps. The attempt is queued on the device
+        worker like any other phone call, because it blocks for the settle time
+        while the phone boots.
+        """
+        if self.rebooter is None or self.phone is None:
+            return
+        self.rebooter.observe(getattr(self.phone, "dvt_failures", 0))
+        # Checked here as well as inside attempt() so that a healthy phone never
+        # occupies the single device worker, which a mount can block for minutes.
+        if self.rebooter.wedged_for < WEDGE_FOR_S or "reboot_phone" in self._device_busy:
+            return
+        self._submit("reboot_phone", lambda: self.rebooter.attempt(False))
 
     def _run_device_action(self, name, fn, key):
         try:
@@ -760,6 +784,9 @@ class Supervisor:
                                       if self.starter is not None else 0)
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
         d["app_open"] = self.opener.state if self.opener is not None else "idle"
+        d["phone_reboot"] = self.rebooter.state if self.rebooter is not None else "idle"
+        d["phone_reboots"] = (self.rebooter.reboots_last_day
+                              if self.rebooter is not None else 0)
         # A rising count means the phone's developer services are not answering,
         # which is what silently stopped backgrounding for 24 hours on 2026-09-14.
         d["dvt_failures"] = getattr(self.phone, "dvt_failures", 0) if self.phone else 0
@@ -962,6 +989,7 @@ class Supervisor:
                 # what this can actually do to the phone.
                 if self.stream_state in ("backgrounded", "unavailable"):
                     self._maybe_open_app()
+                self._maybe_reboot_phone()
                 if time.monotonic() - last_battery >= battery_every:
                     last_battery = time.monotonic()
                     self.publish_state(self.phone_state())

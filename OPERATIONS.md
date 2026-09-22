@@ -358,6 +358,44 @@ between captures. Harmless with Screen Curtain on, but it does mean you cannot t
 glance whether the camera app is alive — `binary_sensor.ios2ha_camera_app_running` answers
 that instead.
 
+### When the phone's developer services wedge
+
+Twice now, on 2026-09-14 and 2026-09-18, the phone has stopped answering **developer** calls while
+answering everything else. The signature is specific:
+
+- `sensor.ios2ha_camera_dvt_failures` climbs and stays up (2530 by the end of the second outage).
+- The disk image mounter hangs, and the DVT handshake is refused in a tenth of a second.
+- Plain lockdown services keep working, so battery readings and screenshots still arrive.
+
+It matters because **backgrounding goes over DVT**, and backgrounding is what keeps the phone
+charged on a 3 W port. The second time, the app stayed in the foreground streaming, the battery
+fell from 36% to 4%, and the camera was dark for four days because nothing acted on it.
+
+**It does not recover on its own.** Clearing the mount cache cannot help when the mounter is what
+hangs, and unplugging the cable does not clear it either. Rebooting the phone does, in about six
+minutes, after which the app is re-opened and streaming resumes unattended.
+
+So the supervisor now reboots the phone itself, on a deliberately narrow diagnosis: three or more
+consecutive developer failures, sustained for fifteen minutes, **and** plain lockdown still
+answering — that last one is what distinguishes a wedged developer channel from an unplugged cable,
+where a reboot would do nothing. At most two a day, six hours apart.
+
+If a reboot does not clear it, the service **gives up rather than trying again**: the state latches
+at `given_up`, and only the developer channel working again — or the `button.ios2ha_camera_reboot_phone`
+button — releases it. A reboot loop overnight would be worse than the wedge.
+
+| `sensor.ios2ha_camera_phone_reboot` | What it means |
+|---|---|
+| `not_needed` | The developer channel is healthy, or has not been failing long enough |
+| `rebooting` | The restart has been requested; the phone takes a couple of minutes |
+| `recovered` | Developer calls work again |
+| `still_wedged` | The reboot did not fix it. **Look at it yourself**; nothing further will be attempted |
+| `given_up` | That latch is set |
+| `unavailable` | The phone does not answer at all, so this is a cable fault, not a wedge — see below |
+
+Switch `switch.ios2ha_camera_auto_reboot` off while you are investigating a wedge by hand, or the
+service may reboot the phone underneath you. The button ignores the switch, the budget and the latch.
+
 ### When the cable stops working
 
 The container reaches the phone two ways: over WiFi for frames, and over the Lightning cable via
