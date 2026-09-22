@@ -23,6 +23,35 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.10.0 — 2026-09-22
+
+**The app can now be backgrounded over the keyboard when the cable cannot do it**, as a last
+resort and nothing more.
+
+Backgrounding is what keeps this phone charged on a 3 W port, and it goes over the phone's developer
+services. When those wedge, it goes with them: on 2026-09-18 the app stayed in the foreground
+streaming and the battery fell from 36% to 4%. 2.9.0 recovers that by rebooting the phone, but the
+reboot is budgeted and can be latched off, so there is still a window where the battery is draining
+and the cable can do nothing about it.
+
+In that window only -- the developer call has already failed, and the battery is below
+`number.ios2ha_camera_emergency_below_pct` (default 15%) -- the supervisor now sends Home over the
+Bluetooth keyboard it already emulates: Cmd+H, then Tab+H for Full Keyboard Access.
+
+The keyboard is deliberately not an alternative to the cable. It is blind, where a developer call
+reports what happened, so it is never the first choice and never used above the floor. What makes it
+usable at all is that the claim is checked: iOS suspends a backgrounded app's listening socket, so a
+refused connection is evidence the press landed, and nothing reports success without it. Foregrounding
+stays a cable call, because coming back means finding the app on a Home screen this service cannot
+see; a phone backgrounded this way stays dark until the cable works again, which is the trade -- a
+charged phone and no camera, rather than a flat phone and no camera.
+
+New entities, so nothing that already worked changes: `switch.ios2ha_camera_emergency_keyboard`,
+`number.ios2ha_camera_emergency_below_pct`, `sensor.ios2ha_camera_emergency_background` and
+`binary_sensor.ios2ha_camera_backgrounded_by_keyboard`. Both interface versions stay at `1`.
+
+See OPERATIONS.md, "If the battery is dying and the cable cannot background the app".
+
 ## 2.9.0 — 2026-09-22
 
 **The supervisor can now reboot the phone to clear wedged developer services**, which is the one
