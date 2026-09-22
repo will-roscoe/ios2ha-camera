@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from . import version
 from .app_open import APP_OPEN_STATES
+from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
 
@@ -196,6 +197,7 @@ _SWITCHES = [
     _switch("on_demand", "On demand", "mdi:power-plug-off-outline"),
     _switch("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down"),
     _switch("auto_start", "Auto start streaming", "mdi:play-box-outline"),
+    _switch("auto_reboot", "Auto reboot wedged phone", "mdi:restart-alert"),
 ]
 
 # capture_now stays uncategorised: it is the one button that belongs on a
@@ -211,6 +213,11 @@ _BUTTONS = [
     # Presses Start streaming now, ignoring the pause switch and the rate
     # limit: a person asking is an explicit instruction. The guards still hold.
     _button("start_streaming", "Start streaming", icon="mdi:video-check",
+            category="config"),
+    # Reboots the phone now, skipping the wedge test, the budget and the latch:
+    # a person can see what this service cannot. The reachability guard holds,
+    # because an unreachable phone has nothing to send the request over.
+    _button("reboot_phone", "Reboot phone", device_class="restart",
             category="config"),
 ]
 
@@ -303,6 +310,11 @@ _SENSORS = [
     _sensor("app_open", "App open", device_class="enum",
             options=tuple(APP_OPEN_STATES), category="diagnostic",
             icon="mdi:cellphone-play"),
+    _sensor("phone_reboot", "Phone reboot", device_class="enum",
+            options=tuple(REBOOT_STATES), category="diagnostic",
+            icon="mdi:restart"),
+    _sensor("phone_reboots", "Phone reboots (24 h)", unit="reboots",
+            state_class="measurement", category="diagnostic", icon="mdi:counter"),
     _sensor("stream_start_attempts", "Stream start attempts (1 h)", unit="attempts",
             state_class="measurement", category="diagnostic", icon="mdi:counter"),
     # Consecutive failures of calls needing the phone's developer services. Zero

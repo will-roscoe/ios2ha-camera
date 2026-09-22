@@ -23,6 +23,35 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.9.0 — 2026-09-22
+
+**The supervisor can now reboot the phone to clear wedged developer services**, which is the one
+failure this service could see clearly and do nothing about.
+
+Twice -- 2026-09-14 and 2026-09-18 -- the phone's DeveloperDiskImage mounter has hung and its DVT
+handshake has been refused while plain lockdown carried on answering. Backgrounding goes over DVT, and
+backgrounding is what keeps the phone charged on a 3 W port, so the app stayed in the foreground
+streaming: the battery fell from 36% to 4%, and the second time the camera was dark for four days with
+`dvt_failures` climbing to 2530 and nothing acting on it. Nothing in software recovers it -- clearing
+the mount cache cannot help when the mounter is what hangs, and unplugging the cable does not clear it.
+Rebooting the phone does, in about six minutes, after which the existing steps re-open the app and
+streaming resumes unattended.
+
+The diagnosis is deliberately narrow, because a reboot is the heaviest thing this service can do to the
+phone: three or more consecutive developer failures, sustained for fifteen minutes, **and** a plain
+lockdown call still answering. That last condition separates a wedged developer channel from an
+unplugged cable, where a reboot would achieve nothing. At most two a day, six hours apart, and a reboot
+that does not cure the wedge **latches rather than repeating** -- an unattended reboot loop would be
+worse than the fault. The latch opens only on evidence: developer calls working again, or the new
+button.
+
+New entities, so nothing that already worked changes: `switch.ios2ha_camera_auto_reboot` (on by
+default, turn it off while investigating a wedge by hand), `button.ios2ha_camera_reboot_phone` (reboots
+now, ignoring the switch, the budget and the latch), `sensor.ios2ha_camera_phone_reboot` and
+`sensor.ios2ha_camera_phone_reboots`. `interfaces.api` and `interfaces.mqtt` both stay at `1`.
+
+See OPERATIONS.md, "When the phone's developer services wedge".
+
 ## 2.8.0 — 2026-09-18
 
 **The phone screenshot is now JPEG rather than PNG**, on both the HTTP route and the retained MQTT
