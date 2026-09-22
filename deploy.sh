@@ -11,6 +11,7 @@
 #   ./deploy.sh check      compare the deployed tree against this one
 #   ./deploy.sh version    what is running right now
 #   ./deploy.sh phone      prepare the phone after it restarts (works while stopped)
+#   ./deploy.sh verify     ask Home Assistant whether the entities are healthy
 set -euo pipefail
 
 HOST="${IOS2HA_HOST:-arcturus.lan0}"
@@ -47,6 +48,19 @@ check)
   else
     echo "bluez proxy: MISSING (run scripts/install-bluez-proxy.sh on $HOST)"
   fi
+  ;;
+
+verify)
+  # Read-only, and off unless HA_URL and HA_TOKEN are in the container's
+  # environment. Exit 2 means "not configured", which is not a deployment
+  # failure -- see src/ios2ha_camera/ha.py.
+  ssh -o BatchMode=yes "$HOST" \
+    "cd $STACK && docker compose exec -T $SERVICE python -m ios2ha_camera.ha" || status=$?
+  case "${status:-0}" in
+    0) ;;
+    2) echo "(Home Assistant verification is switched off)" ;;
+    *) exit "${status}" ;;
+  esac
   ;;
 
 deploy)

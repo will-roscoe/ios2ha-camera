@@ -33,6 +33,9 @@ not the flag.
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
 | `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Turning it **off** also *removes* the entities it created: at startup the supervisor makes one bounded attempt to reach the broker and clears every retained discovery topic and the retained availability message, which deletes the MQTT entities from Home Assistant and frees their entity ids. With no broker reachable this is one warning in the log and nothing else. Switching it back on recreates them. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
+| `HA_URL` | unset | Home Assistant's base URL, e.g. `http://homeassistant.example:8123`. Used **only** by `./deploy.sh verify`, never on the running path. Both this and `HA_TOKEN` must be set or the feature stays off entirely, with no request made |
+| `HA_TOKEN` | unset | A long-lived access token for that instance. Home Assistant has no read-only tokens, so **mint it from a non-admin user**: nothing here writes, and a token that cannot write cannot be turned into a way to drive the house from a camera container. Never logged |
+| `HA_PREFIX` | `ios2ha` | Which entity ids `./deploy.sh verify` counts as this service's |
 | `EXPOSE_API` | `true` | Turns the JSON API on or off. Same accepted spellings and the same fail-safe on an unrecognised value |
 
 With both `EXPOSE_MQTT` and `EXPOSE_API` off, captures, stacking and archiving
