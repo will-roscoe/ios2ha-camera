@@ -177,7 +177,8 @@ def test_every_sensor_says_what_its_reading_means():
                          # How the last attempt to press Start streaming went,
                          # and how the last attempt to open the app went: both
                          # conditions, like the enums above them.
-                         "stream_start", "app_open"}
+                         # ...and how the phone reboot went, same again.
+                         "stream_start", "app_open", "phone_reboot"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
                           "focus_sharpness", "motion"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}

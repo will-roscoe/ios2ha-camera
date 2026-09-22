@@ -16,6 +16,7 @@ CONTROLS = {
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
+    "auto_reboot",
 }
 
 # Discovery publishes one number entity per channel, so the per-channel names
@@ -141,6 +142,11 @@ class Settings:
     # open but idle. Off leaves a stream stopped by hand on the phone stopped;
     # the Home Assistant button still works, because a person is asking.
     auto_start: bool = True
+    # Whether the supervisor may reboot the phone itself to clear wedged
+    # developer services. Off leaves the wedge in place and the camera dark,
+    # which is what you want while debugging one; the Home Assistant button
+    # still reboots, because a person is asking.
+    auto_reboot: bool = True
 
     @classmethod
     def from_env(cls, env):

@@ -60,7 +60,7 @@ def test_info_carries_the_device_block_mqtt_publishes():
 
 def test_objects_describes_every_entity():
     _, doc = _get(_api(), "/api/v1/objects")
-    assert len(doc["objects"]) == len(ENTITIES) == 86
+    assert len(doc["objects"]) == len(ENTITIES) == 90
     assert [o["object_id"] for o in doc["objects"]] == [e.object_id for e in ENTITIES]
 
     by_key = {(o["domain"], o["object_id"]): o for o in doc["objects"]}
@@ -95,7 +95,7 @@ def test_an_object_is_identified_by_domain_and_object_id_together():
     ids = [o["object_id"] for o in doc["objects"]]
     pairs = [(o["domain"], o["object_id"]) for o in doc["objects"]]
     assert len(set(ids)) < len(ids)
-    assert len(set(pairs)) == len(pairs) == 86
+    assert len(set(pairs)) == len(pairs) == 90
 
 
 def test_media_declares_whether_it_holds_the_phone():
@@ -238,12 +238,12 @@ def test_a_control_reaches_handle_control_unchanged():
 
 
 def test_every_writable_entity_is_reachable_through_the_one_verb():
-    """One verb over the whole declared vocabulary: 26 controls and 5 buttons. A
+    """One verb over the whole declared vocabulary: 27 controls and 6 buttons. A
     name that is declared writable but cannot be written is an entity Home
     Assistant offers and this service ignores."""
     _, doc = _get(_api(), "/api/v1/objects")
     writable = [o for o in doc["objects"] if o["writable"]]
-    assert len(writable) == 31
+    assert len(writable) == 33
 
     for o in writable:
         app, seen = _recording_api()
