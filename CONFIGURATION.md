@@ -113,9 +113,10 @@ All are `entity_category: config`, so Home Assistant files them under Configurat
 | `number.ios2ha_camera_stretch_strength` | Stretch strength | 1–60 step 1 | | `25.0` |
 | `number.ios2ha_camera_chroma_radius` | Chroma smoothing radius | 0–12 step 0.5 | px | `3.0` |
 | `number.ios2ha_camera_denoise_strength` | Denoise strength | 0–20 step 0.5 | | `3.0` |
-| `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | auto |
-| `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | auto |
-| `number.ios2ha_camera_black_level_2` | Black level override B | 0–32 step 0.1 | | auto |
+| `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
+| `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
+| `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |
+| `number.ios2ha_camera_black_level_2` | Black level override B | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_live_max_window_s` | Stacked feed window | 0.5–15 step 0.5 | s | `3.0` |
 | `number.ios2ha_camera_background_below_pct` | Background below | 0–100 step 1 | % | `50` |
 | `number.ios2ha_camera_resume_above_pct` | Resume above | 0–100 step 1 | % | `80` |
@@ -194,7 +195,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `sensor.ios2ha_camera_capture_duration` | s | |
 | `sensor.ios2ha_camera_effective_exposure_required` / `_achieved` | s | Depth ÷ frame rate. An upper bound until auto-exposure has hit its limit |
 | `sensor.ios2ha_camera_wb_gain_r/g/b` | | The gains actually applied |
-| `sensor.ios2ha_camera_black_level_applied_r/g/b` | | The black level actually applied |
+| `sensor.ios2ha_camera_black_level_applied_r/g/b` | | The black level actually applied — the measured value with the override switch off, the three numbers with it on. This is the pair to read when asking "is my override in effect?" |
 
 ### Health and hardware
 

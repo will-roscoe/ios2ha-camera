@@ -318,8 +318,12 @@ class Supervisor:
         the retained values.
         """
         d = {n: getattr(self.s, n) for n in sorted(CONTROLS) if n != "black_level_override"}
-        if self.s.black_level_override is not None:
-            d.update({f"black_level_{i}": v for i, v in enumerate(self.s.black_level_override)})
+        # Always, not only while an override is set. The three numbers declare a
+        # state key, and an entity whose key is usually absent reads as three
+        # blank boxes in Home Assistant with no way to tell "no override" from
+        # "this service is broken". `black_level_override_on` is what carries
+        # that distinction now, so the values themselves can always be published.
+        d.update({f"black_level_{i}": v for i, v in enumerate(self.s.black_level)})
         self.publish_state(d)
         # A snapshot, never the live dict: this runs on the MQTT network thread
         # while the capture and health threads are still writing, and iterating
@@ -560,13 +564,13 @@ class Supervisor:
 
     def _stored(self, name):
         """The value a control holds now, as it is published. A black-level
-        channel is not an attribute of its own but one slot of the override
-        tuple, and has no value while there is no override."""
+        channel is not an attribute of its own but one slot of `black_level`,
+        which always has a value: whether it is in effect is
+        `black_level_override_on`, not the presence of the number."""
         channel = BLACK_LEVEL_CHANNELS.get(name)
         if channel is None:
             return getattr(self.s, name, None)
-        override = self.s.black_level_override
-        return None if override is None else override[channel]
+        return self.s.black_level[channel]
 
     def _submit(self, name, fn, *, key=None, latest_wins=False):
         """Queue `fn` for the device worker, unless the same action is already

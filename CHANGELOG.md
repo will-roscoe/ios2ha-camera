@@ -23,6 +23,31 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.12.0 — 2026-09-22
+
+**The black level override now has a switch**, so the three numbers always carry a value.
+
+There was no number meaning "no override" -- internally that state is `None`, "measure the black level
+from the frame" -- so the service simply did not publish `black_level_0/1/2` until someone set one.
+The entity descriptors declared a state key that was usually absent, which in Home Assistant is three
+blank boxes with no way to tell "no override" from "this service is broken", and in the native
+integration a value that had to be special-cased.
+
+`switch.ios2ha_camera_black_level_override_on` now carries that distinction, matching every other
+switch-and-numbers pair here (`backgrounding` with its two thresholds, `emergency_keyboard` with its
+floor). The numbers are always published, defaulting to `0.0`, and the switch says whether they are in
+effect.
+
+**Nothing that worked stops working.** Writing one of the numbers still applies it immediately -- it
+turns the switch on as well -- so an existing automation that sets a channel behaves exactly as
+before. Writing `black_level_override` with a tuple still sets and applies one, and writing `null`
+still means "stop overriding", now by switching it off while remembering the numbers. One invariant
+holds all three pieces together: what the renderer reads is the numbers when the switch is on and
+nothing when it is off.
+
+New entity only, so both interface versions stay at `1`. To see whether an override is actually in
+effect, read `sensor.ios2ha_camera_black_level_applied_r/g/b`, which reports what was really used.
+
 ## 2.11.0 — 2026-09-22
 
 **`./deploy.sh verify` now asks Home Assistant whether the entities are actually healthy.** A

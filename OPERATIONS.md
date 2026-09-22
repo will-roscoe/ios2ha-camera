@@ -225,8 +225,22 @@ need anyone to get up.
 
 ```jinja
 {% set s = states('sensor.ios2ha_camera_stream_state') %}
-{% if s == 'streaming_off' %}
-  The app is running but not streaming. Open Guardian Eye and tap Start streaming —
+{% if trigger.to_state.state == 'unavailable' %}
+  No word from the supervisor for 5 minutes: the ios2ha-camera container on
+  arcturus is stopped, or MQTT is down.
+{% elif states('sensor.ios2ha_camera_tick_age') | float(0) > 180 %}
+  The supervisor is running but its upstream thread has stopped ticking, so
+  every reading is stale. Restart the container.
+{% elif states('sensor.ios2ha_camera_phone_reboot') in ['still_wedged', 'given_up'] %}
+  The phone's developer services are wedged and a reboot did not clear them, so
+  no further reboot will be attempted. See "When the phone's developer services
+  wedge" -- this is the one case that needs a person.
+{% elif is_state('binary_sensor.ios2ha_camera_backgrounded_by_keyboard', 'on') %}
+  The app was backgrounded by keyboard to save the battery, and it cannot be
+  brought back until the cable works again. The phone is charging, the camera is
+  dark: clear the wedge and it resumes.
+{% elif s == 'streaming_off' %}
+  The app is running but not streaming. Open Guardian Eye and tap Start streaming --
   nothing else can do this.
 {% elif s == 'streaming_off' and
         states('sensor.ios2ha_camera_stream_start') == 'failed_keyboard_not_connected' %}
@@ -254,6 +268,17 @@ need anyone to get up.
   Camera offline, state {{ s }}.
 {% endif %}
 ```
+
+The first two branches must come before any `stream_state` test, and both are in the
+live automation: a supervisor that has stopped reporting leaves `stream_state` frozen at
+whatever it last said, so reading it would describe the phone when the fault is the
+container. `tick_age` above 180 s is the same trap one level down -- the container is up,
+its upstream thread is not, and every other reading is stale.
+
+The two branches after them are the failure modes 2.9.0 and 2.10.0 introduced. Neither is
+a camera fault: `phone_reboot` latched at `still_wedged` means the automatic recovery has
+run out of road, and `backgrounded_by_keyboard` means the battery was saved at the cost of
+the picture. Both need a person, and neither is obvious from `stream_state` alone.
 
 The `app_running` branch is the one worth having. A backgrounded app and one iOS has killed
 look identical over WiFi — both refuse the connection — and only the cable can tell them

@@ -117,7 +117,7 @@ def test_bool_controls_are_derived_from_the_dataclass():
     hardcoded list that could silently drift from the dataclass."""
     assert _BOOL_CONTROLS == {
         "stacking_allowed", "on_demand", "autofocus", "backgrounding", "auto_start",
-        "auto_reboot", "emergency_keyboard",
+        "auto_reboot", "emergency_keyboard", "black_level_override_on",
     }
 
 
@@ -237,3 +237,81 @@ def test_apply_control_rejects_a_non_iterable_black_level_override():
     with pytest.raises(ValueError):
         s.apply_control("black_level_override", 1.0)
     assert s.black_level_override is None
+
+
+# -- the black level override switch -----------------------------------------
+#
+# The three numbers had no value meaning "no override", so the service simply
+# did not publish them until one was set: the descriptors promised a state key
+# that was usually absent, and Home Assistant showed three blank boxes. The
+# switch gives "off" somewhere to live, so the numbers can always be published
+# like every other switch-and-numbers pair in this service.
+
+def test_the_override_is_off_by_default_and_the_numbers_still_have_values():
+    s = Settings()
+    assert s.black_level_override_on is False
+    assert s.black_level == (0.0, 0.0, 0.0)
+    # Off means measure it from the frame, which is what the renderer reads.
+    assert s.black_level_override is None
+
+
+def test_setting_a_channel_still_applies_it_immediately():
+    """The behaviour before the switch existed: set a number, it takes effect.
+    Anyone's existing automation does exactly this and must not quietly stop."""
+    s = Settings()
+    assert s.apply_control("black_level_1", 0.46) is True
+    assert s.black_level_override_on is True
+    assert s.black_level_override == (0.0, 0.46, 0.0)
+
+
+def test_switching_it_off_remembers_the_numbers():
+    s = Settings()
+    s.apply_control("black_level_1", 0.46)
+    assert s.apply_control("black_level_override_on", False) is True
+    assert s.black_level_override is None          # the renderer measures again
+    assert s.black_level == (0.0, 0.46, 0.0)       # but the numbers are still there
+
+
+def test_switching_it_back_on_reapplies_the_same_numbers():
+    s = Settings()
+    s.apply_control("black_level_1", 0.46)
+    s.apply_control("black_level_override_on", False)
+    s.apply_control("black_level_override_on", True)
+    assert s.black_level_override == (0.0, 0.46, 0.0)
+
+
+def test_a_channel_written_while_off_turns_it_back_on():
+    s = Settings()
+    s.apply_control("black_level_override_on", False)
+    s.apply_control("black_level_2", 1.5)
+    assert s.black_level_override_on is True
+    assert s.black_level_override == (0.0, 0.0, 1.5)
+
+
+def test_writing_the_whole_tuple_turns_it_on():
+    s = Settings()
+    assert s.apply_control("black_level_override", (1.0, 2.0, 3.0)) is True
+    assert s.black_level_override_on is True
+    assert s.black_level == (1.0, 2.0, 3.0)
+
+
+def test_writing_none_to_the_tuple_switches_it_off():
+    """The API's existing way of saying "stop overriding", still honoured."""
+    s = Settings()
+    s.apply_control("black_level_override", (1.0, 2.0, 3.0))
+    assert s.apply_control("black_level_override", None) is True
+    assert s.black_level_override_on is False
+    assert s.black_level_override is None
+    assert s.black_level == (1.0, 2.0, 3.0)
+
+
+def test_the_applied_override_never_disagrees_with_the_switch():
+    """One invariant, because three pieces of state could otherwise drift:
+    the renderer's value is the numbers when on, and nothing when off."""
+    s = Settings()
+    for step in (("black_level_0", 2.0), ("black_level_override_on", False),
+                 ("black_level_1", 3.0), ("black_level_override_on", True),
+                 ("black_level_override", None)):
+        s.apply_control(*step)
+        expected = s.black_level if s.black_level_override_on else None
+        assert s.black_level_override == expected

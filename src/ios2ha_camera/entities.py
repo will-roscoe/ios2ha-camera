@@ -203,6 +203,8 @@ _SWITCHES = [
     _switch("auto_reboot", "Auto reboot wedged phone", "mdi:restart-alert"),
     _switch("emergency_keyboard", "Emergency keyboard backgrounding",
             "mdi:keyboard-outline"),
+    _switch("black_level_override_on", "Black level override",
+            "mdi:circle-opacity"),
 ]
 
 # capture_now stays uncategorised: it is the one button that belongs on a

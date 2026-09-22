@@ -503,7 +503,9 @@ def test_a_non_number_for_a_black_level_channel_republishes_the_real_value(caplo
     """Home Assistant shows a number as changed as soon as it sends it; a rejected
     write has to be answered with the value actually in effect."""
     s = Settings()
-    s.black_level_override = (0.1, 0.2, 0.3)
+    # Through apply_control, not by assigning the field: that is what keeps the
+    # numbers, the switch and the applied override consistent.
+    s.apply_control("black_level_override", (0.1, 0.2, 0.3))
     sup = _sup(s)
     with caplog.at_level("WARNING"):
         sup.handle_control("black_level_1", None)

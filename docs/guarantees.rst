@@ -89,7 +89,7 @@ Not covered by this promise
   trusted network.
 - **mDNS, or any other automatic discovery** of the ios2ha-camera supervisor's
   address. Not built; the address is entered by hand today, in Home Assistant or
-  in a future component.
+  in the component's config flow.
 
 Finding the running version
 ---------------------------
