@@ -10,6 +10,7 @@ from . import version
 from .api import INFO, add_api_routes
 from .app_open import AppOpener
 from .archive import Archive
+from .emergency import EmergencyBackgrounder
 from .events import EventHub
 from .ingest import Ingestor
 from .keyboard import Keyboard
@@ -165,9 +166,19 @@ def main():
     rebooter = PhoneRebooter(phone.reboot, phone.dvt_ok,
                              reachable=lambda: phone.battery() is not None,
                              allowed=lambda: bool(getattr(s, "auto_reboot", True)))
+    # Reached only when phone.background() has already failed, and only below
+    # the floor: keys are blind where the cable reports what happened, so this
+    # exists to keep the battery alive until a reboot restores the cable, not to
+    # replace it. The probe is the same one the start step reasons about, and it
+    # is what turns a blind keypress into a verified one -- a backgrounded app's
+    # socket is suspended, so "unreachable" is the evidence Home landed.
+    emergency = EmergencyBackgrounder(
+        keyboard, _stream_probe(s),
+        below_pct=lambda: float(getattr(s, "emergency_below_pct", 15.0)),
+        allowed=lambda: bool(getattr(s, "emergency_keyboard", True)))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
                      starter=starter, keyboard=keyboard, opener=opener,
-                     rebooter=rebooter)
+                     rebooter=rebooter, emergency=emergency)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 

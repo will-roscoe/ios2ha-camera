@@ -31,11 +31,22 @@ class BackgroundingPolicy:
     between one capture and the next.
     """
 
-    def __init__(self, phone, enabled, below_pct, above_pct):
+    def __init__(self, phone, enabled, below_pct, above_pct, emergency=None):
         self._phone = phone
         self._enabled = enabled
         self._below = below_pct
         self._above = above_pct
+        # The keyboard route, used only when the developer call has already
+        # failed and the battery is low enough to matter. Blind by comparison,
+        # so never the first choice: see emergency.py.
+        self._emergency = emergency
+        # The last battery reading, kept because the emergency route needs to
+        # know how bad things are and the policy is the only thing that is told.
+        self._level = None
+        # Whether the app was backgrounded by keys rather than over the cable.
+        # Worth reporting separately: it means the developer channel was down at
+        # the time, and that foregrounding may not be possible yet.
+        self.backgrounded_by_keyboard = False
         # Whether the policy wants to save power, i.e. the battery is low enough
         # and the switch allows it. Not the same as `backgrounded`.
         self.active = False
@@ -55,6 +66,7 @@ class BackgroundingPolicy:
         on a phone that needs it.
         """
         was = self.active
+        self._level = level
         self.active = self._decide(level)
         if self.active == was:
             return False
@@ -106,9 +118,26 @@ class BackgroundingPolicy:
             # Leave `backgrounded` False: the app is still in the foreground, and
             # the next capture must not skip its foreground call.
             log.info("could not background the app: %s: %s", type(e).__name__, e)
+            self._emergency_background()
             return
         self.backgrounded = True
+        self.backgrounded_by_keyboard = False
         log.info("app backgrounded to save battery")
+
+    def _emergency_background(self):
+        """Last resort, once the developer call above has failed.
+
+        Deliberately reached only from that failure path: the keyboard is blind
+        where the cable reports what happened, so it is never the first choice.
+        It refuses unless the battery is genuinely low, and it reports success
+        only on evidence the app stopped listening.
+        """
+        if self._emergency is None:
+            return
+        if self._emergency.attempt(self._level) != "backgrounded":
+            return
+        self.backgrounded = True
+        self.backgrounded_by_keyboard = True
 
     def _foreground(self):
         try:
@@ -119,4 +148,5 @@ class BackgroundingPolicy:
             log.warning("could not foreground the app: %s: %s", type(e).__name__, e)
             return
         self.backgrounded = False
+        self.backgrounded_by_keyboard = False
         log.info("app foregrounded")

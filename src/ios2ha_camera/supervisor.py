@@ -143,7 +143,8 @@ class Supervisor:
     def __init__(self, settings, buffer, mqtt, archive, onvif=None, phone=None, *,
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
-                 starter=None, keyboard=None, opener=None, rebooter=None):
+                 starter=None, keyboard=None, opener=None, rebooter=None,
+                 emergency=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -170,7 +171,11 @@ class Supervisor:
             lambda: bool(getattr(self.s, "backgrounding", False)),
             lambda: float(getattr(self.s, "background_below_pct", 50.0)),
             lambda: float(getattr(self.s, "resume_above_pct", 80.0)),
+            # Used only when the developer call above it has already failed;
+            # see emergency.py for why it is never the first choice.
+            emergency=emergency,
         )
+        self.emergency = emergency
         self.buffer = buffer
         self.mqtt = mqtt
         self.archive = archive
@@ -785,6 +790,9 @@ class Supervisor:
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
         d["app_open"] = self.opener.state if self.opener is not None else "idle"
         d["phone_reboot"] = self.rebooter.state if self.rebooter is not None else "idle"
+        d["emergency_background"] = (self.emergency.state
+                                     if self.emergency is not None else "idle")
+        d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
         d["phone_reboots"] = (self.rebooter.reboots_last_day
                               if self.rebooter is not None else 0)
         # A rising count means the phone's developer services are not answering,

@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from . import version
 from .app_open import APP_OPEN_STATES
+from .emergency import EMERGENCY_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
@@ -172,6 +173,8 @@ _NUMBERS = [
             icon="mdi:blur"),
     _number("denoise_strength", "Denoise strength", lo=0, hi=20, step=0.5,
             icon="mdi:blur-off"),
+    _number("emergency_below_pct", "Emergency keyboard below", lo=0, hi=100, step=1,
+            unit="%", icon="mdi:battery-alert"),
     _number("black_level_0", "Black level override R", lo=0, hi=32, step=0.1,
             icon="mdi:circle-opacity"),
     _number("black_level_1", "Black level override G", lo=0, hi=32, step=0.1,
@@ -198,6 +201,8 @@ _SWITCHES = [
     _switch("backgrounding", "Backgrounding", "mdi:cellphone-arrow-down"),
     _switch("auto_start", "Auto start streaming", "mdi:play-box-outline"),
     _switch("auto_reboot", "Auto reboot wedged phone", "mdi:restart-alert"),
+    _switch("emergency_keyboard", "Emergency keyboard backgrounding",
+            "mdi:keyboard-outline"),
 ]
 
 # capture_now stays uncategorised: it is the one button that belongs on a
@@ -310,6 +315,9 @@ _SENSORS = [
     _sensor("app_open", "App open", device_class="enum",
             options=tuple(APP_OPEN_STATES), category="diagnostic",
             icon="mdi:cellphone-play"),
+    _sensor("emergency_background", "Emergency backgrounding", device_class="enum",
+            options=tuple(EMERGENCY_STATES), category="diagnostic",
+            icon="mdi:keyboard-off-outline"),
     _sensor("phone_reboot", "Phone reboot", device_class="enum",
             options=tuple(REBOOT_STATES), category="diagnostic",
             icon="mdi:restart"),
@@ -377,6 +385,7 @@ _BINARY_SENSORS = [
     # `backgrounding` switch, which only says whether it is *allowed* to engage:
     # with a full battery the switch is on and this is off.
     _binary("backgrounding_active", "Backgrounding active"),
+    _binary("backgrounded_by_keyboard", "Backgrounded by keyboard"),
     # Whether a phone is attached to the keyboard arcturus emulates. Without it
     # the supervisor cannot press Start streaming, and the usual cause is
     # Bluetooth switched off on the phone.

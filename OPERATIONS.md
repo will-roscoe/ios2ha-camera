@@ -396,6 +396,31 @@ button — releases it. A reboot loop overnight would be worse than the wedge.
 Switch `switch.ios2ha_camera_auto_reboot` off while you are investigating a wedge by hand, or the
 service may reboot the phone underneath you. The button ignores the switch, the budget and the latch.
 
+### If the battery is dying and the cable cannot background the app
+
+Backgrounding normally goes over the cable, and that is the route to keep: it
+reports what actually happened. When the developer channel is wedged it is gone, and
+on a 3 W port a foreground stream drains the phone within hours.
+
+So, **only** once `phone.background()` has failed and the battery is below
+`number.ios2ha_camera_emergency_below_pct` (default 15%), the supervisor sends Home
+over the Bluetooth keyboard instead: Cmd+H first, then Tab+H for Full Keyboard Access.
+
+It is blind, which is why it is last. What makes it usable is the check afterwards: iOS
+suspends a backgrounded app's listening socket, so the app refusing a connection is
+real evidence the press landed. `sensor.ios2ha_camera_emergency_background` reads
+`backgrounded` only on that evidence, and `failed_keys_had_no_effect` when the app
+keeps answering.
+
+**It cannot put the app back.** Foregrounding stays a cable call, because coming back
+means finding the app on a Home screen this service cannot see. So a phone backgrounded
+this way stays dark until the cable works again -- which is the trade being made: a
+charged phone and no camera, rather than a flat phone and no camera.
+`binary_sensor.ios2ha_camera_backgrounded_by_keyboard` says when you are in that state,
+and the fix is the reboot above.
+
+Switch `switch.ios2ha_camera_emergency_keyboard` off to forbid this entirely.
+
 ### When the cable stops working
 
 The container reaches the phone two ways: over WiFi for frames, and over the Lightning cable via

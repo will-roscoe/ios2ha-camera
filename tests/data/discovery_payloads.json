@@ -36,6 +36,24 @@
     "state_topic": "ios2ha_camera/state/app_streaming",
     "unique_id": "ios2ha_binary_sensor_app_streaming"
   },
+  "homeassistant/binary_sensor/ios2ha/backgrounded_by_keyboard/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "binary_sensor.ios2ha_camera_backgrounded_by_keyboard",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "diagnostic",
+    "name": "Backgrounded by keyboard",
+    "payload_off": "false",
+    "payload_on": "true",
+    "state_topic": "ios2ha_camera/state/backgrounded_by_keyboard",
+    "unique_id": "ios2ha_binary_sensor_backgrounded_by_keyboard"
+  },
   "homeassistant/binary_sensor/ios2ha/backgrounding_active/config": {
     "availability_topic": "ios2ha_camera/available",
     "default_entity_id": "binary_sensor.ios2ha_camera_backgrounding_active",
@@ -475,6 +493,29 @@
     "state_topic": "ios2ha_camera/state/denoise_strength",
     "step": 0.5,
     "unique_id": "ios2ha_number_denoise_strength"
+  },
+  "homeassistant/number/ios2ha/emergency_below_pct/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/emergency_below_pct",
+    "default_entity_id": "number.ios2ha_camera_emergency_below_pct",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:battery-alert",
+    "max": 100,
+    "min": 0,
+    "mode": "box",
+    "name": "Emergency keyboard below",
+    "state_topic": "ios2ha_camera/state/emergency_below_pct",
+    "step": 1,
+    "unique_id": "ios2ha_number_emergency_below_pct",
+    "unit_of_measurement": "%"
   },
   "homeassistant/number/ios2ha/fixed_depth/config": {
     "availability_topic": "ios2ha_camera/available",
@@ -1195,6 +1236,33 @@
     "unique_id": "ios2ha_sensor_effective_exposure_required",
     "unit_of_measurement": "s"
   },
+  "homeassistant/sensor/ios2ha/emergency_background/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_emergency_background",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:keyboard-off-outline",
+    "name": "Emergency backgrounding",
+    "options": [
+      "idle",
+      "not_needed",
+      "backgrounded",
+      "paused",
+      "rate_limited",
+      "failed_no_keyboard",
+      "failed_keys_had_no_effect"
+    ],
+    "state_topic": "ios2ha_camera/state/emergency_background",
+    "unique_id": "ios2ha_sensor_emergency_background"
+  },
   "homeassistant/sensor/ios2ha/focus_sharpness/config": {
     "availability_topic": "ios2ha_camera/available",
     "default_entity_id": "sensor.ios2ha_camera_focus_sharpness",
@@ -1778,6 +1846,26 @@
     "payload_on": "true",
     "state_topic": "ios2ha_camera/state/backgrounding",
     "unique_id": "ios2ha_switch_backgrounding"
+  },
+  "homeassistant/switch/ios2ha/emergency_keyboard/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/emergency_keyboard",
+    "default_entity_id": "switch.ios2ha_camera_emergency_keyboard",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:keyboard-outline",
+    "name": "Emergency keyboard backgrounding",
+    "payload_off": "false",
+    "payload_on": "true",
+    "state_topic": "ios2ha_camera/state/emergency_keyboard",
+    "unique_id": "ios2ha_switch_emergency_keyboard"
   },
   "homeassistant/switch/ios2ha/on_demand/config": {
     "availability_topic": "ios2ha_camera/available",
