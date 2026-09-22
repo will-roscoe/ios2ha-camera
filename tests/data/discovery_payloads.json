@@ -1847,6 +1847,26 @@
     "state_topic": "ios2ha_camera/state/backgrounding",
     "unique_id": "ios2ha_switch_backgrounding"
   },
+  "homeassistant/switch/ios2ha/black_level_override_on/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/black_level_override_on",
+    "default_entity_id": "switch.ios2ha_camera_black_level_override_on",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:circle-opacity",
+    "name": "Black level override",
+    "payload_off": "false",
+    "payload_on": "true",
+    "state_topic": "ios2ha_camera/state/black_level_override_on",
+    "unique_id": "ios2ha_switch_black_level_override_on"
+  },
   "homeassistant/switch/ios2ha/emergency_keyboard/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/emergency_keyboard",

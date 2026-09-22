@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 CONTROLS = {
     "interval_s", "stacking_mode", "stacking_allowed", "fixed_depth",
     "target_level", "subject_percentile", "clean_factor", "max_depth",
-    "window_max_s", "ramp_tau_s", "black_level_override", "white_balance",
+    "window_max_s", "ramp_tau_s", "black_level_override", "black_level_override_on",
+    "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
@@ -118,6 +119,15 @@ class Settings:
     max_depth: int = 600
     window_max_s: float = 60.0
     ramp_tau_s: float = 900.0
+    # Three pieces of state for one idea, and the invariant that ties them is
+    # enforced in _sync_black_level: `black_level` is what the three number
+    # entities show and write, `black_level_override_on` is whether it is in
+    # effect, and `black_level_override` is what the renderer reads -- the
+    # numbers when the switch is on, None when it is off, meaning "measure it
+    # from the frame". Kept as a separate field rather than a property because
+    # CONTROLS entries must name real dataclass fields, which tests enforce.
+    black_level: tuple = (0.0, 0.0, 0.0)
+    black_level_override_on: bool = False
     black_level_override: tuple | None = None
     white_balance: str = "as-shot"       # as-shot | grey-world | brightest-patch
     render_intent: str = "natural"       # natural | inspection
@@ -173,8 +183,7 @@ class Settings:
         """Apply a Home Assistant control write. Returns whether the name was known."""
         channel = BLACK_LEVEL_CHANNELS.get(name)
         if channel is not None:
-            current = self.black_level_override or (0.0, 0.0, 0.0)
-            updated = list(current)
+            updated = list(self.black_level)
             try:
                 updated[channel] = float(value)
             except TypeError as e:
@@ -182,7 +191,12 @@ class Settings:
                 # supervisor's corrective republish does not catch. A string
                 # that is not a number is already a ValueError.
                 raise ValueError(f"{name} must be a number, not {value!r}") from e
-            self.black_level_override = tuple(updated)
+            self.black_level = tuple(updated)
+            # Setting a channel applies it, which is how this behaved before the
+            # switch existed: an automation that writes a number and expects it
+            # to take effect must not quietly stop working.
+            self.black_level_override_on = True
+            self._sync_black_level()
             return True
         if name not in CONTROLS:
             return False
@@ -203,7 +217,26 @@ class Settings:
                     f"black_level_override must be an iterable of numbers, not {value!r}"
                 ) from e
         setattr(self, name, value)
+        if name in ("black_level_override", "black_level_override_on"):
+            # A write to either half has to leave the other consistent: writing
+            # the tuple is the API's way of setting and applying one, and
+            # writing None its way of saying "stop overriding", both of which
+            # predate the switch and still work.
+            if name == "black_level_override":
+                self.black_level_override_on = value is not None
+                if value is not None:
+                    self.black_level = value
+            self._sync_black_level()
         return True
+
+    def _sync_black_level(self):
+        """Hold the one invariant: the renderer sees the numbers, or nothing.
+
+        `black_level_override` is what render.py reads, and None there means
+        "measure the black level from the frame". Everything that changes either
+        half goes through here so the two can never disagree.
+        """
+        self.black_level_override = self.black_level if self.black_level_override_on else None
 
 
 # Boolean controls, derived from the dataclass itself: exactly the CONTROLS

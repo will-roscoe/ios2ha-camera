@@ -1,16 +1,17 @@
 # The native integration
 
 :::{note}
-The Home Assistant custom component itself is not built yet. This page describes
-what the ios2ha-camera supervisor already serves for it to talk to, so the
-component's design does not have to guess at the wire format, and so the
-documentation structure does not have to be rearranged when it arrives.
+The component exists and is in use: `will-roscoe/ios2ha-camera-hass`, installed through
+HACS as a custom repository. This page documents the supervisor side of that contract --
+the JSON API the component reads -- rather than the component itself.
 :::
 
-A future Home Assistant custom component, installed through HACS, that talks to
-the supervisor directly over the JSON API below, instead of through a broker.
+A Home Assistant custom component, installed through HACS, that talks to the supervisor
+directly over the JSON API below instead of through a broker. Both paths remain
+first-class and publish **the same entity ids**, so a dashboard or automation written
+against one keeps working on the other.
 
-It will live in **its own repository**, not this one. HACS requires `hacs.json` and
+It lives in **its own repository**, not this one. HACS requires `hacs.json` and
 `custom_components/<domain>/` at a repository's root, and selects a version from the
 *most recent GitHub Release* in that repository, with no way to filter releases by
 tag prefix. Sharing a repository would therefore let a supervisor release be offered
