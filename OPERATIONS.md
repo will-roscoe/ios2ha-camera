@@ -28,6 +28,25 @@ against a stub package first, so the ~100-package layer is cached and a code cha
 reinstall opencv and numpy. The provenance build args come last in the Dockerfile for the same
 reason.
 
+### Checking Home Assistant after a deploy
+
+`./deploy.sh verify` asks Home Assistant whether this service's entities are actually
+there and healthy, which the deploy itself cannot know: the container can be perfectly
+up while the integration is unloaded or every entity is unavailable.
+
+It is **off unless `HA_URL` and `HA_TOKEN` are set** in the container's environment, and
+it only ever reads. Home Assistant has no read-only tokens, so mint the token from a
+**non-admin user** — nothing here writes, and that way nothing here *can*.
+
+```
+./deploy.sh verify
+94 entities, none unavailable
+```
+
+Exit status is the useful part: `0` healthy, `1` a real problem (unreachable, no entities
+found, or some unavailable, each named), `2` not configured — which the script reports as
+a note rather than a failure, because switching the check off is not a broken deployment.
+
 ### Preparing the phone after a restart
 
 ```bash

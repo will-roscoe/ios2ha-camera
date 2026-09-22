@@ -23,6 +23,25 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.11.0 — 2026-09-22
+
+**`./deploy.sh verify` now asks Home Assistant whether the entities are actually healthy.** A
+deployment can finish cleanly while the integration is unloaded or every entity is unavailable, and
+until now nothing checked.
+
+Off unless `HA_URL` and `HA_TOKEN` are both set, and read-only: it fetches `/api/states`, counts the
+entities matching `HA_PREFIX` (default `ios2ha`), and names any that are unavailable. `unknown` is
+not a fault -- that is a control nobody has written yet. Exit status is `0` healthy, `1` a real
+problem, `2` not configured, so a script can tell "switched off" from "broken".
+
+This is the reduced form of future-work section 5, deliberately. That proposed creating camera config
+entries and installing automations, which needs an **admin** token -- a camera container holding
+credentials for the whole house. The native integration has since taken the provisioning job over, so
+what is left is the part needing no privilege. Home Assistant has no read-only tokens, so the
+documentation says plainly: mint it from a non-admin user. The token is never logged.
+
+No entity, topic or API change: both interface versions stay at `1`.
+
 ## 2.10.0 — 2026-09-22
 
 **The app can now be backgrounded over the keyboard when the cable cannot do it**, as a last
