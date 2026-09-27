@@ -1,0 +1,32 @@
+# ghtools settings: https://github.com/will-roscoe/.ghtools#configuration
+
+branch = "main"                              # the remote's default branch
+profile = "python"                           # pyproject.toml [project]
+
+[version]
+source = "pyproject"                         # static version = "2.12.0" in [project]
+bump = "require"                             # existing release workflow only verifies the version
+
+[release]
+publish = ["github"]                         # GitHub release
+
+[ci]
+python = ["3.12", "3.13"]                    # test matrix
+install = "-e .[dev]"                        # pip install in workflows
+gates = ["ruff"]                             # tool configuration and existing workflows
+docker = true                                # Dockerfile + docker build step
+
+[docs]
+enabled = true                               # docs/conf.py
+dir = "docs"                                 # docs/conf.py
+install = ".[docs]"                          # pip install in docs workflow
+strict = true                                # warnings fail in the existing Sphinx call
+pages = true                                 # actions/deploy-pages in workflows
+
+[status]
+enabled = true                               # ghtools publishes the status card to its own branch
+
+[[ci.gate]]
+name = "docs-secrets"
+run = "python .github/scripts/check_docs_secrets.py \"$(ghtools docs html-dir)\""
+after = "docs"

@@ -1,7 +1,7 @@
 # ios2ha-camera
 
-[![CI](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ci.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ci.yml)
-[![Docs](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/docs.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/docs.yml)
+[![CI](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml)
+[![Docs](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml)
 ![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20discovery-41BDF5?logo=homeassistant&logoColor=white)
 
