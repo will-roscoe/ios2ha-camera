@@ -508,3 +508,31 @@ def test_a_viewer_that_stops_reading_releases_the_hold(monkeypatch):
             finally:
                 resp.close()
     asyncio.run(run())
+
+
+async def _as_deployed(server):
+    """Start `server` the way the service runs, not the way aiohttp's test
+    harness does: `TestServer` cancels a handler whose client disconnects, and
+    `web.run_app` does not. See the helper of the same name in test_events.py."""
+    await server.start_server()
+    server.runner.server.handler_cancellation = False
+    return server
+
+
+def test_a_viewer_that_leaves_while_no_frames_arrive_still_lets_go():
+    """Seen live on 2026-09-28: the app was backgrounded under a viewer, so no
+    frame came, so the handler never wrote, so it never learned the viewer had
+    gone -- and its hold kept the session open, which is exactly what stopped
+    anything waking the app. Dark for as long as nobody looked. A viewer that
+    leaves must let go even when there is nothing to send it."""
+    async def run():
+        buf = RingBuffer(1 << 20)          # empty: the phone is sending nothing
+        up = FakeUpstream()
+        server = await _as_deployed(TestServer(make_live_app(buf, upstream=up)))
+        async with TestClient(server) as client:
+            resp = await client.get("/live")
+            assert resp.status == 200
+            await asyncio.wait_for(_wait_until(lambda: "hold" in up.events), timeout=2.0)
+            resp.close()
+            await asyncio.wait_for(_wait_until(lambda: "release" in up.events), timeout=5.0)
+    asyncio.run(run())

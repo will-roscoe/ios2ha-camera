@@ -1393,3 +1393,16 @@ def test_a_capture_during_an_open_session_uses_frames_already_buffered(monkeypat
     assert "error" not in ev, ev
     assert ev["depth_used"] == 20
     assert waits and max(waits) < 0.5, waits
+
+
+def test_a_failed_capture_is_logged_not_only_published(caplog):
+    """With MQTT off the event goes nowhere, and on 2026-09-28 a capture that
+    found no frames left no trace at all -- the log simply went quiet."""
+    buf = RingBuffer(1 << 20)
+    up = RecordingUpstream(buf, state="backgrounded")
+    up.session_start = time.time()
+    sup = _sup(buf=buf, upstream=up)
+    with caplog.at_level("WARNING"):
+        sup.produce_still(now_fps=12.0)
+    assert any("still failed" in r.getMessage() and "no frames: backgrounded" in r.getMessage()
+               for r in caplog.records)
