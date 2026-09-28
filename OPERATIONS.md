@@ -174,6 +174,19 @@ A still that could not be made is a warning, `still failed: <reason>` — most o
 `no frames: <stream state>`. Before 2.13.0 that reason went only into the MQTT event, so with MQTT
 off a camera that had stopped producing stills left no trace in the log at all.
 
+## The control page
+
+`http://<host>:8099/` (it redirects to `/ui/`) shows every entity Home Assistant has -- readings,
+switches, numbers, selects and buttons -- with what each one does, updating live, and the picture.
+It is a client of the JSON API like the Home Assistant component: it hardcodes only
+`/api/v1/info`, writes through `/api/v1/control/{name}`, and shows the API's own error when a
+write is refused. So it exists exactly when `EXPOSE_API` is on, and needs no Home Assistant at all
+-- useful when Home Assistant is the thing that is down.
+
+The Stacked and Live views keep the phone connected, and awake, for as long as they are shown: they
+start only when you press Start, and stop when you switch view or the browser tab is hidden. Like
+the rest of the API the page has no login and is meant for the LAN only; do not publish port 8099.
+
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
@@ -572,6 +585,31 @@ phone is in charge.
 trusted: after the app's capture session restarted on 2026-09-28 it reported 0.804 while the lens
 sat elsewhere, and stills went soft. So every session moves the lens 0.03 away and back to the held
 position rather than believing it is already there.
+
+## Holding the night colour
+
+The phone's automatic white balance moves at night and cannot come back without light. Measured
+2026-09-28: covering the lens left stills cyan (green/red 1.48 against 0.97) for the rest of the
+night; a curtain opening behind the camera made them bluer everywhere; restarting the app's capture
+session fixed it once and made it worse the second time. The app exposes no white-balance control.
+
+So the service holds the colour itself:
+
+1. On a night still whose colour looks right, choose a region of the view that is lit the same way
+   every night -- a wall under a street light, not a window whose light comes and goes. On the
+   control page, press **Pick colour region** and drag over the still (**Show region** shows the one
+   in use), or set `number.ios2ha_camera_colour_region_x0/y0/x1/y1` (fractions of the frame).
+2. Press **Set colour reference**. `sensor.ios2ha_camera_colour_reference` reads `ready`.
+3. Set `select.ios2ha_camera_white_balance` to `reference`.
+
+Each night still is then registered against the reference -- the camera may be nudged a little -- the
+region is measured where the whole view says it went, and the still gets the per-channel gains that
+give it its remembered colour, faded in with the night render; daylight stays as the phone shot it.
+Tested on 2026-09-28's real stacks: a reference from before the curtain, applied either side of the
+shift it caused, brought both to the same colours across the scene. `colour_reference` reads
+`applied` when a still was corrected and `no_match` when the view no longer matches -- the camera has
+moved too far: record it again. Recording is refused in daylight (a sunlit colour is not what night
+stills should be held to), with no still yet, or when the region is too dark to measure.
 
 ## Removing the sensor's fixed grain
 

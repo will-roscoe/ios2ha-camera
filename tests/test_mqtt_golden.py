@@ -102,6 +102,6 @@ def test_discovery_payloads_are_byte_identical_on_the_wire():
 def test_the_golden_files_cover_every_published_entity():
     """A golden file that had silently lost entries would pass the comparisons
     above while asserting nothing about the ones it dropped."""
-    assert len(discovery_payloads(Settings())) == 104
-    assert len(json.loads(GOLDEN.read_text())) == 104
-    assert len(GOLDEN_WIRE.read_text().splitlines()) == 104
+    assert len(discovery_payloads(Settings())) == 110
+    assert len(json.loads(GOLDEN.read_text())) == 110
+    assert len(GOLDEN_WIRE.read_text().splitlines()) == 110

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iPhone Camera</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <span id="conn" data-on="false" title="connecting"></span>
+  <h1 id="title">iPhone Camera</h1>
+  <span id="version"></span>
+</header>
+<main>
+  <section id="viewer">
+    <nav id="tabs"></nav>
+    <div id="frame">
+      <img id="picture" alt="">
+      <div id="region" hidden></div>
+      <button id="start-stream" hidden></button>
+    </div>
+    <div id="region-tools" hidden>
+      <button id="pick-region">Pick colour region</button>
+      <label><input type="checkbox" id="show-region"> Show region</label>
+      <button id="set-reference">Set colour reference</button>
+      <span id="reference-state"></span>
+      <div id="region-error" class="error"></div>
+    </div>
+  </section>
+  <section id="entities"></section>
+  <p id="fatal"></p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -17,6 +17,7 @@ CONTROLS = {
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
     "flat_field_correction", "focus_at_dusk",
+    "colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -44,6 +45,7 @@ _ENV_MAP = {
     "CONTROLS_FILE": "controls_file",
     "REBOOTS_FILE": "reboots_file",
     "FLAT_FIELD_FILE": "flat_field_file",
+    "COLOUR_REFERENCE_FILE": "colour_reference_file",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -60,7 +62,7 @@ _EXPOSE_ENV_KEYS = {"EXPOSE_MQTT", "EXPOSE_API"}
 # otherwise be accepted and then silently fall back to a default mid-render.
 _CHOICES = {
     "stacking_mode": ("off", "fixed", "auto"),
-    "white_balance": ("as-shot", "grey-world", "brightest-patch"),
+    "white_balance": ("as-shot", "grey-world", "brightest-patch", "reference"),
     "render_intent": ("natural", "inspection"),
 }
 
@@ -117,6 +119,9 @@ class Settings:
     # The sensor's fixed grain, recorded from a flat field; see flat.py. Empty
     # turns the feature off, and the Record flat field button with it.
     flat_field_file: str = "/data/flat_field.npy"
+    # The colour a picked region is held to at night; see colour_ref.py. Empty
+    # turns the feature off, and the Set colour reference button with it.
+    colour_reference_file: str = "/data/colour_reference.npz"
     live_port: int = 8099
     # Which interfaces reach Home Assistant. Media routes are always served --
     # they are the camera -- so turning both off is a loud warning, not a
@@ -144,7 +149,14 @@ class Settings:
     black_level: tuple = (0.0, 0.0, 0.0)
     black_level_override_on: bool = False
     black_level_override: tuple | None = None
-    white_balance: str = "as-shot"       # as-shot | grey-world | brightest-patch
+    white_balance: str = "as-shot"       # as-shot | grey-world | brightest-patch | reference
+    # The region the colour reference is taken from, as fractions of the frame:
+    # left, top, right, bottom. Drawn on the control page; recorded with the Set
+    # colour reference button, which is when a change to these takes effect.
+    colour_region_x0: float = 0.35
+    colour_region_y0: float = 0.35
+    colour_region_x1: float = 0.65
+    colour_region_y1: float = 0.65
     render_intent: str = "natural"       # natural | inspection
     night_key: float = 0.09
     stretch_strength: float = 25.0

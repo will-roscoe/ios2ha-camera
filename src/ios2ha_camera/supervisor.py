@@ -190,7 +190,7 @@ class Supervisor:
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
                  starter=None, keyboard=None, opener=None, rebooter=None,
-                 emergency=None, store=None, sleep=time.sleep, flat=None):
+                 emergency=None, store=None, sleep=time.sleep, flat=None, colour=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -218,6 +218,10 @@ class Supervisor:
         self.flat = flat
         self._flat_state = "ready" if getattr(flat, "ready", False) else "none"
         self._flat_requested = False
+        # The colour a picked region is held to at night, or None when off.
+        self.colour = colour
+        self._colour_state = "ready" if getattr(colour, "ready", False) else "none"
+        self._last_black = None
         # The service's own focus runs; see run_focus.
         self._focus_requested = False
         # The lens has one owner at a time: a focus run holds this for its whole
@@ -518,6 +522,8 @@ class Supervisor:
             stacked, scales, smoothing = self.flat.correct(stacked, weight)
             if scales is not None:
                 black, gains = render.calibration(stacked, self.s)
+        self._last_black = black
+        gains = self._colour_gains(stacked, black, gains, weight)
         rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
                             smoothing=smoothing)
         jpeg = render.to_jpeg(rgb)
@@ -605,6 +611,11 @@ class Supervisor:
                 # manual=True: a person asking overrides the pause switch and
                 # the rate limit, though never the guards around the keys.
                 self._submit(name, lambda: self.starter.attempt(True))
+            elif name == "set_colour_reference":
+                if self.colour is None:
+                    raise RuntimeError("the colour reference is switched off "
+                                       "(COLOUR_REFERENCE_FILE is empty)")
+                self._submit(name, self._set_colour_reference)
             elif name == "focus_now":
                 if self.onvif is None:
                     raise RuntimeError("focus control is not configured")
@@ -999,6 +1010,7 @@ class Supervisor:
         d["phone_reboot"] = self.rebooter.state if self.rebooter is not None else "idle"
         d["flat_field"] = self._flat_state
         d["focus_run"] = self._focus_state
+        d["colour_reference"] = self._colour_state
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
@@ -1195,6 +1207,49 @@ class Supervisor:
                 and now - self._last_cable_restart < CABLE_RESTART_COOLDOWN_S):
             return False
         return True
+
+    # -- the colour reference ------------------------------------------------
+
+    def _colour_gains(self, stacked, black, gains, weight):
+        """The white-balance gains for this still: the reference's at night when it
+        is chosen and the view still matches, otherwise the ones already computed."""
+        if self.colour is None:
+            return gains
+        if self.s.white_balance != "reference":
+            self._set_colour_state("ready" if self.colour.ready else "none")
+            return gains
+        found, state = self.colour.gains(np.clip(stacked - black, 0, None))
+        if found is None:
+            self._set_colour_state(state)
+            return np.ones(3)
+        if not weight > 0:
+            # Daylight: the phone's white balance has light to work with.
+            self._set_colour_state("ready")
+            return np.ones(3)
+        self._set_colour_state("applied")
+        # Faded with the night render, so dusk eases into it.
+        return 1 + weight * (np.asarray(found) - 1)
+
+    def _set_colour_reference(self):
+        stacked, black, weight = self.last_stack, self._last_black, self._good_weight
+        if stacked is None or black is None:
+            return self._set_colour_state("rejected_no_still")
+        if not weight or not weight > 0:
+            return self._set_colour_state("rejected_daylight")
+        region = (self.s.colour_region_x0, self.s.colour_region_y0,
+                  self.s.colour_region_x1, self.s.colour_region_y1)
+        reason = self.colour.record(np.clip(stacked - black, 0, None), region)
+        if reason is not None:
+            log.info("colour reference: refused, %s", reason.replace("_", " "))
+            return self._set_colour_state(f"rejected_{reason}")
+        log.info("colour reference: recorded region %s", region)
+        return self._set_colour_state("ready")
+
+    def _set_colour_state(self, state):
+        if state != self._colour_state:
+            self._colour_state = state
+        self.publish_state({"colour_reference": state})
+        return state
 
     # -- the service's own focus ---------------------------------------------
 
