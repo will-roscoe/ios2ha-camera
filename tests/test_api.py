@@ -58,6 +58,9 @@ def test_info_carries_the_device_block_mqtt_publishes():
     assert info["device"]["sw_version"].startswith(info["version"])
 
 
+ENTITIES_BY_KEY = {(e.domain, e.object_id): e for e in ENTITIES}
+
+
 def test_objects_describes_every_entity():
     _, doc = _get(_api(), "/api/v1/objects")
     assert len(doc["objects"]) == len(ENTITIES) == 101
@@ -70,7 +73,9 @@ def test_objects_describes_every_entity():
         "state_class": None, "options": None, "lo": 30, "hi": 3600, "step": 1,
         "category": "config", "icon": "mdi:timer-outline", "writable": True,
         "precision": None,
+        "description": ENTITIES_BY_KEY[("number", "interval_s")].description,
     }
+    assert by_key[("number", "interval_s")]["description"].startswith("How often a still is made")
     assert by_key[("select", "white_balance")]["options"] == [
         "as-shot", "grey-world", "brightest-patch"]
     assert by_key[("sensor", "battery")]["state_class"] == "measurement"

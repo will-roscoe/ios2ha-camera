@@ -82,6 +82,8 @@ def _object(e):
     Deliberately not the whole record: `topic` is where MQTT publishes a
     camera's payload and means nothing to an HTTP client, and leaking it would
     make the MQTT topic layout part of a second published interface.
+    `description` is served so a client can say what an entity is for: the
+    control page shows it as help text.
 
     `object_id` alone is not an identity -- `screenshot` is both a camera and a
     button -- so the pair (`domain`, `object_id`) is what a client should key on.
@@ -91,7 +93,8 @@ def _object(e):
             "unit": e.unit, "state_class": e.state_class,
             "options": list(e.options) if e.options is not None else None,
             "lo": e.lo, "hi": e.hi, "step": e.step, "category": e.category,
-            "icon": e.icon, "writable": e.writable, "precision": e.precision}
+            "icon": e.icon, "writable": e.writable, "precision": e.precision,
+            "description": e.description}
 
 
 def _media(m):
