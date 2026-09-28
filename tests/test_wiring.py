@@ -147,6 +147,15 @@ def test_clearing_discovery_cannot_stop_the_service(caplog):
     assert any("discovery" in line for line in _lines(caplog))
 
 
+def test_api_off_serves_no_control_page():
+    """The page is a client of the API; with EXPOSE_API off it would be a page
+    whose every request fails, so it is not served at all."""
+    app = web.Application()
+    _start(Settings(expose_api=False, expose_mqtt=False), app=app)
+    assert not {"/", "/ui/", "/ui"} & _paths(app)
+    assert not any(p.startswith("/ui") for p in _paths(app))
+
+
 # -- API on ------------------------------------------------------------------
 
 def test_api_on_registers_the_json_routes(caplog):
