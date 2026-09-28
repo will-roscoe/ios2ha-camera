@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 
 from . import version
 from .app_open import APP_OPEN_STATES
+from .colour_ref import COLOUR_REFERENCE_STATES
 from .emergency import EMERGENCY_STATES
 from .flat import FLAT_FIELD_STATES
 from .focus import FOCUS_RUN_STATES
@@ -192,6 +193,14 @@ _NUMBERS = [
             device_class="duration", icon="mdi:motion-outline"),
     _number("focus_position", "Focus position", lo=0, hi=1, step=0.01,
             icon="mdi:image-filter-center-focus-weak"),
+    _number("colour_region_x0", "Colour region left", lo=0, hi=1, step=0.001,
+            icon="mdi:selection-drag"),
+    _number("colour_region_y0", "Colour region top", lo=0, hi=1, step=0.001,
+            icon="mdi:selection-drag"),
+    _number("colour_region_x1", "Colour region right", lo=0, hi=1, step=0.001,
+            icon="mdi:selection-drag"),
+    _number("colour_region_y1", "Colour region bottom", lo=0, hi=1, step=0.001,
+            icon="mdi:selection-drag"),
 ]
 
 # The options are the vocabulary Settings.apply_control will accept; a select
@@ -199,7 +208,8 @@ _NUMBERS = [
 # will reject, which tests/test_entities.py asserts against settings._CHOICES.
 _SELECTS = [
     _select("stacking_mode", "Stacking mode", ("off", "fixed", "auto")),
-    _select("white_balance", "White balance", ("as-shot", "grey-world", "brightest-patch")),
+    _select("white_balance", "White balance",
+            ("as-shot", "grey-world", "brightest-patch", "reference")),
     _select("render_intent", "Render intent", ("natural", "inspection")),
 ]
 
@@ -242,6 +252,8 @@ _BUTTONS = [
     _button("record_flat_field", "Record flat field", icon="mdi:grid",
             category="config"),
     _button("focus_now", "Focus now", icon="mdi:image-filter-center-focus",
+            category="config"),
+    _button("set_colour_reference", "Set colour reference", icon="mdi:palette",
             category="config"),
 ]
 
@@ -357,6 +369,9 @@ _SENSORS = [
     _sensor("focus_run", "Focus run", device_class="enum",
             options=tuple(FOCUS_RUN_STATES), category="diagnostic",
             icon="mdi:image-filter-center-focus"),
+    _sensor("colour_reference", "Colour reference", device_class="enum",
+            options=tuple(COLOUR_REFERENCE_STATES), category="diagnostic",
+            icon="mdi:palette"),
     _sensor("flat_field", "Flat field", device_class="enum",
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
@@ -500,8 +515,27 @@ _DESCRIPTIONS = {
         "auto stacks as many frames as the light needs; fixed always stacks Fixed depth; off "
         "uses a single frame.",
     ("select", "white_balance"):
-        "as-shot keeps the phone's colour; brightest-patch neutralises the brightest area; "
-        "grey-world assumes the scene averages to grey, which a mostly one-colour view defeats.",
+        "as-shot keeps the phone's colour; reference holds night stills to the colour a "
+        "picked region had when Set colour reference was pressed, whatever the phone's own "
+        "white balance does; brightest-patch neutralises the brightest area; grey-world "
+        "assumes the scene averages to grey, which a mostly one-colour view defeats.",
+    ("number", "colour_region_x0"):
+        "Left edge of the colour reference region, as a share of the frame's width. Easiest "
+        "set by drawing on the control page.",
+    ("number", "colour_region_y0"):
+        "Top edge of the colour reference region, as a share of the frame's height.",
+    ("number", "colour_region_x1"):
+        "Right edge of the colour reference region, as a share of the frame's width.",
+    ("number", "colour_region_y1"):
+        "Bottom edge of the colour reference region, as a share of the frame's height.",
+    ("button", "set_colour_reference"):
+        "Remember the colour region's colour from the last still, which should be a night "
+        "still that looks right. White balance reference then pulls later night stills back "
+        "to it. Press again after moving the camera or the region.",
+    ("sensor", "colour_reference"):
+        "The colour reference: none, ready, applied (the last still was corrected), no_match "
+        "(the view no longer matches -- the camera moved too far: record it again), or why the "
+        "last recording was refused.",
     ("select", "render_intent"):
         "natural renders a night picture that looks like a photograph; inspection stretches the "
         "shadows to read detail, and looks processed.",

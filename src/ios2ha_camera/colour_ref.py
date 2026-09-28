@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 # Every value sensor.colour_reference can take, for the Home Assistant enum.
 COLOUR_REFERENCE_STATES = ("none", "ready", "applied", "no_match", "rejected_daylight",
-                           "rejected_too_dark")
+                           "rejected_too_dark", "rejected_no_still")
 
 # The picture is matched at about this width, whatever the frame size: plenty to
 # find a region by, and cheap.
