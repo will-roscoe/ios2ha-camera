@@ -265,6 +265,13 @@ the only imaging control proven to do anything. The supervisor treats focus as a
 not a command to send once: it is checked against the phone at the start of every session and put
 back if it has drifted, because the app starts on autofocus every time it is relaunched.
 
+### `flat.py`
+The sensor's fixed grain. `check` accepts only a recording that is lit above the black clamp, below
+white, and free of edges (so the uncovered view is refused); `pattern` is the fine texture at a
+two-pixel scale; `FlatField.correct` subtracts it at a scale fitted per still and per channel over
+the least textured 40% of the picture, and returns the share of grain left, which the renderer uses
+to scale its smoothing. Night stills only, by `night_weight`.
+
 ### `control_store.py`
 Keeps the control values Home Assistant writes in `CONTROLS_FILE`, so a restart does not reset them —
 and every phone reboot restarts the service, through the usbmuxd hook. Only control names are read

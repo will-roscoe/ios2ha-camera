@@ -343,7 +343,7 @@ def test_produce_still_passes_the_measured_weight_to_render(monkeypatch):
 
     calls = []
 
-    def stub_render(stacked, settings, applied=None, night_weight=1.0):
+    def stub_render(stacked, settings, applied=None, night_weight=1.0, smoothing=1.0):
         calls.append(night_weight)
         return np.zeros((2, 2, 3), dtype=np.uint8)
 
@@ -1586,3 +1586,101 @@ def test_a_failed_still_does_not_move_last_still():
     sup = _sup(buf=buf, mqtt=mq)
     sup.produce_still(now_fps=12.0)
     assert "last_still" not in mq.published
+
+
+# -- the flat field --------------------------------------------------------------
+
+class FakeFlat:
+    def __init__(self, ready=False, reason=None, scales=(0.9, 0.9, 0.8), grain=0.6):
+        self.ready, self.reason, self.recorded = ready, reason, 0
+        self._scales, self._grain = scales, grain
+
+    def record(self, stacked):
+        self.recorded += 1
+        if self.reason is None:
+            self.ready = True
+        return self.reason
+
+    def correct(self, stacked, weight):
+        if not self.ready or not weight > 0:
+            return stacked, None, 1.0
+        return stacked, list(self._scales), self._grain
+
+
+class CyclingPhone(FakePhone):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def background(self):
+        self.calls.append("background")
+        return True
+
+    def foreground(self):
+        self.calls.append("foreground")
+        return True
+
+
+def test_a_flat_field_is_recorded_and_the_white_balance_reset():
+    buf = RingBuffer(5_000_000)
+    phone = CyclingPhone()
+    flat = FakeFlat()
+    sup = _sup(buf=buf, flat=flat, phone=phone)
+    _fill(buf, 150, now=time.time() + 15)         # all after the press: _fill counts back from now
+    assert sup.record_flat_field() == "ready"
+    assert flat.recorded == 1
+    assert sup.mqtt.published["flat_field"] == "ready"
+    assert phone.calls == ["background", "foreground"]
+
+
+def test_a_refused_flat_field_says_why_and_still_resets_the_white_balance():
+    buf = RingBuffer(5_000_000)
+    phone = CyclingPhone()
+    sup = _sup(buf=buf, flat=FakeFlat(reason="not_flat"), phone=phone)
+    _fill(buf, 150, now=time.time() + 15)
+    assert sup.record_flat_field() == "rejected_not_flat"
+    assert sup.mqtt.published["flat_field"] == "rejected_not_flat"
+    assert phone.calls == ["background", "foreground"]
+
+
+def test_frames_from_before_the_press_are_not_a_flat_field():
+    """The lens is covered first, then the button pressed: earlier frames are the view."""
+    buf = RingBuffer(5_000_000)
+    flat = FakeFlat()
+    sup = _sup(buf=buf, flat=flat, phone=CyclingPhone())
+    _fill(buf, 150, now=time.time() - 30)
+    assert sup.record_flat_field() == "rejected_no_frames"
+    assert flat.recorded == 0
+
+
+def test_the_button_records_on_the_capture_thread_not_the_caller():
+    sup = _sup(flat=FakeFlat())
+    sup.handle_control("record_flat_field", "PRESS")
+    assert sup._flat_requested and sup.capture_requested.is_set()
+
+
+def test_a_recorded_flat_field_corrects_night_stills_and_lightens_smoothing(monkeypatch):
+    from ios2ha_camera import render
+    s = Settings()
+    s.stacking_mode, s.fixed_depth, s.target_level = "fixed", 6, 200.0   # a night still
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 10)
+    seen = []
+    real = render.render
+    monkeypatch.setattr(render, "render", lambda *a, **k: (seen.append(k.get("smoothing")),
+                                                          real(*a, **k))[1])
+    sup = _sup(s, buf, flat=FakeFlat(ready=True))
+    sup.produce_still(now_fps=12.0)
+    assert seen == [0.6]
+    assert sup.mqtt.published["flat_field_scale"] == 0.87
+
+
+def test_the_switch_turns_the_correction_off():
+    s = Settings()
+    s.stacking_mode, s.fixed_depth, s.target_level = "fixed", 6, 200.0
+    s.flat_field_correction = False
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 10)
+    sup = _sup(s, buf, flat=FakeFlat(ready=True))
+    sup.produce_still(now_fps=12.0)
+    assert sup.mqtt.published["flat_field_scale"] == 0.0

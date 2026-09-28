@@ -253,6 +253,23 @@
     "name": "Reboot phone",
     "unique_id": "ios2ha_button_reboot_phone"
   },
+  "homeassistant/button/ios2ha/record_flat_field/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/record_flat_field",
+    "default_entity_id": "button.ios2ha_camera_record_flat_field",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:grid",
+    "name": "Record flat field",
+    "unique_id": "ios2ha_button_record_flat_field"
+  },
   "homeassistant/button/ios2ha/relaunch_app/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/relaunch_app",
@@ -1285,6 +1302,52 @@
     "state_topic": "ios2ha_camera/state/emergency_background",
     "unique_id": "ios2ha_sensor_emergency_background"
   },
+  "homeassistant/sensor/ios2ha/flat_field/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_flat_field",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:grid",
+    "name": "Flat field",
+    "options": [
+      "none",
+      "ready",
+      "recording",
+      "rejected_too_dark",
+      "rejected_too_bright",
+      "rejected_not_flat",
+      "rejected_no_frames"
+    ],
+    "state_topic": "ios2ha_camera/state/flat_field",
+    "unique_id": "ios2ha_sensor_flat_field"
+  },
+  "homeassistant/sensor/ios2ha/flat_field_scale/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_flat_field_scale",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "diagnostic",
+    "icon": "mdi:grid",
+    "name": "Flat field scale",
+    "state_class": "measurement",
+    "state_topic": "ios2ha_camera/state/flat_field_scale",
+    "suggested_display_precision": 2,
+    "unique_id": "ios2ha_sensor_flat_field_scale"
+  },
   "homeassistant/sensor/ios2ha/focus_sharpness/config": {
     "availability_topic": "ios2ha_camera/available",
     "default_entity_id": "sensor.ios2ha_camera_focus_sharpness",
@@ -1925,6 +1988,26 @@
     "payload_on": "true",
     "state_topic": "ios2ha_camera/state/emergency_keyboard",
     "unique_id": "ios2ha_switch_emergency_keyboard"
+  },
+  "homeassistant/switch/ios2ha/flat_field_correction/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/flat_field_correction",
+    "default_entity_id": "switch.ios2ha_camera_flat_field_correction",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:grid",
+    "name": "Flat field correction",
+    "payload_off": "false",
+    "payload_on": "true",
+    "state_topic": "ios2ha_camera/state/flat_field_correction",
+    "unique_id": "ios2ha_switch_flat_field_correction"
   },
   "homeassistant/switch/ios2ha/on_demand/config": {
     "availability_topic": "ios2ha_camera/available",

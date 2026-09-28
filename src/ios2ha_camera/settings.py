@@ -16,6 +16,7 @@ CONTROLS = {
     "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
+    "flat_field_correction",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -42,6 +43,7 @@ _ENV_MAP = {
     "EXPOSE_API": "expose_api",
     "CONTROLS_FILE": "controls_file",
     "REBOOTS_FILE": "reboots_file",
+    "FLAT_FIELD_FILE": "flat_field_file",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -112,6 +114,9 @@ class Settings:
     # restart that every phone reboot causes. Empty keeps it in memory only,
     # where each reboot resets it.
     reboots_file: str = "/data/reboots.json"
+    # The sensor's fixed grain, recorded from a flat field; see flat.py. Empty
+    # turns the feature off, and the Record flat field button with it.
+    flat_field_file: str = "/data/flat_field.npy"
     live_port: int = 8099
     # Which interfaces reach Home Assistant. Media routes are always served --
     # they are the camera -- so turning both off is a loud warning, not a
@@ -145,6 +150,9 @@ class Settings:
     stretch_strength: float = 25.0
     chroma_radius: float = 3.0
     denoise_strength: float = 3.0
+    # Subtract the recorded flat field's pattern from night stills. Does nothing
+    # until one has been recorded.
+    flat_field_correction: bool = True
     autofocus: bool = True
     # The lens position held while autofocus is off, 0 (near) to 1 (the far end
     # of the lens's travel, which is past infinity on the phone measured). While

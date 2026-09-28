@@ -179,9 +179,11 @@ def test_every_sensor_says_what_its_reading_means():
                          # conditions, like the enums above them.
                          # ...and how the phone reboot went, same again.
                          "stream_start", "app_open", "phone_reboot",
-                         "emergency_background"}
+                         "emergency_background",
+                         # ...and whether a flat field is recorded.
+                         "flat_field"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
-                          "focus_sharpness", "motion"} | not_a_measurement
+                          "focus_sharpness", "motion", "flat_field_scale"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}
     unitless_by_design |= {f"wb_gain_{c}" for c in "rgb"}
     unitless_by_design |= {f"black_level_applied_{c}" for c in "rgb"}
