@@ -213,6 +213,7 @@ function selectMedia(m) {
   } else {
     showStart(m, "Start");
   }
+  drawRegion();
 }
 
 function renderMedia() {
@@ -228,6 +229,134 @@ function renderMedia() {
 
 document.addEventListener("visibilitychange", () => { if (document.hidden) stopStream(); });
 
+// -- the colour region picker -------------------------------------------------------
+// Draws the colour reference region over the still and lets it be redrawn by dragging.
+// It writes the four colour_region_* controls like any other control, so HA and MQTT
+// see the same values, and offers the Set colour reference button beside it. Shown
+// only when the service has those entities: the page stays a client of /objects.
+
+const REGION_KEYS = ["colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1"];
+let picking = false;
+let dragFrom = null;
+
+function entity(domain, id) {
+  return objects.find((e) => e.domain === domain && e.object_id === id);
+}
+
+function hasRegion() {
+  return REGION_KEYS.every((k) => entity("number", k));
+}
+
+function regionBox() {
+  const [x0, y0, x1, y1] = REGION_KEYS.map((k) => values[entity("number", k)?.state_key]);
+  if ([x0, y0, x1, y1].some((v) => typeof v !== "number")) return null;
+  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+}
+
+function drawRegion(box = regionBox()) {
+  const overlay = document.getElementById("region");
+  const img = document.getElementById("picture");
+  const onStill = activeMedia && activeMedia.id === "still" && img.getAttribute("src") && img.naturalWidth;
+  if (!hasRegion() || !onStill || !box || !(picking || document.getElementById("show-region").checked)) {
+    overlay.hidden = true;
+    return;
+  }
+  const r = img.getBoundingClientRect(), f = document.getElementById("frame").getBoundingClientRect();
+  overlay.hidden = false;
+  overlay.style.left = `${r.left - f.left + box[0] * r.width}px`;
+  overlay.style.top = `${r.top - f.top + box[1] * r.height}px`;
+  overlay.style.width = `${(box[2] - box[0]) * r.width}px`;
+  overlay.style.height = `${(box[3] - box[1]) * r.height}px`;
+}
+
+function showReferenceState() {
+  const sensor = entity("sensor", "colour_reference");
+  const v = sensor ? values[sensor.state_key] : undefined;
+  document.getElementById("reference-state").textContent = v == null ? "" : `Reference: ${String(v).replaceAll("_", " ")}`;
+}
+
+// After every reload of /objects: the entities may have come or gone.
+function refreshPicker() {
+  document.getElementById("region-tools").hidden = !hasRegion();
+  if (!hasRegion()) setPicking(false);
+  drawRegion();
+  showReferenceState();
+}
+
+function setPicking(on) {
+  picking = on;
+  dragFrom = null;
+  const pick = document.getElementById("pick-region");
+  pick.textContent = on ? "Drag over the still to draw the region" : "Pick colour region";
+  pick.classList.toggle("active", on);
+  document.getElementById("frame").classList.toggle("picking", on);
+}
+
+function fraction(ev) {
+  const r = document.getElementById("picture").getBoundingClientRect();
+  return [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)),
+          Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))];
+}
+
+function dragBox(ev) {
+  const [x, y] = fraction(ev);
+  return [Math.min(dragFrom[0], x), Math.min(dragFrom[1], y),
+          Math.max(dragFrom[0], x), Math.max(dragFrom[1], y)];
+}
+
+// The drawn box stays up while the camera confirms each edge: state events redraw
+// it from the real values as they land. A refusal redraws what the camera holds.
+async function writeRegion(box) {
+  const tools = document.getElementById("region-tools");
+  for (const [i, k] of REGION_KEYS.entries()) {
+    await write(entity("number", k), Math.round(box[i] * 1000) / 1000, tools);
+    if (tools.error.textContent) { drawRegion(); return; }   // refused: stop there
+  }
+  tools.classList.remove("pending");
+}
+
+// Once, at start: listeners that must not pile up on every reload.
+function bindPicker() {
+  const tools = document.getElementById("region-tools");
+  const img = document.getElementById("picture");
+  tools.error = document.getElementById("region-error");
+  document.getElementById("pick-region").onclick = () => {
+    setPicking(!picking);
+    if (picking && activeMedia?.id !== "still") {
+      const still = media.find((m) => m.id === "still");
+      if (still) selectMedia(still);
+    }
+    drawRegion();
+  };
+  document.getElementById("show-region").onchange = () => drawRegion();
+  document.getElementById("set-reference").onclick = () => {
+    const e = entity("button", "set_colour_reference");
+    if (e) write(e, "PRESS", tools);
+  };
+  img.addEventListener("load", () => drawRegion());
+  img.addEventListener("pointerdown", (ev) => {
+    if (!picking || !img.naturalWidth) return;
+    ev.preventDefault();
+    dragFrom = fraction(ev);
+    img.setPointerCapture(ev.pointerId);
+  });
+  img.addEventListener("pointermove", (ev) => {
+    if (picking && dragFrom) drawRegion(dragBox(ev));
+  });
+  img.addEventListener("pointerup", async (ev) => {
+    if (!picking || !dragFrom) return;
+    const box = dragBox(ev);
+    dragFrom = null;
+    if (box[2] - box[0] < 0.01 || box[3] - box[1] < 0.01) { drawRegion(); return; }   // a click
+    setPicking(false);
+    document.getElementById("show-region").checked = true;   // keep the new box in view
+    drawRegion(box);
+    await writeRegion(box);
+  });
+  img.addEventListener("pointercancel", () => { dragFrom = null; drawRegion(); });
+  window.addEventListener("resize", () => drawRegion());
+}
+
 // -- live values ------------------------------------------------------------------
 
 function apply(delta) {
@@ -240,6 +369,8 @@ function apply(delta) {
   if ("last_still" in delta && activeMedia && activeMedia.id === "still") {
     showSnapshot(activeMedia, document.getElementById("picture"));
   }
+  drawRegion();
+  showReferenceState();
 }
 
 async function loadObjects() {
@@ -247,6 +378,7 @@ async function loadObjects() {
   objects = doc.objects;
   objectsVersion = doc.objects_version;
   renderEntities();
+  refreshPicker();
 }
 
 function setConnected(on) {
@@ -284,6 +416,7 @@ function connect() {
       }
     }
     for (const [k, r] of rows) r.update(values[k]);
+    refreshPicker();
     if (activeMedia && activeMedia.id === "still") showSnapshot(activeMedia, document.getElementById("picture"));
   });
   es.addEventListener("state", (ev) => apply(JSON.parse(ev.data).state));
@@ -298,6 +431,7 @@ async function main() {
     document.getElementById("title").textContent = deviceName;
     document.getElementById("version").textContent = info.version ?? "";
     media = (await getJSON(routes.media)).media;
+    bindPicker();
     renderMedia();
     await loadObjects();
     connect();

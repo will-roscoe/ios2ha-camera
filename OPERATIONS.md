@@ -596,9 +596,9 @@ session fixed it once and made it worse the second time. The app exposes no whit
 So the service holds the colour itself:
 
 1. On a night still whose colour looks right, choose a region of the view that is lit the same way
-   every night -- a wall under a street light, not a window whose light comes and goes. Draw it on the
-   control page's still, or set `number.ios2ha_camera_colour_region_x0/y0/x1/y1` (fractions of the
-   frame).
+   every night -- a wall under a street light, not a window whose light comes and goes. On the
+   control page, press **Pick colour region** and drag over the still (**Show region** shows the one
+   in use), or set `number.ios2ha_camera_colour_region_x0/y0/x1/y1` (fractions of the frame).
 2. Press **Set colour reference**. `sensor.ios2ha_camera_colour_reference` reads `ready`.
 3. Set `select.ios2ha_camera_white_balance` to `reference`.
 
