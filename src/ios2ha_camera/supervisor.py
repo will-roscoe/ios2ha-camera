@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 import cv2
 import numpy as np
 
-from . import focus, measure, render, stack
+from . import focus, horizon, measure, render, stack
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .reboot import WEDGE_FOR_S
@@ -222,6 +222,13 @@ class Supervisor:
         self.colour = colour
         self._colour_state = "ready" if getattr(colour, "ready", False) else "none"
         self._last_black = None
+        # The last still's linear image as rendered: flat-corrected and levelled.
+        # The colour region is drawn on that still, so it is measured on this.
+        self._last_view = None
+        self._horizon_state = "none"
+        # The last still's JPEG and night weight, set together so the Level horizon
+        # button, on another thread, never pairs one still with another's weight.
+        self._last_render = None
         # The service's own focus runs; see run_focus.
         self._focus_requested = False
         # The lens has one owner at a time: a focus run holds this for its whole
@@ -522,12 +529,19 @@ class Supervisor:
             stacked, scales, smoothing = self.flat.correct(stacked, weight)
             if scales is not None:
                 black, gains = render.calibration(stacked, self.s)
+        # Levelled after the flat field, which is fixed to the sensor's pixels, and
+        # before anything measured on the view, whose regions are drawn on the still.
+        if self.s.rotation:
+            stacked = horizon.level(stacked, self.s.rotation)
+            black, gains = render.calibration(stacked, self.s)
+        self._last_view = stacked
         self._last_black = black
         gains = self._colour_gains(stacked, black, gains, weight)
         rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
                             smoothing=smoothing)
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
+        self._last_render = (jpeg, weight)
         self.mqtt.publish_still(jpeg)
 
         free = self.archive.free_bytes()
@@ -616,6 +630,8 @@ class Supervisor:
                     raise RuntimeError("the colour reference is switched off "
                                        "(COLOUR_REFERENCE_FILE is empty)")
                 self._submit(name, self._set_colour_reference)
+            elif name == "level_horizon":
+                self._submit(name, self._level_horizon)
             elif name == "focus_now":
                 if self.onvif is None:
                     raise RuntimeError("focus control is not configured")
@@ -1011,6 +1027,7 @@ class Supervisor:
         d["flat_field"] = self._flat_state
         d["focus_run"] = self._focus_state
         d["colour_reference"] = self._colour_state
+        d["horizon"] = self._horizon_state
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
@@ -1231,7 +1248,7 @@ class Supervisor:
         return 1 + weight * (np.asarray(found) - 1)
 
     def _set_colour_reference(self):
-        stacked, black, weight = self.last_stack, self._last_black, self._good_weight
+        stacked, black, weight = self._last_view, self._last_black, self._good_weight
         if stacked is None or black is None:
             return self._set_colour_state("rejected_no_still")
         if not weight or not weight > 0:
@@ -1249,6 +1266,37 @@ class Supervisor:
         if state != self._colour_state:
             self._colour_state = state
         self.publish_state({"colour_reference": state})
+        return state
+
+    # -- levelling the view --------------------------------------------------
+
+    def _level_horizon(self):
+        """Measure the last still's lean and add it to `rotation`. See horizon.py.
+
+        The still is already turned by the rotation in use, so what is measured is
+        what is left: a second press on a level view changes nothing."""
+        if self._last_render is None:
+            return self._set_horizon_state("rejected_no_still")
+        jpeg, weight = self._last_render
+        if weight is None or weight > 0:
+            return self._set_horizon_state("rejected_night")
+        bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        try:
+            lean = horizon.estimate_tilt(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        except horizon.NoClearHorizon as e:
+            log.info("level horizon: refused, %s", e)
+            return self._set_horizon_state("rejected_no_clear_lines")
+        rotation = round(min(10.0, max(-10.0, self.s.rotation + lean)), 1)
+        log.info("level horizon: the still leans %+.2f degrees; rotation %.1f -> %.1f",
+                 lean, self.s.rotation, rotation)
+        # Written as a person's write is: persisted, and echoed to every client.
+        self._apply_setting("rotation", rotation)
+        return self._set_horizon_state("levelled")
+
+    def _set_horizon_state(self, state):
+        self._horizon_state = state
+        self.publish_state({"horizon": state})
+        self._event({"ts": time.time(), "control": "level_horizon", "result": state})
         return state
 
     # -- the service's own focus ---------------------------------------------

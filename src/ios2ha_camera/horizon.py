@@ -35,6 +35,11 @@ MAX_SPREAD = 1.0
 MAX_ERROR = 0.2
 
 
+# What the Level horizon button last did, published as the `horizon` sensor.
+HORIZON_STATES = ("none", "levelled", "rejected_no_still", "rejected_night",
+                  "rejected_no_clear_lines")
+
+
 class NoClearHorizon(Exception):
     """Too few clear verticals, or ones that disagree: no roll worth trusting."""
 

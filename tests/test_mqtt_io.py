@@ -181,7 +181,7 @@ def test_every_sensor_says_what_its_reading_means():
                          "stream_start", "app_open", "phone_reboot",
                          "emergency_background",
                          # ...and whether a flat field is recorded.
-                         "flat_field", "focus_run", "colour_reference"}
+                         "flat_field", "focus_run", "colour_reference", "horizon"}
     unitless_by_design = {"subject_level", "lum_mean", "dynamic_range", "noise", "snr",
                           "focus_sharpness", "motion", "flat_field_scale"} | not_a_measurement
     unitless_by_design |= {f"lum_p{p}" for p in (1, 10, 50, 90, 99)}

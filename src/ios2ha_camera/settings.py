@@ -18,6 +18,7 @@ CONTROLS = {
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
     "flat_field_correction", "focus_at_dusk",
     "colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1",
+    "rotation",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -157,6 +158,9 @@ class Settings:
     colour_region_y0: float = 0.35
     colour_region_x1: float = 0.65
     colour_region_y1: float = 0.65
+    # Degrees counter-clockwise that stills are turned back by, zoomed so no corner
+    # shows. Set by the Level horizon button; stills only, not the live feeds.
+    rotation: float = 0.0
     render_intent: str = "natural"       # natural | inspection
     night_key: float = 0.09
     stretch_strength: float = 25.0

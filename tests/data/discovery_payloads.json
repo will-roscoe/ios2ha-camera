@@ -236,6 +236,23 @@
     "name": "Focus now",
     "unique_id": "ios2ha_button_focus_now"
   },
+  "homeassistant/button/ios2ha/level_horizon/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/level_horizon",
+    "default_entity_id": "button.ios2ha_camera_level_horizon",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:image-filter-hdr",
+    "name": "Level horizon",
+    "unique_id": "ios2ha_button_level_horizon"
+  },
   "homeassistant/button/ios2ha/prepare_phone/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/prepare_phone",
@@ -841,6 +858,29 @@
     "step": 1,
     "unique_id": "ios2ha_number_resume_above_pct",
     "unit_of_measurement": "%"
+  },
+  "homeassistant/number/ios2ha/rotation/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/rotation",
+    "default_entity_id": "number.ios2ha_camera_rotation",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:rotate-left",
+    "max": 10,
+    "min": -10,
+    "mode": "box",
+    "name": "Rotation",
+    "state_topic": "ios2ha_camera/state/rotation",
+    "step": 0.1,
+    "unique_id": "ios2ha_number_rotation",
+    "unit_of_measurement": "\u00b0"
   },
   "homeassistant/number/ios2ha/stretch_strength/config": {
     "availability_topic": "ios2ha_camera/available",
@@ -1600,6 +1640,31 @@
     "name": "Connection holders",
     "state_topic": "ios2ha_camera/state/holders",
     "unique_id": "ios2ha_sensor_holders"
+  },
+  "homeassistant/sensor/ios2ha/horizon/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_horizon",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:image-filter-hdr",
+    "name": "Horizon",
+    "options": [
+      "none",
+      "levelled",
+      "rejected_no_still",
+      "rejected_night",
+      "rejected_no_clear_lines"
+    ],
+    "state_topic": "ios2ha_camera/state/horizon",
+    "unique_id": "ios2ha_sensor_horizon"
   },
   "homeassistant/sensor/ios2ha/last_frame/config": {
     "availability_topic": "ios2ha_camera/available",
