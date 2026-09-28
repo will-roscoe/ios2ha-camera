@@ -16,7 +16,7 @@ CONTROLS = {
     "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
-    "flat_field_correction",
+    "flat_field_correction", "focus_at_dusk",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -159,6 +159,9 @@ class Settings:
     # autofocus is on it follows where autofocus put the lens, so switching
     # autofocus off holds the lens about where it was; see Supervisor._apply_focus.
     focus_position: float = 1.0
+    # Run the service's own focus search once each evening, while there is still
+    # light to judge edges by. Only while autofocus is off; see Supervisor.run_focus.
+    focus_at_dusk: bool = True
     on_demand: bool = True               # False keeps the connection open continuously
     live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
     # Backgrounding between captures. iOS suspends a backgrounded app's listening

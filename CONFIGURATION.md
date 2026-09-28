@@ -96,10 +96,12 @@ no spatial region selection.
 **"The picture is soft at night."** Check focus before anything else. Autofocus at night, and
 through a window, can settle well away from the scene: measured on 2026-09-28 it sat at lens
 position 0.68 while the skyline was sharpest at 0.78–0.82, with about five times the edge detail.
-Find the right position in daylight, when autofocus gets it right: leave autofocus on and read
-**`focus_position`**, which follows the lens while autofocus is on. Then write that value back (or
-switch autofocus off) and the lens is held there, day and night, across restarts and app relaunches.
-Stacking and smoothing cannot put back detail the lens never resolved.
+Press **Focus now** and the service finds the sharpest far-field position itself and holds it: it
+sweeps the lens from far to near, averaging a few seconds of frames at each position so it works in
+the dark, and never looks nearer than the window. With **Focus at dusk** on, it does this once each
+evening while there is still light, which catches the slow drift a fixed position suffers (0.80 to
+0.77 in one evening, measured). Stacking and smoothing cannot put back detail the lens never
+resolved.
 
 ## Controls
 
@@ -174,6 +176,7 @@ What the less obvious ones do:
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | On: the phone focuses itself. Off: the lens is held at `focus_position`. See "The picture is soft at night" above for choosing | on |
 | `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
+| `switch.ios2ha_camera_focus_at_dusk` | Run the service's own focus search once each evening, as the light starts to fall; only while autofocus is off | on |
 | `switch.ios2ha_camera_flat_field_correction` | Subtract the recorded fixed grain from night stills, with the smoothing lightened to match what is left. Does nothing until a flat field is recorded | on |
 | `switch.ios2ha_camera_backgrounding` | Allows the app to be backgrounded between captures when the battery is low, which is what lets the phone actually charge. Turning it off while the app is backgrounded foregrounds it immediately | on |
 
@@ -187,6 +190,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
+| `button.ios2ha_camera_focus_now` | Finds the sharpest far-field focus and holds it: a far-to-near sweep of the lens, averaging ~3 s of frames per position, then a golden-section refine. About 40 s. Switches autofocus off. See [OPERATIONS.md](OPERATIONS.md#keeping-the-picture-in-focus) |
 | `button.ios2ha_camera_record_flat_field` | Records the sensor's fixed grain from a flat field: cover the lens with a tissue so it sees a dim, even glow, then press. About a minute. Refused, keeping any earlier recording, unless the picture is evenly lit; restarts the camera afterwards to reset its white balance. See [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain) |
 | `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |
 
