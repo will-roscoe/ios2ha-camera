@@ -187,7 +187,7 @@ def test_every_declared_button_has_a_dispatch_branch():
     which finds no such setting and logs "ignoring unknown control" -- so the
     button appears in Home Assistant, is pressable, and does nothing at all.
     Nothing caught that before this test."""
-    sup = _sup(starter=object(), rebooter=object())
+    sup = _sup(starter=object(), rebooter=object(), flat=object())
     submitted = []
     fell_through = []
     # Recorded rather than run: this is about which branch the name reaches, and

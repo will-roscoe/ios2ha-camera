@@ -166,3 +166,30 @@ def test_hard_cap_overrides_the_settings_caps():
 def test_without_hard_cap_nothing_changes():
     s = Settings(); s.stacking_mode = "auto"; s.max_depth = 50; s.window_max_s = 60.0; s.interval_s = 600; s.clean_factor = 4.0; s.target_level = 40.0
     assert stack.choose_depth(1.0, s, fps=13.9, previous_depth=None) == 50
+
+
+def test_the_integer_pass_is_the_float_pass_exactly():
+    """stack_frames runs in integer arithmetic for speed; it must not change a
+    single value. Outliers force real clipping, and a mean sitting on whole
+    numbers puts values exactly on the clip boundary, where `<` versus `<=`
+    would show."""
+    rng = np.random.default_rng(3)
+    frames = [rng.integers(0, 12, (16, 16, 3), dtype=np.uint8) for _ in range(40)]
+    for f in frames[::7]:
+        f[rng.integers(0, 16, 20), rng.integers(0, 16, 20)] = 250     # a passing light
+    frames.append(np.full((16, 16, 3), 4, np.uint8))                   # on a boundary
+    floats = [f.astype(np.float32) for f in frames]
+
+    mu = sd = None
+    fmu = fsd = None
+    for _ in range(3):
+        mu, sd = stack._accumulate_pass_u8(lambda: iter(frames), mu, sd, 2.5)
+        fmu, fsd = stack._accumulate_pass(lambda: iter(floats), fmu, fsd, 2.5)
+        assert np.array_equal(mu, fmu)
+        assert np.allclose(sd, fsd, rtol=0, atol=1e-9)
+
+
+def test_stack_frames_on_real_jpegs_matches_the_float_reference():
+    frames = [_frame(8, 3, i, size=64) for i in range(60)]
+    reference = stack.sigma_clipped_mean([stack.decode(f) for f in frames])
+    assert np.array_equal(stack.stack_frames(frames), reference)

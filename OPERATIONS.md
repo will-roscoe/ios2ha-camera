@@ -426,7 +426,17 @@ minutes, after which the app is re-opened and streaming resumes unattended.
 So the supervisor now reboots the phone itself, on a deliberately narrow diagnosis: three or more
 consecutive developer failures, sustained for fifteen minutes, **and** plain lockdown still
 answering — that last one is what distinguishes a wedged developer channel from an unplugged cable,
-where a reboot would do nothing. At most two a day, six hours apart.
+where a reboot would do nothing. **At most three a day, at least twenty minutes apart**, kept in
+`REBOOTS_FILE` so the budget holds across restarts.
+
+That last part matters more than it looks: **every phone reboot restarts this service** about a
+minute later, because the phone dropping off USB restarts usbmuxd and the usbmuxd hook restarts the
+container. Until 2.14.0 each restart forgot the budget, and the week to 2026-09-28 saw nine reboots,
+two of them 22 minutes apart on the 27th — the second being the one that cured the wedge, which is
+why the gap is now twenty minutes rather than the six hours first set. The same restart also used to
+cut the post-reboot check short: the dying process logged "still wedged, giving up" on the 26th and
+27th while the phone was in fact fine. Now a reboot whose settle is interrupted by the service
+stopping gives no verdict, and the next start watches the developer channel instead.
 
 If a reboot does not clear it, the service **gives up rather than trying again**: the state latches
 at `given_up`, and only the developer channel working again — or the `button.ios2ha_camera_reboot_phone`
@@ -525,6 +535,37 @@ docker compose up -d --force-recreate ios2ha-camera
 
 A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
+## Removing the sensor's fixed grain
+
+Stacking removes only what changes from frame to frame. Measured 2026-09-28, at a night stack depth
+of ~600 frames the grain left in the dark sky was about 90% a pattern fixed to the sensor's pixels:
+two independent half-stacks matched at 0.91, and two captures 25 minutes apart and at different focus
+at 0.92. No depth can touch that, and the smoothing that hid it is what painted the sky into blotches.
+
+It can be recorded once and subtracted from every night still. **A dark frame does not work**: with
+the lens covered, iOS clips everything below black before encoding, so the pattern is flattened away
+(it matched the sky's at 0.07). It shows only with a little light on every pixel, so record a
+**flat field**:
+
+1. At night, cover the lens with a tissue or thin paper so the phone sees a dim, even glow.
+2. Press **Record flat field**. It gathers about a minute of frames after the press.
+3. Uncover the lens. `sensor.ios2ha_camera_flat_field` reads `ready`, or says why it refused:
+   `rejected_not_flat` (the lens was not covered: there are edges in the picture), `rejected_too_dark`
+   (too little light gets through: the pattern is under the black clamp), `rejected_too_bright` or
+   `rejected_no_frames`. A refusal keeps the previous recording.
+
+Recorded on 2026-09-28, the tissue's pattern matched the night sky's at 0.85, and subtracting it at
+the fitted scale (`sensor.ios2ha_camera_flat_field_scale`, about 0.9) left 62% of the grain. The
+smoothing is then scaled by the same share, so the sky comes out cleaner than before with the
+detail the full smoothing used to soften. It applies only at night, fading out with the night render.
+
+**Covering the lens throws the phone's white balance.** Stills after the recording on 2026-09-28
+were cyan -- green/red 1.48 against 0.97 -- because the camera adapted to the tissue, and at night
+there is too little light for iOS to find its way back. Restarting the app's capture session makes
+it look again, so the service backgrounds and foregrounds the app after every recording attempt.
+If stills ever turn cyan after anything else covers the lens, the same cycle fixes it: set
+`background_below_pct` above the battery level for one capture, or wait for daylight.
+
 ## A timelapse in Home Assistant
 
 The supervisor already keeps every still, under `ARCHIVE_DIR` by date and time. To also collect them
@@ -538,9 +579,14 @@ triggers:
   - trigger: state
     entity_id: sensor.ios2ha_camera_last_still
 conditions:
-  # Not on the service starting up or reconnecting, when it goes to or from unknown.
+  # Every real still, and nothing else. A change from `unavailable` is the
+  # native component replaying the old value as it reloads, so it is refused; a
+  # change from `unknown` is the first still after the service restarted, so it
+  # is kept. Do not test how recent the timestamp is instead: it is when the
+  # capture *started*, and a night still takes minutes to stack.
   - condition: template
-    value_template: "{{ trigger.from_state.state not in ('unknown', 'unavailable')
+    value_template: "{{ trigger.from_state is not none
+                        and trigger.from_state.state != 'unavailable'
                         and trigger.to_state.state not in ('unknown', 'unavailable') }}"
 actions:
   - action: camera.snapshot

@@ -334,3 +334,77 @@ def test_the_state_carries_the_reboot_fields():
     state = sup.health_state()
     assert state["phone_reboot"] == "idle"
     assert state["phone_reboots"] == 0
+
+
+# -- the budget survives a restart ---------------------------------------------
+#
+# Every phone reboot restarts this service, through the usbmuxd hook. Measured
+# 2026-09-23..28: nine reboots, each followed about a minute later by a restart
+# that forgot the budget -- on the 27th two reboots ran 22 minutes apart. Will's
+# ruling 2026-09-28: keep the budget across restarts, relaxed to three a day and
+# twenty minutes apart, because the second of those two is the one that worked.
+
+from ios2ha_camera.reboot import RebootHistory  # noqa: E402
+
+
+def test_the_limits_are_the_ruled_ones():
+    assert MAX_PER_DAY == 3
+    assert MIN_GAP_S == 20 * 60
+
+
+def test_the_27_september_pair_is_allowed(parts):
+    """Two reboots 22 minutes apart, the second of which cured the wedge."""
+    r = make(parts)
+    wedge(r, parts["clock"])
+    assert r.attempt() == "recovered"
+    r.observe(0)
+    parts["clock"].advance(22 * 60 - WEDGE_FOR_S)
+    wedge(r, parts["clock"])
+    assert r.attempt() == "recovered"
+
+
+def test_a_reboot_is_remembered_by_the_next_process(parts, tmp_path):
+    history = RebootHistory(str(tmp_path / "reboots.json"))
+    first = make(parts, history=history)
+    for _ in range(MAX_PER_DAY):
+        first.observe(0)
+        wedge(first, parts["clock"])
+        assert first.attempt() == "recovered"
+        parts["clock"].advance(MIN_GAP_S + 1)
+
+    # The restart the reboot itself causes: a new rebooter, the same file.
+    second = make(parts, history=RebootHistory(str(tmp_path / "reboots.json")))
+    assert second.reboots_last_day == MAX_PER_DAY
+    wedge(second, parts["clock"])
+    assert second.attempt() == "rate_limited"
+
+
+def test_a_missing_or_corrupt_history_is_an_empty_one(tmp_path, caplog):
+    assert RebootHistory(str(tmp_path / "absent.json")).load() == []
+    bad = tmp_path / "reboots.json"
+    bad.write_text("{not json")
+    with caplog.at_level("WARNING"):
+        assert RebootHistory(str(bad)).load() == []
+    bad.write_text('{"reboots": ["x", 5.0, null]}')
+    assert RebootHistory(str(bad)).load() == [5.0]
+
+
+def test_a_history_that_cannot_be_written_does_not_stop_a_reboot(parts, tmp_path):
+    r = make(parts, history=RebootHistory(str(tmp_path / "missing-dir" / "reboots.json")))
+    wedge(r, parts["clock"])
+    assert r.attempt() == "recovered"
+
+
+def test_no_verdict_while_the_service_is_stopping(parts, caplog):
+    """The reboot restarts this service about a minute in, while the attempt is
+    still settling. A verdict then is the dying process judging a phone it can
+    no longer see: on the 26th and 27th it logged "still wedged, giving up"
+    both times, and both times the next start found the phone fine."""
+    r = make(parts)
+    parts["probe"].answers = [False]
+    r._sleep = lambda seconds: True       # the stop event, set during the settle
+    wedge(r, parts["clock"])
+    with caplog.at_level("INFO"):
+        assert r.attempt() == "rebooting"
+    assert r.latched is False
+    assert not [rec for rec in caplog.records if rec.levelname == "ERROR"]

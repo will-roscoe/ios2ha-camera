@@ -29,6 +29,8 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `FLAT_FIELD_FILE` | `/data/flat_field.npy` | Where the sensor's fixed grain is kept once recorded with **Record flat field** (see [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain)). Empty turns the feature off, and the button with it |
+| `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
 | `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
@@ -172,6 +174,7 @@ What the less obvious ones do:
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | On: the phone focuses itself. Off: the lens is held at `focus_position`. See "The picture is soft at night" above for choosing | on |
 | `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
+| `switch.ios2ha_camera_flat_field_correction` | Subtract the recorded fixed grain from night stills, with the smoothing lightened to match what is left. Does nothing until a flat field is recorded | on |
 | `switch.ios2ha_camera_backgrounding` | Allows the app to be backgrounded between captures when the battery is low, which is what lets the phone actually charge. Turning it off while the app is backgrounded foregrounds it immediately | on |
 
 `grey-world` is offered but not recommended: a frame dominated by one colour pushes it into a false
@@ -184,6 +187,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
+| `button.ios2ha_camera_record_flat_field` | Records the sensor's fixed grain from a flat field: cover the lens with a tissue so it sees a dim, even glow, then press. About a minute. Refused, keeping any earlier recording, unless the picture is evenly lit; restarts the camera afterwards to reset its white balance. See [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain) |
 | `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |
 
 ## Sensors
@@ -212,7 +216,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `sensor.ios2ha_camera_depth_used` | frames | Frames actually stacked |
 | `sensor.ios2ha_camera_depth_required` | frames | Before clamping — shows when limits rather than light are setting depth |
 | `sensor.ios2ha_camera_capture_duration` | s | |
-| `sensor.ios2ha_camera_last_still` | timestamp | When the last still was made. Changes once per still and at no other time, so it is the trigger for a timelapse automation on either integration path (see [OPERATIONS.md](OPERATIONS.md)) |
+| `sensor.ios2ha_camera_last_still` | timestamp | When the capture for the last still started — also the time in its archive file name. It changes once per still, when the still is published, which at night is minutes later; so it is the trigger for a timelapse automation on either integration path (see [OPERATIONS.md](OPERATIONS.md)), but do not test how recent it is |
 | `sensor.ios2ha_camera_effective_exposure_required` / `_achieved` | s | Depth ÷ frame rate. An upper bound until auto-exposure has hit its limit |
 | `sensor.ios2ha_camera_wb_gain_r/g/b` | | The gains actually applied |
 | `sensor.ios2ha_camera_black_level_applied_r/g/b` | | The black level actually applied — the measured value with the override switch off, the three numbers with it on. This is the pair to read when asking "is my override in effect?" |
