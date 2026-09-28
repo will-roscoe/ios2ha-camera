@@ -237,3 +237,13 @@ def test_media_sources_are_distinct_and_say_what_they_cost():
         assert m.formats
     assert {m.id for m in MEDIA if m.holds_phone} == {"live", "stacked"}
     assert {m.id for m in MEDIA if m.kind == "snapshot"} == {"still", "screenshot"}
+
+
+def test_every_entity_says_what_it_does():
+    """The entity reference in the docs is generated from these, and until 2.13.0
+    it listed ids and units with nothing saying what any of them did."""
+    from ios2ha_camera.entities import _DESCRIPTIONS
+    undescribed = [(e.domain, e.object_id) for e in ENTITIES if len(e.description) < 20]
+    assert undescribed == []
+    stale = set(_DESCRIPTIONS) - {(e.domain, e.object_id) for e in ENTITIES}
+    assert stale == set(), "a description for an entity that no longer exists"

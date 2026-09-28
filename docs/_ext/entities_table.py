@@ -35,54 +35,36 @@ _DOMAIN_TITLES = [
     ("binary_sensor", "Binary sensors"),
 ]
 
-# One column spec per domain: (header, cell) pairs, where `cell` reads one
-# value off an Entity and says whether it should render as inline code.
-_COLUMNS = {
-    "camera": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "number": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Range", lambda e: (f"{e.lo}–{e.hi}", False)),
-        ("Step", lambda e: (e.step, False)),
-        ("Unit", lambda e: (e.unit, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "select": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Options", lambda e: (", ".join(e.options) if e.options else None, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "switch": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "button": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "sensor": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Unit", lambda e: (e.unit, False)),
-        ("Device class", lambda e: (e.device_class, False)),
-        ("State class", lambda e: (e.state_class, False)),
-        ("Precision", lambda e: (e.precision, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-    "binary_sensor": [
-        ("Entity", lambda e: (_entity_id(e), True)),
-        ("Name", lambda e: (e.name, False)),
-        ("Device class", lambda e: (e.device_class, False)),
-        ("Category", lambda e: (e.category, False)),
-    ],
-}
+# The same four columns for every domain. What an entity is for matters more
+# than its metadata, so the description gets its own column and the rest is
+# folded into one compact "Details" cell rather than a column per field, most of
+# which would be empty for most domains.
+_COLUMNS = [
+    ("Entity", lambda e: (_entity_id(e), True)),
+    ("Name", lambda e: (e.name if e.name is not None else "(device name)", False)),
+    ("What it does", lambda e: (e.description or None, False)),
+    ("Details", lambda e: (_details(e), False)),
+]
+
+
+def _number(v):
+    """3600.0 reads as 3600, 0.01 stays 0.01."""
+    return f"{v:g}" if isinstance(v, float) else str(v)
+
+
+def _details(e):
+    parts = []
+    if e.lo is not None and e.hi is not None:
+        parts.append(f"{_number(e.lo)}–{_number(e.hi)}, step {_number(e.step)}")
+    if e.options:
+        parts.append("options: " + ", ".join(e.options))
+    if e.unit:
+        parts.append(f"unit {e.unit}")
+    if e.device_class:
+        parts.append(f"class {e.device_class}")
+    if e.category:
+        parts.append(e.category)
+    return "; ".join(parts) or None
 
 
 def _entity_id(e):
@@ -102,13 +84,14 @@ def _cell(value, code):
     return entry
 
 
-def _table(domain, entities):
-    columns = _COLUMNS[domain]
+def _table(entities):
+    columns = _COLUMNS
     table = nodes.table()
     tgroup = nodes.tgroup(cols=len(columns))
     table += tgroup
-    for _ in columns:
-        tgroup += nodes.colspec(colwidth=1)
+    # Relative widths: the description is the column worth the room.
+    for width in (3, 2, 6, 3):
+        tgroup += nodes.colspec(colwidth=width)
 
     thead = nodes.thead()
     tgroup += thead
@@ -153,7 +136,7 @@ class EntitiesTable(Directive):
             if not rows:
                 continue
             result.append(nodes.rubric(text=title))
-            result.append(_table(domain, rows))
+            result.append(_table(rows))
         return result
 
 
