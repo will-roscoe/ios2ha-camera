@@ -28,6 +28,7 @@ from . import version
 from .app_open import APP_OPEN_STATES
 from .emergency import EMERGENCY_STATES
 from .flat import FLAT_FIELD_STATES
+from .focus import FOCUS_RUN_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
@@ -214,6 +215,7 @@ _SWITCHES = [
     _switch("black_level_override_on", "Black level override",
             "mdi:circle-opacity"),
     _switch("flat_field_correction", "Flat field correction", "mdi:grid"),
+    _switch("focus_at_dusk", "Focus at dusk", "mdi:image-filter-center-focus-strong-outline"),
 ]
 
 # capture_now stays uncategorised: it is the one button that belongs on a
@@ -238,6 +240,8 @@ _BUTTONS = [
     # Records the sensor's fixed grain. Only meaningful with the lens covered by
     # something that lets a little light through evenly; see flat.py.
     _button("record_flat_field", "Record flat field", icon="mdi:grid",
+            category="config"),
+    _button("focus_now", "Focus now", icon="mdi:image-filter-center-focus",
             category="config"),
 ]
 
@@ -347,6 +351,9 @@ _SENSORS = [
     # Consecutive failures of calls needing the phone's developer services. Zero
     # normally; a number that stays up means app control is wedged, which is how
     # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
+    _sensor("focus_run", "Focus run", device_class="enum",
+            options=tuple(FOCUS_RUN_STATES), category="diagnostic",
+            icon="mdi:image-filter-center-focus"),
     _sensor("flat_field", "Flat field", device_class="enum",
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
@@ -519,6 +526,18 @@ _DESCRIPTIONS = {
     ("switch", "emergency_keyboard"):
         "Allows the Bluetooth keyboard to background the app when the cable cannot and the "
         "battery is below Emergency keyboard below.",
+    ("switch", "focus_at_dusk"):
+        "Once each evening, as the light starts to fall, find the sharpest far-field focus "
+        "and hold it -- catching the slow drift a fixed lens position suffers. Only while "
+        "autofocus is off: with it on, the phone focuses itself.",
+    ("button", "focus_now"):
+        "Find the sharpest far-field focus now and hold it: sweeps the lens from far to near, "
+        "averaging a few seconds of frames at each position so it works at night, and "
+        "switches autofocus off. About 40 seconds.",
+    ("sensor", "focus_run"):
+        "How the last focus run went: running, focused, unchanged_no_clear_peak (fog, too "
+        "dark: nothing changed), failed_no_frames or failed_phone. A failed run puts the "
+        "lens back where it was.",
     ("switch", "flat_field_correction"):
         "On: subtract the sensor's recorded fixed grain from night stills, and halve-or-so the "
         "smoothing to match what is left. Does nothing until a flat field has been recorded.",
