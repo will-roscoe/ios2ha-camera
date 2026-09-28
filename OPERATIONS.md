@@ -174,6 +174,19 @@ A still that could not be made is a warning, `still failed: <reason>` — most o
 `no frames: <stream state>`. Before 2.13.0 that reason went only into the MQTT event, so with MQTT
 off a camera that had stopped producing stills left no trace in the log at all.
 
+## The control page
+
+`http://<host>:8099/` (it redirects to `/ui/`) shows every entity Home Assistant has -- readings,
+switches, numbers, selects and buttons -- with what each one does, updating live, and the picture.
+It is a client of the JSON API like the Home Assistant component: it hardcodes only
+`/api/v1/info`, writes through `/api/v1/control/{name}`, and shows the API's own error when a
+write is refused. So it exists exactly when `EXPOSE_API` is on, and needs no Home Assistant at all
+-- useful when Home Assistant is the thing that is down.
+
+The Stacked and Live views keep the phone connected, and awake, for as long as they are shown: they
+start only when you press Start, and stop when you switch view or the browser tab is hidden. Like
+the rest of the API the page has no login and is meant for the LAN only; do not publish port 8099.
+
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is

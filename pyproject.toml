@@ -65,6 +65,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The control page, served by api.py; without this pip leaves it out of the image.
+[tool.setuptools.package-data]
+ios2ha_camera = ["web/*"]
+
 [tool.pytest.ini_options]
 # "." so tests can import the shared fixtures as tests.fakes.*
 pythonpath = ["src", "."]

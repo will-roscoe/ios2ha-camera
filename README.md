@@ -78,7 +78,7 @@ and relaunching the app — short of the one thing that can't be automated: tapp
 ```bash
 python3 -m venv ~/.venvs/ios2ha-camera
 ~/.venvs/ios2ha-camera/bin/pip install -e '.[dev]'
-~/.venvs/ios2ha-camera/bin/pytest -q          # 283 tests, no hardware needed
+~/.venvs/ios2ha-camera/bin/pytest -q          # no hardware needed
 ~/.venvs/ios2ha-camera/bin/ruff check .
 ```
 
@@ -88,6 +88,10 @@ every push.
 
 To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**. To change it, see
 **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+Once it runs, open the service's address in a browser (`http://<host>:8099/`) for its control
+page: every setting and reading Home Assistant has, with what each one does, live, and the picture.
+It is a plain client of the JSON API, so it is there exactly when `EXPOSE_API` is on.
 
 ## The documentation
 
