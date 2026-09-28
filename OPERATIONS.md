@@ -548,6 +548,44 @@ docker compose up -d --force-recreate ios2ha-camera
 
 A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
+## Keeping the picture in focus
+
+The phone's own autofocus is not good enough at night, and a fixed lens position is not either.
+Measured 2026-09-28 on a skyline through a window: night autofocus parked the lens at 0.68 while
+the sharpest position was 0.78-0.82, with about five times the edge detail; by 23:00 the best had
+drifted to 0.77. So the service focuses itself.
+
+**A focus run** (`button.ios2ha_camera_focus_now`, and once each dusk with
+`switch.ios2ha_camera_focus_at_dusk`) searches lens positions 0.60 to 1.00 only. Anything within
+about a metre -- the window, a curtain -- focuses below 0.60, so it is never considered; 1.00 is the
+far end of the lens's travel, past infinity. At each position it lets the lens settle and averages
+~3 s of frames, because a single night frame is too dark to judge, and scores the edge detail of the
+most detailed quarter of the picture, border excluded. It probes 1.00, 0.90, 0.80, 0.70 and 0.60,
+brackets the farthest peak within 10% of the best -- near-equal peaks go far -- and narrows it by
+golden-section comparison to 0.01. About 40 s, and the whole score curve is logged.
+
+A result is kept only if it beats the position it would replace, measured then and there: the held
+position is scored either side of the result, which cancels a steady change in the light, because
+contrast changing through a run -- lights coming on at dusk, the phone changing exposure -- can fake
+a peak. A kept result is written to `focus_position`, held exactly as a value you type would be.
+Otherwise nothing changes: no clear peak (fog, darkness, a covered lens), not better than the held
+focus, or a phone that failed the run -- which also puts the lens back.
+`sensor.ios2ha_camera_focus_run` says which.
+
+A run first waits for the phone to answer: at dusk the battery policy has usually backgrounded the
+app, which refuses every call until the session the run opens has woken it.
+
+**The dusk run** follows a still taken in the afternoon or evening whose scene needs more brightening
+than the one before -- the light is falling -- but still has light for edges (night weight between 0
+and 0.5). Dawn does not count, although the light passes through the same band. It runs once a day
+on success, tries at most three times, and only while autofocus is off -- with autofocus on the
+phone is in charge.
+
+**The lens is re-driven at every capture.** The phone reports a lens position, but it is not to be
+trusted: after the app's capture session restarted on 2026-09-28 it reported 0.804 while the lens
+sat elsewhere, and stills went soft. So every session moves the lens 0.03 away and back to the held
+position rather than believing it is already there.
+
 ## Removing the sensor's fixed grain
 
 Stacking removes only what changes from frame to frame. Measured 2026-09-28, at a night stack depth
