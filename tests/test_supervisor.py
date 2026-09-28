@@ -857,9 +857,10 @@ def test_autofocus_changed_while_a_change_is_running_ends_on_the_last_request():
     while "focus" in sup._device_busy and time.monotonic() < deadline:
         time.sleep(0.01)
     ex.shutdown(wait=True)
-    # The first run set MANUAL and moved the lens; the one follow-up found the
-    # phone already where the last write wanted it and changed nothing.
-    assert onvif.calls == ["MANUAL", ("move", 1.0)]
+    # The first run set MANUAL and drove the lens; the one follow-up -- not four --
+    # drove it again, as every application does rather than trust the phone.
+    assert onvif.calls == ["MANUAL", ("move", 0.97), ("move", 1.0),
+                           ("move", 0.97), ("move", 1.0)]
     assert sup.s.autofocus is False
     assert sup.current_state()["autofocus"] is False
 
@@ -1494,14 +1495,26 @@ def test_every_session_puts_a_relaunched_app_back_on_the_held_focus():
     assert onvif.mode == "MANUAL" and onvif.position == 0.8
 
 
-def test_a_session_with_focus_already_right_changes_nothing():
-    """Every capture opens a session; a phone already in line costs two reads."""
+def test_a_session_re_drives_the_lens_even_when_the_phone_says_it_is_there():
+    """Measured 2026-09-28: after the app's capture session restarted, the phone
+    reported MANUAL at 0.804 while the lens was elsewhere, and the stills went soft
+    (building detail 1.7 against 10.4). A reported position is not trusted: every
+    session nudges the lens away and back."""
     s = Settings()
     s.autofocus, s.focus_position = False, 0.8
     onvif = FakeOnvif(mode="MANUAL", position=0.80392158)   # 205/255, as the phone reports
     sup = _sup(s, onvif=onvif)
     sup.on_session_open()
-    assert onvif.calls == []
+    assert onvif.calls == [("move", 0.83), ("move", 0.8)]
+
+
+def test_the_nudge_goes_nearer_when_farther_is_off_the_end():
+    s = Settings()
+    s.autofocus, s.focus_position = False, 0.99
+    onvif = FakeOnvif(mode="MANUAL", position=0.99)
+    sup = _sup(s, onvif=onvif)
+    sup.on_session_open()
+    assert onvif.calls == [("move", 0.96), ("move", 0.99)]
 
 
 def test_a_phone_slow_to_wake_is_retried():
