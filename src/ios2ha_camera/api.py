@@ -32,6 +32,7 @@ routing interaction that behaves in a test and surprises someone at 3am.
 import hashlib
 import json
 import logging
+from pathlib import Path
 
 from aiohttp import web
 
@@ -313,12 +314,35 @@ def add_api_routes(app, state, settings, *, events, on_control=lambda n, v: None
     # shutdown.
     app.router.add_route("GET", ROUTES["events"], get_events)
     app.router.add_post(ROUTES["control"], post_control)
+    _add_page(app)
     # Set once: within a process the registry never changes. Every snapshot
     # carries it, which is how a client reconnecting after a restart notices a
     # registry that did.
     events.set_objects_version(objects_version())
     events.attach(app)
     return app
+
+
+# The control page's files, packaged with the service (pyproject package-data).
+_WEB = Path(__file__).with_name("web")
+
+
+def _add_page(app):
+    """The control page, a client of this API like any other: served here so it
+    exists exactly when the API does, and never with EXPOSE_API off.
+
+    The service's bare address leads to it, since nothing else answers there. The
+    page itself is static; everything it shows comes from the routes above.
+    """
+    async def to_page(request):
+        raise web.HTTPFound("/ui/")
+
+    async def page(request):
+        return web.FileResponse(_WEB / "index.html", headers=_NO_STORE)
+
+    app.router.add_get("/", to_page)
+    app.router.add_get("/ui/", page)
+    app.router.add_static("/ui/", _WEB, append_version=False)
 
 
 def make_api(state, settings, on_control=lambda n, v: None, events=None):
