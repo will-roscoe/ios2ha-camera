@@ -41,6 +41,7 @@ _ENV_MAP = {
     "EXPOSE_MQTT": "expose_mqtt",
     "EXPOSE_API": "expose_api",
     "CONTROLS_FILE": "controls_file",
+    "REBOOTS_FILE": "reboots_file",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -107,6 +108,10 @@ class Settings:
     # which every phone reboot causes, through the usbmuxd hook -- does not put
     # them back to these defaults. Empty keeps them in memory only.
     controls_file: str = "/data/controls.json"
+    # When the phone was last rebooted, so the reboot budget survives the
+    # restart that every phone reboot causes. Empty keeps it in memory only,
+    # where each reboot resets it.
+    reboots_file: str = "/data/reboots.json"
     live_port: int = 8099
     # Which interfaces reach Home Assistant. Media routes are always served --
     # they are the camera -- so turning both off is a loud warning, not a

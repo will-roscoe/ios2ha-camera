@@ -552,8 +552,8 @@ _DESCRIPTIONS = {
     ("sensor", "last_frame"):
         "When the newest frame arrived from the phone.",
     ("sensor", "last_still"):
-        "When the last still was made. Changes once per still and at no other time, so it is "
-        "the trigger for a timelapse automation.",
+        "When the capture for the last still started. Changes once per still, when it is "
+        "published -- at night minutes later -- so it is the trigger for a timelapse automation.",
     ("sensor", "depth_required"):
         "Frames the light asked for before the limits applied. Far above Depth used means the "
         "limits, not the light, are setting depth.",
@@ -607,7 +607,7 @@ _DESCRIPTIONS = {
         "How the last automatic or manual phone reboot went: rebooting, recovered, still_wedged, "
         "given_up and so on (see OPERATIONS.md).",
     ("sensor", "phone_reboots"):
-        "Phone reboots in the last 24 hours, counted since the service last started.",
+        "Phone reboots in the last 24 hours, against the limit of three a day.",
     ("sensor", "stream_start_attempts"):
         "Start streaming attempts in the last hour, against the rate limit.",
     ("sensor", "dvt_failures"):

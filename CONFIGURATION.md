@@ -29,6 +29,7 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
 | `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
@@ -212,7 +213,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `sensor.ios2ha_camera_depth_used` | frames | Frames actually stacked |
 | `sensor.ios2ha_camera_depth_required` | frames | Before clamping — shows when limits rather than light are setting depth |
 | `sensor.ios2ha_camera_capture_duration` | s | |
-| `sensor.ios2ha_camera_last_still` | timestamp | When the last still was made. Changes once per still and at no other time, so it is the trigger for a timelapse automation on either integration path (see [OPERATIONS.md](OPERATIONS.md)) |
+| `sensor.ios2ha_camera_last_still` | timestamp | When the capture for the last still started — also the time in its archive file name. It changes once per still, when the still is published, which at night is minutes later; so it is the trigger for a timelapse automation on either integration path (see [OPERATIONS.md](OPERATIONS.md)), but do not test how recent it is |
 | `sensor.ios2ha_camera_effective_exposure_required` / `_achieved` | s | Depth ÷ frame rate. An upper bound until auto-exposure has hit its limit |
 | `sensor.ios2ha_camera_wb_gain_r/g/b` | | The gains actually applied |
 | `sensor.ios2ha_camera_black_level_applied_r/g/b` | | The black level actually applied — the measured value with the override switch off, the three numbers with it on. This is the pair to read when asking "is my override in effect?" |
