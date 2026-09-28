@@ -113,52 +113,45 @@ Worked example, starting from a released ``2.6.0``:
    * ``tests/test_version.py``'s ``test_version_is_semver`` requires
      ``pyproject.toml``'s version to match ``\d+\.\d+\.\d+`` exactly — no
      suffix is accepted. Bumping ``pyproject.toml`` to a pre-release string such
-     as ``2.7.0-alpha`` fails that test outright, and that test suite runs as
-     part of the ``ci`` job that ``auto-release.yml`` uses as its own release
-     gate.
-   * Even set that test aside, both release paths compare the version
-     literally: ``auto-release.yml``'s ``compute`` job requires
-     ``pyproject.toml`` to already equal the computed version character for
-     character, and ``release.yml`` requires a hand-pushed tag to equal ``v`` +
-     ``pyproject.toml``'s version the same way. Neither check can pass a
-     pre-release string while the value it is compared against is constrained
-     to a plain ``X.Y.Z``.
+     as ``2.7.0-alpha`` fails that test outright, and the test suite gates every
+     release.
+   * Even set that test aside, the release compares the version literally: it
+     requires ``pyproject.toml`` to already equal the computed version character
+     for character, and cannot pass a pre-release string while that value is
+     constrained to a plain ``X.Y.Z``.
 
    So until ``test_version_is_semver`` is loosened to accept a pre-release
    suffix, a ``+:pre`` / ``+:prepre`` / ``+:rc`` directive is a correct
    computation with nowhere to land — it will never produce a tag or a
-   published Release through either path described below.
+   published Release.
 
 How a release happens
 ----------------------
 
-Release automation is switched on. ``.github/workflows/auto-release.yml`` runs
-on every push to ``main``, which in practice means every ``develop`` → ``main``
-merge:
+Release automation is switched on. The ``ghtools`` workflow
+(``.github/workflows/ghtools.yml``, which runs the shared
+`ghtools <https://github.com/will-roscoe/.ghtools>`__ pipeline configured in
+``.github/ghtools.toml``) runs on every push to ``main``, which in practice
+means every ``develop`` → ``main`` merge:
 
 #. It runs the full CI suite as a gate — lint, both supported Python versions,
-   and the container image build — against the exact commit being considered.
-   Nothing is tagged unless all of it passes.
+   the container image build and the docs build — against the exact commit
+   being considered. Nothing is tagged unless all of it passes.
 #. It reads every Conventional Commit message since the last ``v*`` tag and
-   works out the next version with
-   ``.github/scripts/compute_next_version.py`` (the rules above are exactly
-   what that script applies).
+   works out the next version (``ghtools version next``; the rules above are
+   exactly what it applies).
 #. If those commits release nothing — all ``chore`` / ``docs`` / ``style`` /
    ``refactor`` / ``build`` / ``ci`` / ``test``, and no override directive —
    the run ends having tagged nothing.
 #. If a release is implied, it checks that ``pyproject.toml`` already declares
    that exact version. If it does, it tags ``vX.Y.Z`` and publishes a GitHub
-   Release through ``.github/workflows/release.yml``. If it does not — a
-   forgotten bump — the run fails loudly instead of publishing a tag that
-   disagrees with what the running container reports.
+   Release. If it does not — a forgotten bump — the run fails loudly instead of
+   publishing a tag that disagrees with what the running container reports.
 
 The workflow can also be run by hand from the Actions tab, with a ``dry-run``
 input (on by default) that computes and prints the next version without
 tagging anything, so a merge's effect can be previewed before it happens.
-
-Pushing a ``v*`` tag by hand goes into the same ``release.yml`` a different
-way, and is refused if the tag is not on ``main`` or does not match
-``pyproject.toml``.
+Tags pushed by hand are not released; releases come only from ``main``.
 
 The version number itself is still a manual, human decision: it is bumped by
 hand in ``pyproject.toml`` alongside a matching ``CHANGELOG.md`` heading.

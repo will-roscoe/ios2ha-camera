@@ -1,7 +1,11 @@
 # ios2ha-camera
 
-[![CI](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml)
-[![Docs](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml/badge.svg)](https://github.com/will-roscoe/ios2ha-camera/actions/workflows/ghtools.yml)
+<!-- ghtools:sync status START — generated from the status branch, do not edit here -->
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/ghtools-status/status.svg" alt="will-roscoe/ios2ha-camera status" width="900">
+
+<!-- ghtools:sync status END -->
+
 ![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20discovery-41BDF5?logo=homeassistant&logoColor=white)
 
