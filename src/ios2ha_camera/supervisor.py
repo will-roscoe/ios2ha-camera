@@ -40,6 +40,16 @@ from .upstream import CAPTURE_OPEN_TIMEOUT_S
 # ~9.5 MB of PNG into ~260 KB.
 SCREENSHOT_JPEG_QUALITY = 90
 
+# A lens reading this close to the target is already there: GetStatus reports in
+# 1/255 steps (0.682352901 is 174/255), so an exact comparison would move a lens
+# that is already where it was asked to be.
+FOCUS_TOLERANCE = 0.005
+# Tries at the phone's focus before giving up until the next session. The app
+# needs up to a second after being foregrounded before it answers again
+# (measured: the stream resumes 0.9-1.1 s after the foreground call returns).
+FOCUS_ATTEMPTS = 3
+FOCUS_RETRY_S = 1.0
+
 log = logging.getLogger(__name__)
 
 
@@ -119,6 +129,10 @@ def _terminate_self():
     os.kill(os.getpid(), signal.SIGTERM)
 
 
+class _FocusRejected(Exception):
+    """The phone answered and refused: retrying at once would be refused again."""
+
+
 def _dark_noise(rgb):
     """Noise and signal-to-noise in the darkest tenth of the finished still.
 
@@ -144,7 +158,7 @@ class Supervisor:
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
                  starter=None, keyboard=None, opener=None, rebooter=None,
-                 emergency=None):
+                 emergency=None, store=None, sleep=time.sleep):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -164,6 +178,10 @@ class Supervisor:
         self._device_busy = set()
         self._device_again = {}
         self.s = settings
+        # Where control values are kept across restarts; None keeps them in
+        # memory only, which is what every test that does not ask for it gets.
+        self.store = store
+        self._sleep = sleep
         # Reads the switch and both thresholds live, because all three are Home
         # Assistant controls that can change between one capture and the next.
         self.backgrounding = BackgroundingPolicy(
@@ -458,6 +476,7 @@ class Supervisor:
         raw = measure.luminance_percentiles(mean, np.zeros(3), (0.5, 99.5))
 
         self.publish_state({
+            "last_still": datetime.fromtimestamp(now, tz=UTC).isoformat(),
             "depth_used": used,
             "depth_required": required,
             "subject_level": round(subject, 2),
@@ -526,23 +545,8 @@ class Supervisor:
                     raise RuntimeError("the rebooter is not configured")
                 # manual=True: overrides the switch, the budget and the latch.
                 self._submit(name, lambda: self.rebooter.attempt(True))
-            elif name == "autofocus":
-                try:
-                    # The same coercion the other four boolean controls get via
-                    # Settings.apply_control -- a bare bool(value) here turned
-                    # any non-empty, non-JSON string (e.g. "off") into True,
-                    # exactly backwards. Validated before _submit, not inside
-                    # _autofocus, so a rejected value never reaches the device
-                    # executor: no ONVIF round trip, no time on the single
-                    # device worker.
-                    on = _coerce_bool(value)
-                except ValueError as e:
-                    log.warning("rejected control %s: %s", name, e)
-                    self.publish_state({name: getattr(self.s, name, None)})
-                    return
-                # A value, not a press: a second write is a different request,
-                # and only the last one matters.
-                self._submit(name, lambda: self._autofocus(on), latest_wins=True)
+            elif name in ("autofocus", "focus_position"):
+                self._set_focus(name, value)
             else:
                 self._apply_setting(name, value)
         except Exception:
@@ -566,6 +570,7 @@ class Supervisor:
         # inside a tuple and are coerced on the way in.
         stored = self._stored(name)
         log.info("control %s = %r", name, stored)
+        self._persist()
         self.publish_state({name: stored})
 
     def _stored(self, name):
@@ -719,17 +724,112 @@ class Supervisor:
         steps = self.phone.prepare(launch=True)
         self._event({"ts": time.time(), "control": "prepare_phone", "steps": steps})
 
-    def _autofocus(self, on):
+    def _persist(self):
+        if self.store is not None:
+            self.store.save(self.s)
+
+    def _set_focus(self, name, value):
+        """A write to either focus control: store it, then bring the phone in line.
+
+        The value written is what the camera should do, and it stays in force
+        whether or not the phone can hear it now. At night the app spends most of
+        its time backgrounded, where it answers nothing, and a write that was
+        undone because the phone was asleep was indistinguishable from one that
+        never took. So the setting is kept and persisted, and applied now if the
+        phone answers, or at the start of the next session if it does not --
+        where it is also re-checked, because a relaunched app comes back on
+        autofocus whatever it was told before.
+        """
         try:
-            if self.onvif is not None and not self.onvif.set_autofocus("AUTO" if on else "MANUAL"):
-                raise RuntimeError("the camera rejected the autofocus change")
-        except Exception:
-            # Home Assistant shows a switch as flipped as soon as it sends the
-            # command, so the real state has to be pushed back.
-            self.publish_state({"autofocus": self.s.autofocus})
-            raise
-        self.s.apply_control("autofocus", on)
-        self.publish_state({"autofocus": self.s.autofocus})
+            if name == "autofocus":
+                self.s.apply_control("autofocus", _coerce_bool(value))
+            else:
+                position = float(value)
+                if not 0.0 <= position <= 1.0:
+                    raise ValueError(f"focus_position must be between 0 and 1, not {value!r}")
+                self.s.apply_control("focus_position", position)
+                # Writing a position means "focus there", which autofocus would
+                # immediately undo -- the same way writing a black-level channel
+                # switches the override on.
+                self.s.apply_control("autofocus", False)
+        except (TypeError, ValueError) as e:
+            # Rejected before anything reaches the device worker: a bad value
+            # must not cost an ONVIF round trip or time on the single worker.
+            log.warning("rejected control %s: %s", name, e)
+            self.publish_state({name: getattr(self.s, name, None)})
+            return
+        log.info("control autofocus = %r, focus_position = %r",
+                 self.s.autofocus, self.s.focus_position)
+        self._persist()
+        self.publish_state({"autofocus": self.s.autofocus,
+                            "focus_position": self.s.focus_position})
+        # latest_wins: a value, not a press. Writes arriving while one is being
+        # applied collapse into one follow-up, which reads the settings as they
+        # are by then -- so the last value asked for is the one the phone gets.
+        self._submit("focus", self._apply_focus, latest_wins=True)
+
+    def _apply_focus(self):
+        """Make the phone's focus match the settings. Runs on the device worker.
+
+        Retries briefly, because this runs straight after the app is woken for a
+        session and the app takes up to a second to answer. A phone that still
+        does not answer is left for the next session, which tries again; that is
+        reported as an event, never raised.
+        """
+        if self.onvif is None:
+            return
+        for attempt in range(FOCUS_ATTEMPTS):
+            try:
+                self._apply_focus_once()
+                return
+            except _FocusRejected as e:
+                log.warning("focus: %s", e)
+                self._event({"ts": time.time(), "control": "focus", "error": str(e)})
+                return
+            except Exception as e:
+                error = f"{type(e).__name__}: {e}"
+                if attempt + 1 < FOCUS_ATTEMPTS:
+                    self._sleep(FOCUS_RETRY_S)
+        log.info("focus: the phone did not answer (%s); will apply at the next session", error)
+        self._event({"ts": time.time(), "control": "focus", "error": error})
+
+    def _apply_focus_once(self):
+        mode = self.onvif.get_autofocus()
+        if self.s.autofocus:
+            if mode != "AUTO" and not self.onvif.set_autofocus("AUTO"):
+                raise _FocusRejected("the camera rejected autofocus")
+            return
+        if mode != "MANUAL" and not self.onvif.set_autofocus("MANUAL"):
+            raise _FocusRejected("the camera rejected manual focus")
+        target = self.s.focus_position
+        position = self.onvif.focus_position()
+        if position is not None and abs(position - target) < FOCUS_TOLERANCE:
+            return
+        if not self.onvif.move_focus(target):
+            raise _FocusRejected(f"the camera rejected moving the lens to {target}")
+        log.info("focus: lens moved from %s to %s", position, target)
+
+    def _follow_autofocus(self):
+        """While autofocus is on, keep focus_position at where it put the lens.
+
+        So that switching autofocus off holds the lens about where it was, which
+        is what that switch always meant, and so the number shows a person what
+        autofocus chose -- in daylight, where it focuses well, that is the value
+        worth keeping for the night. Read as a session ends rather than as it
+        starts: autofocus has had the whole capture to settle by then.
+        """
+        if self.onvif is None or not self.s.autofocus:
+            return
+        try:
+            position = self.onvif.focus_position()
+        except Exception as e:
+            log.info("focus: could not read the lens position: %s: %s", type(e).__name__, e)
+            return
+        if position is None or abs(position - self.s.focus_position) < FOCUS_TOLERANCE:
+            return
+        self.s.apply_control("focus_position", round(position, 3))
+        self._persist()
+        self.publish_state({"focus_position": self.s.focus_position})
 
     # -- health -------------------------------------------------------------
 
@@ -906,8 +1006,15 @@ class Supervisor:
         # queued ahead of it may put it to sleep before this runs. When it
         # finds nothing to wake it costs no phone call.
         self._device_executor.submit(self.backgrounding.on_session_open)
+        # After the wake-up, on the same worker, so the app is listening. Every
+        # session, not only after a write: a relaunched app comes back on
+        # autofocus, and this is what puts it back.
+        self._submit("focus", self._apply_focus, latest_wins=True)
 
     def on_session_close(self):
+        # Before any background, which is queued behind it: the app must still
+        # be awake to answer.
+        self._device_executor.submit(self._follow_autofocus)
         if self.backgrounding.active:
             self._device_executor.submit(self._background_if_still_closed)
 

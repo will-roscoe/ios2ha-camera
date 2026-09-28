@@ -260,7 +260,16 @@ place: if the thumbnail route held the phone, it would never go idle.
 ### `onvif.py`
 A small WS-Security SOAP client. The `/onvif/*` services need UsernameToken PasswordDigest —
 `base64(sha1(nonce + created + password))` — while the media endpoints take plain HTTP Basic. Only
-focus **mode** is exposed, because it is the only imaging control proven to do anything.
+focus is exposed — the mode and an absolute lens position read back with `GetStatus` — because it is
+the only imaging control proven to do anything. The supervisor treats focus as a setting to keep,
+not a command to send once: it is checked against the phone at the start of every session and put
+back if it has drifted, because the app starts on autofocus every time it is relaunched.
+
+### `control_store.py`
+Keeps the control values Home Assistant writes in `CONTROLS_FILE`, so a restart does not reset them —
+and every phone reboot restarts the service, through the usbmuxd hook. Only control names are read
+back, each through `Settings.apply_control`, the validation a live write gets, so the file cannot
+reach a deployment setting. Written beside and renamed over, so a crash mid-write keeps the old file.
 
 ### `phone.py`
 pymobiledevice3 wrappers over the Lightning cable, written against the 11.x API, which is `async`

@@ -173,7 +173,7 @@ def test_every_sensor_says_what_its_reading_means():
     # cable_state joins these as an enum: like stream_state it names a condition
     # rather than measuring a quantity, so it takes neither a unit nor a
     # state_class.
-    not_a_measurement = {"stream_state", "last_frame", "holders", "cable_state",
+    not_a_measurement = {"stream_state", "last_frame", "last_still", "holders", "cable_state",
                          # How the last attempt to press Start streaming went,
                          # and how the last attempt to open the app went: both
                          # conditions, like the enums above them.

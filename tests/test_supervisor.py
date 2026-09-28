@@ -59,14 +59,41 @@ class FakeArchive:
 
 
 class FakeOnvif:
-    def __init__(self, result=True):
+    """The phone's imaging service: a focus mode and a lens position.
+
+    `result` is what a change answers -- True, False for a refusal -- or an
+    exception every call raises, which is a phone that does not answer.
+    """
+
+    def __init__(self, result=True, mode="AUTO", position=0.68):
         self.result = result
+        self.mode, self.position = mode, position
         self.calls = []
+
+    def _answer(self):
+        if isinstance(self.result, Exception):
+            raise self.result
+
+    def get_autofocus(self):
+        self._answer()
+        return self.mode
 
     def set_autofocus(self, mode):
         self.calls.append(mode)
-        if isinstance(self.result, Exception):
-            raise self.result
+        self._answer()
+        if self.result:
+            self.mode = mode
+        return self.result
+
+    def focus_position(self):
+        self._answer()
+        return self.position
+
+    def move_focus(self, position):
+        self.calls.append(("move", position))
+        self._answer()
+        if self.result:
+            self.position = position
         return self.result
 
 
@@ -130,6 +157,8 @@ def _sup(settings=None, buf=None, mqtt=None, archive=None, **kw):
     s = settings or Settings()
     # Inline unless a test wants to watch what was queued rather than run it.
     executor = kw.pop("device_executor", None) or Inline()
+    # The focus retries wait a second between tries; a test has no phone to wait for.
+    kw.setdefault("sleep", lambda s: None)
     return Supervisor(s, buf or RingBuffer(5_000_000), mqtt or FakeMqtt(),
                       archive or FakeArchive(), device_executor=executor, **kw)
 
@@ -366,13 +395,33 @@ def test_a_failing_device_control_never_raises_into_the_mqtt_thread():
     assert "TimeoutError" in sup.mqtt.events[-1]["error"]
 
 
-def test_autofocus_republishes_the_real_state_when_the_camera_rejects_it():
+def test_a_focus_change_the_phone_refuses_is_reported_and_kept():
+    """The setting is what the camera should do. A refusal is reported, and the
+    next session tries again rather than the switch flipping back."""
     s = Settings()
     s.autofocus = True
     sup = _sup(s, onvif=FakeOnvif(result=False))
     sup.handle_control("autofocus", False)
-    assert s.autofocus is True, "a rejected write must not change the setting"
-    assert sup.mqtt.published["autofocus"] is True, "Home Assistant must be corrected back"
+    assert s.autofocus is False
+    assert sup.mqtt.published["autofocus"] is False
+    assert "rejected" in sup.mqtt.events[-1]["error"]
+
+
+def test_a_focus_change_made_while_the_phone_sleeps_lands_at_the_next_session():
+    """Measured 2026-09-28 18:51: autofocus written while the app was
+    backgrounded was refused and flipped back, and at night the app is
+    backgrounded most of the time. The write must survive until the phone can
+    hear it."""
+    s = Settings()
+    s.autofocus = True
+    onvif = FakeOnvif(result=ConnectionRefusedError(111, "Connection refused"))
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("autofocus", False)
+    assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
+
+    onvif.result = True                 # the next capture wakes the app
+    sup.on_session_open()
+    assert onvif.mode == "MANUAL"
 
 
 def test_autofocus_success_applies_and_publishes():
@@ -381,7 +430,7 @@ def test_autofocus_success_applies_and_publishes():
     onvif = FakeOnvif(result=True)
     sup = _sup(s, onvif=onvif)
     sup.handle_control("autofocus", False)
-    assert onvif.calls == ["MANUAL"]
+    assert onvif.mode == "MANUAL"
     assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
 
 
@@ -396,7 +445,7 @@ def test_autofocus_coerces_a_conventional_string_spelling_like_the_other_control
     onvif = FakeOnvif(result=True)
     sup = _sup(s, onvif=onvif)
     sup.handle_control("autofocus", "off")
-    assert onvif.calls == ["MANUAL"]
+    assert onvif.mode == "MANUAL"
     assert s.autofocus is False and sup.mqtt.published["autofocus"] is False
 
 
@@ -805,10 +854,12 @@ def test_autofocus_changed_while_a_change_is_running_ends_on_the_last_request():
     # The follow-up is submitted as the first finishes, so shutting the worker
     # down any earlier would refuse it.
     deadline = time.monotonic() + 5
-    while len(onvif.calls) < 2 and time.monotonic() < deadline:
+    while "focus" in sup._device_busy and time.monotonic() < deadline:
         time.sleep(0.01)
     ex.shutdown(wait=True)
-    assert onvif.calls == ["MANUAL", "MANUAL"]
+    # The first run set MANUAL and moved the lens; the one follow-up found the
+    # phone already where the last write wanted it and changed nothing.
+    assert onvif.calls == ["MANUAL", ("move", 1.0)]
     assert sup.s.autofocus is False
     assert sup.current_state()["autofocus"] is False
 
@@ -1406,3 +1457,132 @@ def test_a_failed_capture_is_logged_not_only_published(caplog):
         sup.produce_still(now_fps=12.0)
     assert any("still failed" in r.getMessage() and "no frames: backgrounded" in r.getMessage()
                for r in caplog.records)
+
+
+# -- focus position, and keeping controls across restarts ----------------------
+
+def test_writing_a_focus_position_moves_the_lens_and_holds_it():
+    s = Settings()
+    onvif = FakeOnvif(mode="AUTO", position=0.68)
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("focus_position", 0.8)
+    assert onvif.mode == "MANUAL" and onvif.position == 0.8
+    assert s.autofocus is False and s.focus_position == 0.8
+    assert sup.mqtt.published["autofocus"] is False
+    assert sup.mqtt.published["focus_position"] == 0.8
+
+
+@pytest.mark.parametrize("bad", [1.5, -0.1, "far", None])
+def test_a_focus_position_outside_the_lens_travel_is_refused(bad):
+    s = Settings()
+    onvif = FakeOnvif()
+    sup = _sup(s, onvif=onvif)
+    sup.handle_control("focus_position", bad)
+    assert onvif.calls == []
+    assert s.focus_position == 1.0 and s.autofocus is True
+    assert sup.mqtt.published["focus_position"] == 1.0
+
+
+def test_every_session_puts_a_relaunched_app_back_on_the_held_focus():
+    """A relaunched app -- after every phone reboot -- comes back on autofocus,
+    whatever it was told before."""
+    s = Settings()
+    s.autofocus, s.focus_position = False, 0.8
+    onvif = FakeOnvif(mode="AUTO", position=0.68)
+    sup = _sup(s, onvif=onvif)
+    sup.on_session_open()
+    assert onvif.mode == "MANUAL" and onvif.position == 0.8
+
+
+def test_a_session_with_focus_already_right_changes_nothing():
+    """Every capture opens a session; a phone already in line costs two reads."""
+    s = Settings()
+    s.autofocus, s.focus_position = False, 0.8
+    onvif = FakeOnvif(mode="MANUAL", position=0.80392158)   # 205/255, as the phone reports
+    sup = _sup(s, onvif=onvif)
+    sup.on_session_open()
+    assert onvif.calls == []
+
+
+def test_a_phone_slow_to_wake_is_retried():
+    s = Settings()
+    s.autofocus = False
+    onvif = FakeOnvif(result=ConnectionRefusedError(111, "Connection refused"))
+    waits = []
+
+    def wait(seconds):
+        waits.append(seconds)
+        onvif.result = True             # awake by the second try
+
+    sup = _sup(s, onvif=onvif, sleep=wait)
+    sup.on_session_open()
+    assert waits == [1.0]
+    assert onvif.mode == "MANUAL"
+
+
+def test_while_autofocus_is_on_the_position_follows_it():
+    s = Settings()
+    onvif = FakeOnvif(mode="AUTO", position=0.803921)
+    sup = _sup(s, onvif=onvif)
+    sup.on_session_close()
+    assert s.focus_position == 0.804
+    assert sup.mqtt.published["focus_position"] == 0.804
+
+
+def test_a_held_position_is_never_overwritten_by_a_reading():
+    s = Settings()
+    s.autofocus, s.focus_position = False, 0.8
+    onvif = FakeOnvif(mode="AUTO", position=0.68)      # relaunched, not yet corrected
+    sup = _sup(s, onvif=onvif)
+    sup.on_session_close()
+    assert s.focus_position == 0.8
+
+
+class FakeStore:
+    def __init__(self):
+        self.saved = []
+
+    def save(self, settings):
+        self.saved.append({"night_key": settings.night_key, "autofocus": settings.autofocus,
+                           "focus_position": settings.focus_position})
+        return True
+
+
+def test_a_control_write_is_kept_for_the_next_start():
+    store = FakeStore()
+    sup = _sup(store=store, onvif=FakeOnvif())
+    sup.handle_control("night_key", 0.05)
+    sup.handle_control("autofocus", False)
+    assert store.saved[0]["night_key"] == 0.05
+    assert store.saved[-1]["autofocus"] is False
+
+
+def test_a_rejected_control_write_is_not_kept():
+    store = FakeStore()
+    sup = _sup(store=store, onvif=FakeOnvif())
+    sup.handle_control("stacking_mode", "sideways")
+    sup.handle_control("autofocus", "banana")
+    assert store.saved == []
+
+
+def test_a_still_publishes_when_it_was_made():
+    """The trigger a timelapse automation needs, on both integration paths."""
+    s = Settings()
+    s.stacking_mode, s.fixed_depth = "fixed", 5
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 10)
+    mq = FakeMqtt()
+    sup = _sup(s, buf, mq)
+    now = time.time()
+    sup.produce_still(now_fps=12.0, now=now)
+    from datetime import datetime
+    assert datetime.fromisoformat(mq.published["last_still"]).timestamp() == pytest.approx(now)
+
+
+def test_a_failed_still_does_not_move_last_still():
+    buf = RingBuffer(5_000_000)
+    _fill(buf, 20, now=time.time() - 600)
+    mq = FakeMqtt()
+    sup = _sup(buf=buf, mqtt=mq)
+    sup.produce_still(now_fps=12.0)
+    assert "last_still" not in mq.published
