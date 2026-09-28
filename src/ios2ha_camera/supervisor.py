@@ -48,6 +48,8 @@ FOCUS_TOLERANCE = 0.005
 # needs up to a second after being foregrounded before it answers again
 # (measured: the stream resumes 0.9-1.1 s after the foreground call returns).
 FOCUS_ATTEMPTS = 3
+# How far the lens is nudged away before being driven to its held position.
+FOCUS_NUDGE = 0.03
 FOCUS_RETRY_S = 1.0
 
 # A flat field is gathered like a still, but at a fixed depth: the grain it records
@@ -874,12 +876,15 @@ class Supervisor:
         if mode != "MANUAL" and not self.onvif.set_autofocus("MANUAL"):
             raise _FocusRejected("the camera rejected manual focus")
         target = self.s.focus_position
-        position = self.onvif.focus_position()
-        if position is not None and abs(position - target) < FOCUS_TOLERANCE:
-            return
-        if not self.onvif.move_focus(target):
-            raise _FocusRejected(f"the camera rejected moving the lens to {target}")
-        log.info("focus: lens moved from %s to %s", position, target)
+        # Never trusted, the phone's reported position: measured 2026-09-28, after
+        # the app's capture session restarted it reported MANUAL at 0.804 while the
+        # lens sat elsewhere, and the stills went soft. So every session drives the
+        # lens -- away and back, because a move to where the phone believes it
+        # already is may do nothing at all.
+        nudge = target + FOCUS_NUDGE if target + FOCUS_NUDGE <= 1.0 else target - FOCUS_NUDGE
+        for position in (round(nudge, 3), target):
+            if not self.onvif.move_focus(position):
+                raise _FocusRejected(f"the camera rejected moving the lens to {position}")
 
     def _follow_autofocus(self):
         """While autofocus is on, keep focus_position at where it put the lens.
