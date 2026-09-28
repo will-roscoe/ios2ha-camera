@@ -221,7 +221,11 @@ class Supervisor:
         # The colour a picked region is held to at night, or None when off.
         self.colour = colour
         self._colour_state = "ready" if getattr(colour, "ready", False) else "none"
-        self._last_black = None
+        # The last still as it was rendered: (linear stack, black level, night
+        # weight, white-balance gains), set together once it is made, so Set colour
+        # reference on another thread never pairs one still's stack with another's
+        # weight, and records the colour a person saw rather than the stack under it.
+        self._last_render = None
         # The service's own focus runs; see run_focus.
         self._focus_requested = False
         # The lens has one owner at a time: a focus run holds this for its whole
@@ -522,10 +526,10 @@ class Supervisor:
             stacked, scales, smoothing = self.flat.correct(stacked, weight)
             if scales is not None:
                 black, gains = render.calibration(stacked, self.s)
-        self._last_black = black
         gains = self._colour_gains(stacked, black, gains, weight)
         rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
                             smoothing=smoothing)
+        self._last_render = (stacked, black, weight, np.asarray(gains, dtype=np.float64))
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
         self.mqtt.publish_still(jpeg)
@@ -1218,27 +1222,35 @@ class Supervisor:
         if self.s.white_balance != "reference":
             self._set_colour_state("ready" if self.colour.ready else "none")
             return gains
-        found, state = self.colour.gains(np.clip(stacked - black, 0, None))
+        if not weight > 0:
+            # Daylight: the phone's white balance has light to work with, and whether
+            # the view matches a night reference is not worth asking.
+            self._set_colour_state("ready" if self.colour.ready else "none")
+            return np.ones(3)
+        try:
+            found, state = self.colour.gains(np.clip(stacked - black, 0, None))
+        except Exception:
+            # Never worth the still: it goes out as the phone shot it.
+            log.exception("colour reference: could not be applied; this still is as shot")
+            return np.ones(3)
         if found is None:
             self._set_colour_state(state)
-            return np.ones(3)
-        if not weight > 0:
-            # Daylight: the phone's white balance has light to work with.
-            self._set_colour_state("ready")
             return np.ones(3)
         self._set_colour_state("applied")
         # Faded with the night render, so dusk eases into it.
         return 1 + weight * (np.asarray(found) - 1)
 
     def _set_colour_reference(self):
-        stacked, black, weight = self.last_stack, self._last_black, self._good_weight
-        if stacked is None or black is None:
+        if self._last_render is None:
             return self._set_colour_state("rejected_no_still")
-        if not weight or not weight > 0:
+        stacked, black, weight, gains = self._last_render
+        if not weight > 0:
             return self._set_colour_state("rejected_daylight")
         region = (self.s.colour_region_x0, self.s.colour_region_y0,
                   self.s.colour_region_x1, self.s.colour_region_y1)
-        reason = self.colour.record(np.clip(stacked - black, 0, None), region)
+        # With its gains: the colour approved is the one shown, which may already be
+        # corrected -- by this reference, or by another white balance mode.
+        reason = self.colour.record(np.clip(stacked - black, 0, None) * gains, region)
         if reason is not None:
             log.info("colour reference: refused, %s", reason.replace("_", " "))
             return self._set_colour_state(f"rejected_{reason}")

@@ -137,3 +137,58 @@ def test_a_look_alike_is_not_mistaken_for_the_region(tmp_path):
     want = np.median(img[140:250, x0:x0 + 30].reshape(-1, 3), axis=0)
     got = np.median((later * cast * gains)[140:250, x0:x0 + 30].reshape(-1, 3), axis=0)
     assert np.allclose(got / got[1], want / want[1], atol=0.05), (got / got[1], want / want[1])
+
+
+def _valid_bytes(tmp_path):
+    _recorded(tmp_path, _view())
+    return (tmp_path / "ref.npz").read_bytes()
+
+
+@pytest.mark.parametrize("damage", ["empty", "truncated", "garbage"])
+def test_a_damaged_file_is_not_fatal(tmp_path, damage):
+    """The service builds this at start: an exception here is a crash loop, and a
+    power cut during a first recording can leave the file empty."""
+    good = _valid_bytes(tmp_path)
+    path = tmp_path / "damaged.npz"
+    path.write_bytes({"empty": b"", "truncated": good[: len(good) // 2],
+                      "garbage": b"PK\x03\x04" + bytes(200)}[damage])
+    assert not ColourReference(str(path)).ready
+
+
+def test_a_file_missing_its_parts_is_not_used(tmp_path):
+    path = tmp_path / "partial.npz"
+    np.savez(path, colour=np.array([10.0, 10.0, 10.0]))
+    ref = ColourReference(str(path))
+    assert not ref.ready
+    assert ref.gains(_view()) == (None, "none")
+
+
+def test_a_region_gone_dark_is_not_corrected(tmp_path):
+    """Its light went out: the median of a black patch is noise, not a colour."""
+    img = _view()
+    ref = _recorded(tmp_path, img)
+    later = img.copy()
+    h, w = img.shape[:2]
+    later[int(REGION[1] * h):int(REGION[3] * h), int(REGION[0] * w):int(REGION[2] * w)] *= 0.002
+    gains, state = ref.gains(later)
+    assert gains is None
+    assert state == "region_too_dark"
+
+
+def test_a_region_without_one_colour_is_refused(tmp_path):
+    """A stored channel of zero would become a gain of zero."""
+    img = _view()
+    img[..., 2] = 0.0
+    ref = ColourReference(str(tmp_path / "ref.npz"))
+    assert ref.record(img, REGION) == "too_dark"
+
+
+def test_a_region_moved_out_of_the_frame_is_not_measured(tmp_path):
+    """Clamped to the frame's edge it would be a one-pixel strip of something else."""
+    img = _view()
+    edge = (0.065, 0.55, 0.10, 0.80)             # the leftmost building's edge
+    ref = _recorded(tmp_path, img, edge)
+    moved = np.roll(img, -45, axis=1)            # the view slid left, 9% of the frame
+    gains, state = ref.gains(moved)
+    assert gains is None
+    assert state == "no_match"
