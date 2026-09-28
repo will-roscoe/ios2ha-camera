@@ -23,6 +23,41 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.14.0 — 2026-09-28
+
+**The sensor's fixed grain can be recorded once and subtracted.** Stacking removes only what changes
+from frame to frame, and at a night depth of ~600 frames the grain left in the dark sky was about 90%
+a pattern fixed to the sensor's pixels -- two independent half-stacks matched at 0.91 -- so no depth
+could touch it, and the smoothing that hid it painted the sky into blotches. Cover the lens with a
+tissue at night and press `button.ios2ha_camera_record_flat_field`: the pattern it records is
+subtracted from every night still at a scale fitted to that still, and the smoothing is lightened by
+the share of grain it removed. Measured on 2026-09-28: sky grain 0.92 against 0.99 before, with the
+detail the full smoothing used to soften. A covered-lens *dark* frame does not work -- iOS clips below
+black, and it matched at 0.07 -- which is why it has to be a dim, even glow. See OPERATIONS.md,
+"Removing the sensor's fixed grain". New: that button, `sensor.ios2ha_camera_flat_field`,
+`sensor.ios2ha_camera_flat_field_scale`, `switch.ios2ha_camera_flat_field_correction`, and
+`FLAT_FIELD_FILE`.
+
+Covering the lens throws the phone's white balance, and at night it cannot recover by itself: stills
+after the first recording were cyan (green/red 1.48 against 0.97) until the app was backgrounded and
+foregrounded, which cured it. Every recording attempt now ends with that cycle.
+
+**Night stills stack 7x faster.** The clipping passes run on the 8-bit integers the frames hold instead
+of float64, with an identical result. A 600-frame night stack took 250-775 s on the deployment host,
+and a dozen stills in a week overran the 10-minute interval and pushed the schedule back.
+
+**The reboot budget now holds.** Every phone reboot restarts this service, so the budget kept in memory
+was forgotten by the restart each reboot caused: nine reboots in a week, two of them 22 minutes apart.
+Reboot times are kept in `REBOOTS_FILE`, and the budget is now three a day, twenty minutes apart --
+the second of that pair is the one that cured the wedge. A reboot's check is no longer judged by the
+process the reboot is restarting, which reported "still wedged, giving up" twice while the phone was
+fine.
+
+The timelapse recipe in OPERATIONS.md no longer tests how recent `last_still` is: it is the capture's
+start time, and a night still takes minutes, so that test could never pass at night.
+
+Four new entities, so both interface versions stay at `1`.
+
 ## 2.13.0 — 2026-09-28
 
 A week of running unattended, reviewed, found four things wrong. All four are fixed here.
