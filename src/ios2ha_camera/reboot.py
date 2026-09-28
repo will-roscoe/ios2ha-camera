@@ -21,7 +21,9 @@ latches instead of repeating. The latch opens on evidence only: DVT seen working
 again, or a person pressing the button.
 """
 
+import json
 import logging
+import os
 import time
 
 log = logging.getLogger(__name__)
@@ -45,17 +47,51 @@ WEDGE_FOR_S = 900.0
 # measured 2026-09-22, DVT answered again within 90 s of the restart request.
 SETTLE_S = 120.0
 
-# Deliberately much tighter than the other guarded steps. A reboot interrupts
-# everything the phone is doing, and if two in a day have not fixed it, a third
-# will not either.
-#
-# The gap is six hours rather than twelve so that the daily cap is the binding
-# guard: at twelve, two gaps already exceed a day, so the cap could never fire
-# and only one of the two numbers would mean anything. Six lets a phone that
-# wedges, recovers and wedges again be rescued the same day while still holding
-# the hard ceiling of two.
-MIN_GAP_S = 21600.0      # 6 hours
-MAX_PER_DAY = 2
+# Will's ruling 2026-09-28, from a week of it running: three a day, twenty
+# minutes apart. The first budget, two a day six hours apart, never actually
+# held -- every reboot restarts this service, and each restart forgot it -- and
+# on 2026-09-27 two reboots ran 22 minutes apart, the second of which is what
+# cured the wedge. So the gap is short enough to allow exactly that, and the
+# daily cap is the guard against a loop: at most three reboots, whatever
+# happens. RebootHistory is what makes it hold across the restarts.
+MIN_GAP_S = 1200.0       # 20 minutes
+MAX_PER_DAY = 3
+
+
+class RebootHistory:
+    """When the phone was last rebooted, kept across restarts of this service.
+
+    Every phone reboot restarts the service a minute or so later, through the
+    usbmuxd hook, so a budget held only in memory is spent and then forgotten
+    by the very reboot it counted. Times are wall-clock seconds, which is why
+    the rebooter's clock is too. Never raises: a history that cannot be read
+    is an empty one, and one that cannot be written costs only the memory.
+    """
+
+    def __init__(self, path):
+        self.path = path
+
+    def load(self):
+        try:
+            with open(self.path) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as e:
+            log.warning("phone reboot: could not read %s, starting with no history: %s",
+                        self.path, e)
+            return []
+        times = data.get("reboots", []) if isinstance(data, dict) else []
+        return sorted(float(t) for t in times if isinstance(t, (int, float)))
+
+    def save(self, times):
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump({"reboots": list(times)}, f)
+            os.replace(tmp, self.path)
+        except OSError as e:
+            log.warning("phone reboot: could not save the history to %s: %s", self.path, e)
 
 
 class PhoneRebooter:
@@ -67,15 +103,18 @@ class PhoneRebooter:
     and `allowed()` is the pause switch.
     """
 
-    def __init__(self, reboot, probe, reachable, clock=time.monotonic,
-                 sleep=time.sleep, allowed=lambda: True):
+    def __init__(self, reboot, probe, reachable, clock=time.time,
+                 sleep=time.sleep, allowed=lambda: True, history=None):
         self._reboot = reboot
         self._probe = probe
         self._reachable = reachable
         self._clock = clock
         self._sleep = sleep
         self._allowed = allowed
-        self._reboots = []
+        # Wall-clock times, so that they still mean something to the next
+        # process: every reboot restarts this service.
+        self._history = history
+        self._reboots = history.load() if history is not None else []
         # When the current run of developer failures started, or None when DVT
         # is healthy. Time, not just a count: a burst of failures in one tick is
         # not the same fault as a channel that has been dead for a quarter hour.
@@ -141,6 +180,8 @@ class PhoneRebooter:
             return self._done("unavailable")
 
         self._reboots.append(now)
+        if self._history is not None:
+            self._history.save(self._reboots)
         self.state = "rebooting"
         log.warning("phone reboot: rebooting the phone to clear its wedged "
                     "developer services (failing for %.0f s)", self.wedged_for)
@@ -153,7 +194,16 @@ class PhoneRebooter:
                         type(e).__name__, e)
             return self._done("failed_reboot")
 
-        self._sleep(SETTLE_S)
+        # `sleep` is the service's stop event in production, which answers True
+        # when the service is stopping -- and the reboot itself restarts it,
+        # about a minute in, through the usbmuxd hook. Judging then is a dying
+        # process looking at a phone it can no longer see: on 2026-09-26 and 27
+        # it reported "still wedged" both times, and both times the phone was
+        # fine. The next start watches the developer channel and decides.
+        if self._sleep(SETTLE_S):
+            log.info("phone reboot: the service is restarting, as a phone reboot makes it "
+                     "do; the next start will see whether the developer channel is back")
+            return self.state
         if self._dvt_ok():
             log.info("phone reboot: the developer channel is back")
             self._wedged_since = None

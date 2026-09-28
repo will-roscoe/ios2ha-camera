@@ -426,7 +426,17 @@ minutes, after which the app is re-opened and streaming resumes unattended.
 So the supervisor now reboots the phone itself, on a deliberately narrow diagnosis: three or more
 consecutive developer failures, sustained for fifteen minutes, **and** plain lockdown still
 answering — that last one is what distinguishes a wedged developer channel from an unplugged cable,
-where a reboot would do nothing. At most two a day, six hours apart.
+where a reboot would do nothing. **At most three a day, at least twenty minutes apart**, kept in
+`REBOOTS_FILE` so the budget holds across restarts.
+
+That last part matters more than it looks: **every phone reboot restarts this service** about a
+minute later, because the phone dropping off USB restarts usbmuxd and the usbmuxd hook restarts the
+container. Until 2.14.0 each restart forgot the budget, and the week to 2026-09-28 saw nine reboots,
+two of them 22 minutes apart on the 27th — the second being the one that cured the wedge, which is
+why the gap is now twenty minutes rather than the six hours first set. The same restart also used to
+cut the post-reboot check short: the dying process logged "still wedged, giving up" on the 26th and
+27th while the phone was in fact fine. Now a reboot whose settle is interrupted by the service
+stopping gives no verdict, and the next start watches the developer channel instead.
 
 If a reboot does not clear it, the service **gives up rather than trying again**: the state latches
 at `given_up`, and only the developer channel working again — or the `button.ios2ha_camera_reboot_phone`
@@ -538,13 +548,15 @@ triggers:
   - trigger: state
     entity_id: sensor.ios2ha_camera_last_still
 conditions:
-  # A fresh still only. Checking freshness rather than refusing a change *from*
-  # unknown matters: after a restart the sensor starts unknown, and refusing that
-  # transition would drop the first still after every restart. It also refuses the
-  # old value the native component replays when it reloads.
+  # Every real still, and nothing else. A change from `unavailable` is the
+  # native component replaying the old value as it reloads, so it is refused; a
+  # change from `unknown` is the first still after the service restarted, so it
+  # is kept. Do not test how recent the timestamp is instead: it is when the
+  # capture *started*, and a night still takes minutes to stack.
   - condition: template
-    value_template: "{{ trigger.to_state.state not in ('unknown', 'unavailable')
-                        and (now() - as_datetime(trigger.to_state.state)).total_seconds() < 120 }}"
+    value_template: "{{ trigger.from_state is not none
+                        and trigger.from_state.state != 'unavailable'
+                        and trigger.to_state.state not in ('unknown', 'unavailable') }}"
 actions:
   - action: camera.snapshot
     target:

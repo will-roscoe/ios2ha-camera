@@ -20,7 +20,7 @@ from .live_stack import LiveStacker
 from .mqtt_io import MqttIO, NullMqttIO
 from .onvif import OnvifClient
 from .phone import PhoneManager
-from .reboot import PhoneRebooter
+from .reboot import PhoneRebooter, RebootHistory
 from .ring_buffer import RingBuffer
 from .settings import Settings, both_interfaces_off_message
 from .stream_start import StreamStarter
@@ -168,9 +168,16 @@ def main():
     # refused while plain lockdown still answers, and nothing in software
     # recovers it. `phone.battery` is the reachability check for exactly that
     # reason -- it is the one call that needs no developer image.
+    # Created here rather than beside the threads below: the rebooter waits on
+    # it, so a reboot's settle ends at once when the service stops -- which the
+    # reboot itself causes, through the usbmuxd hook -- instead of judging from
+    # a dying process.
+    stop = threading.Event()
     rebooter = PhoneRebooter(phone.reboot, phone.dvt_ok,
                              reachable=lambda: phone.battery() is not None,
-                             allowed=lambda: bool(getattr(s, "auto_reboot", True)))
+                             allowed=lambda: bool(getattr(s, "auto_reboot", True)),
+                             sleep=stop.wait,
+                             history=RebootHistory(s.reboots_file) if s.reboots_file else None)
     # Reached only when phone.background() has already failed, and only below
     # the floor: keys are blind where the cable reports what happened, so this
     # exists to keep the battery alive until a reboot restores the cable, not to
@@ -187,7 +194,6 @@ def main():
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 
-    stop = threading.Event()
     threads = [
         threading.Thread(target=sup.run_capture, args=(stop,), name="capture", daemon=True),
         threading.Thread(target=sup.run_health, args=(stop,), name="health", daemon=True),
