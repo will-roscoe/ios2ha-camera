@@ -1,6 +1,6 @@
 """Every entity this service publishes, declared once.
 
-These 86 records are the whole declaration. `mqtt_io` is one renderer over them,
+These records are the whole declaration. `mqtt_io` is one renderer over them,
 turning each into a Home Assistant discovery payload; it is not the only intended
 one, which is why the declaration is here rather than inside it. A Home Assistant
 custom component living in its own repository, on its own release cycle, needs the
@@ -33,7 +33,7 @@ from .stream_start import STREAM_START_STATES
 
 
 def device_info():
-    """The device all 86 entities hang off, declared once for both renderers.
+    """The device every entity hangs off, declared once for both renderers.
 
     MQTT repeats it inside every discovery payload and the API serves it from
     `/api/v1/info`, because a component built from the API has to describe the
@@ -183,6 +183,8 @@ _NUMBERS = [
             icon="mdi:circle-opacity"),
     _number("live_max_window_s", "Stacked feed window", lo=0.5, hi=15, step=0.5, unit="s",
             device_class="duration", icon="mdi:motion-outline"),
+    _number("focus_position", "Focus position", lo=0, hi=1, step=0.01,
+            icon="mdi:image-filter-center-focus-weak"),
 ]
 
 # The options are the vocabulary Settings.apply_control will accept; a select
@@ -262,6 +264,10 @@ _SENSORS = [
     # age that stays correct on its own.
     _sensor("last_frame", "Last frame", device_class="timestamp",
             category="diagnostic", icon="mdi:clock-outline"),
+    # Changes once per still and at no other time, which makes it the trigger a
+    # timelapse automation wants. The per-still MQTT event did that job, but it
+    # reaches nobody with MQTT off, and the JSON API carries no events at all.
+    _sensor("last_still", "Last still", device_class="timestamp", icon="mdi:camera-timer"),
     _sensor("depth_required", "Depth required before clamping", unit="frames",
             state_class="measurement", category="diagnostic", icon="mdi:layers-outline"),
     _sensor("capture_duration", "Capture duration", unit="s", device_class="duration",

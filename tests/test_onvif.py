@@ -2,8 +2,8 @@
 
 No network is touched here: get_autofocus/set_autofocus are exercised against
 fixed response strings by monkeypatching urllib.request.urlopen. Live calls
-against the real phone are verified in Task 15 -- reaching it from a test
-risks wedging the app.
+against the real phone are verified by hand, never from a test -- reaching it
+from a test risks wedging the app.
 """
 
 import base64
@@ -122,3 +122,50 @@ def test_request_uses_a_finite_short_timeout(monkeypatch):
     client = OnvifClient("192.168.1.11", 8080, "root", "secret")
     client.set_autofocus("AUTO")
     assert captured["timeout"] is not None and 0 < captured["timeout"] <= 15
+
+
+# Shapes as the phone answered them on 2026-09-28, trimmed to the parts read.
+GET_STATUS_RESPONSE = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+    b'<s:Body><timg:GetStatusResponse xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl">'
+    b'<timg:Status><tt:FocusStatus20 xmlns:tt="http://www.onvif.org/ver10/schema">'
+    b'<tt:Position>0.682352901</tt:Position><tt:MoveStatus>IDLE</tt:MoveStatus>'
+    b'</tt:FocusStatus20></timg:Status></timg:GetStatusResponse></s:Body></s:Envelope>'
+)
+
+MOVE_OK_RESPONSE = (
+    b'<?xml version="1.0" encoding="UTF-8"?>'
+    b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+    b'<s:Body><timg:MoveResponse xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"/>'
+    b'</s:Body></s:Envelope>'
+)
+
+
+def test_focus_position_reads_the_lens_position(monkeypatch):
+    captured = {}
+    _patch_urlopen(monkeypatch, GET_STATUS_RESPONSE, captured)
+    client = OnvifClient("192.168.1.11", 8080, "root", "secret")
+    assert client.focus_position() == 0.682352901
+    assert "GetStatus" in captured["req"].data.decode()
+
+
+def test_focus_position_is_none_when_the_answer_has_none(monkeypatch):
+    _patch_urlopen(monkeypatch, GET_NO_FOCUS_RESPONSE, {})
+    client = OnvifClient("192.168.1.11", 8080, "root", "secret")
+    assert client.focus_position() is None
+
+
+def test_move_focus_sends_an_absolute_move(monkeypatch):
+    captured = {}
+    _patch_urlopen(monkeypatch, MOVE_OK_RESPONSE, captured)
+    client = OnvifClient("192.168.1.11", 8080, "root", "secret")
+    assert client.move_focus(0.8) is True
+    body = captured["req"].data.decode()
+    assert "<Move " in body and "Absolute" in body and "<Position>0.8</Position>" in body
+
+
+def test_move_focus_false_on_fault(monkeypatch):
+    _patch_urlopen(monkeypatch, SET_FAULT_RESPONSE, {})
+    client = OnvifClient("192.168.1.11", 8080, "root", "secret")
+    assert client.move_focus(0.8) is False

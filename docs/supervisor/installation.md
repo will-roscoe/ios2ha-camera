@@ -25,11 +25,12 @@ without them, just without those extras:
   the auto-start keyboard described under "The USB cable and the Bluetooth
   keyboard are optional" below.
 
-Also worth knowing before you start: focus mode is the only imaging control that
-actually works on the tested app, and autofocus should be left on — manual focus
-makes sharpness worse, not better. There is nothing to configure here; it only
-matters if you go looking for an exposure or focus control and wonder why one
-isn't offered.
+Also worth knowing before you start: focus is the only imaging control that
+actually works on the tested app — its mode and a lens position. There is no
+exposure control; stacking stands in for it. If night stills look soft, check
+focus before anything else: autofocus at night, or through a window, can settle
+well off the scene. `focus_position` in the configuration reference explains how
+to find the right position in daylight and hold it.
 
 ## Docker Compose alongside other services
 

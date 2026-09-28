@@ -540,6 +540,28 @@
     "unique_id": "ios2ha_number_fixed_depth",
     "unit_of_measurement": "frames"
   },
+  "homeassistant/number/ios2ha/focus_position/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/focus_position",
+    "default_entity_id": "number.ios2ha_camera_focus_position",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:image-filter-center-focus-weak",
+    "max": 1,
+    "min": 0,
+    "mode": "box",
+    "name": "Focus position",
+    "state_topic": "ios2ha_camera/state/focus_position",
+    "step": 0.01,
+    "unique_id": "ios2ha_number_focus_position"
+  },
   "homeassistant/number/ios2ha/interval_s/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/interval_s",
@@ -1356,6 +1378,23 @@
     "name": "Last frame",
     "state_topic": "ios2ha_camera/state/last_frame",
     "unique_id": "ios2ha_sensor_last_frame"
+  },
+  "homeassistant/sensor/ios2ha/last_still/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_last_still",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "timestamp",
+    "icon": "mdi:camera-timer",
+    "name": "Last still",
+    "state_topic": "ios2ha_camera/state/last_still",
+    "unique_id": "ios2ha_sensor_last_still"
   },
   "homeassistant/sensor/ios2ha/live_fps/config": {
     "availability_topic": "ios2ha_camera/available",

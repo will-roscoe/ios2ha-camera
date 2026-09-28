@@ -170,6 +170,10 @@ tracebacks. A traceback means something genuinely unexpected.
 `depth N of M` shows the depth achieved against the depth asked for. They diverge when the buffer
 did not hold enough frames inside the capture window, and the MQTT event carries `short: true`.
 
+A still that could not be made is a warning, `still failed: <reason>` — most often
+`no frames: <stream state>`. Before 2.13.0 that reason went only into the MQTT event, so with MQTT
+off a camera that had stopped producing stills left no trace in the log at all.
+
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
@@ -521,6 +525,37 @@ docker compose up -d --force-recreate ios2ha-camera
 
 A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
+## A timelapse in Home Assistant
+
+The supervisor already keeps every still, under `ARCHIVE_DIR` by date and time. To also collect them
+in Home Assistant — for a dashboard, or to render a video there — trigger on
+`sensor.ios2ha_camera_last_still`, which changes once per still and at no other time, and works the
+same on both integration paths:
+
+```yaml
+alias: Timelapse
+triggers:
+  - trigger: state
+    entity_id: sensor.ios2ha_camera_last_still
+conditions:
+  # Not on the service starting up or reconnecting, when it goes to or from unknown.
+  - condition: template
+    value_template: "{{ trigger.from_state.state not in ('unknown', 'unavailable')
+                        and trigger.to_state.state not in ('unknown', 'unavailable') }}"
+actions:
+  - action: camera.snapshot
+    target:
+      entity_id: camera.ios2ha_camera_still
+    data:
+      filename: "/media/timelapse/{{ now().strftime('%Y%m%d-%H%M%S') }}.jpg"
+mode: queued
+```
+
+Do not trigger on the MQTT topic `ios2ha_camera/event` for this. It still carries one event per
+still, but only while MQTT is on: with `EXPOSE_MQTT=false`, as on the native component, nothing is
+published there and an automation waiting on it never fires. That is how a timelapse built on it
+stopped on 2026-09-18, the day this installation moved to the component, without a single error.
+
 ## What the phone will and will not do
 
 All measured on the device, not inferred. These are the constraints most of the design exists to
@@ -531,11 +566,16 @@ work around.
   why the offline alert names the fix in its message.
 - **The app binds to the IP it had at launch**, so the address must be fixed and the app restarted
   if it ever changes.
-- **Focus mode is the only imaging control that works — and `MANUAL` makes things worse.** Measured
-  with focus sharpness on a night scene: AUTO 59.7, MANUAL 19.4–23.1 whatever position is
-  commanded. The imaging service *advertises* absolute focus moves and **accepts them without a
-  SOAP fault**, but near and infinity produce the same sharpness, so the lens is not moving. Leave
-  autofocus on.
+- **Focus is the only imaging control that works, and both halves of it do: the mode and an
+  absolute lens position.** Measured 2026-09-28 on a night skyline through a window, averaging 40
+  frames per step and reading the position back with `GetStatus` each time: edge detail was 0.39 at
+  position 0.60, 0.88 at 0.68 (where night autofocus had put it), **4.4–4.7 at 0.78–0.82**, and
+  0.79 at 1.0. So the lens moves, 1.0 is the far end of its travel rather than infinity, and night
+  autofocus can sit well off the sharpest position. An earlier note here said MANUAL made things
+  worse and that absolute moves did nothing. That test commanded only near and 1.0, which on this
+  phone are two similar blurs, and scored them on a stacked night still whose sharpness figure is
+  mostly noise — so it looked like a lens that did not move. See `focus_position` in
+  [CONFIGURATION.md](CONFIGURATION.md) for holding focus.
 - **Brightness is accepted and ignored**, exposure is absent, and `SetVideoEncoderConfiguration`
   returns `ActionNotSupported`. Frame stacking is the substitute for exposure control.
 - **Never port-scan the phone or churn connections.** A full scan wedged a previous app until a
