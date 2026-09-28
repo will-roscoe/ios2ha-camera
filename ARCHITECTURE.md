@@ -265,6 +265,13 @@ the only imaging control proven to do anything. The supervisor treats focus as a
 not a command to send once: it is checked against the phone at the start of every session and put
 back if it has drifted, because the app starts on autofocus every time it is relaunched.
 
+### `focus.py`
+The service's own autofocus, as a pure search over a `measure(position)` callable: `score` is the
+edge energy of the most detailed quarter of an averaged half-size luma, border excluded; `search`
+probes 1.00 to 0.60 far to near, brackets the far-most peak within 10% of the best and golden-section
+refines it. The supervisor supplies `measure` -- move the lens over ONVIF, gather frames after it
+settles, average, score -- and runs it on the capture thread (`Supervisor.run_focus`).
+
 ### `flat.py`
 The sensor's fixed grain. `check` accepts only a recording that is lit above the black clamp, below
 white, and free of edges (so the uncovered view is refused); `pattern` is the fine texture at a
