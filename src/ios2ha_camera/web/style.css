@@ -13,7 +13,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 1rem; display: grid; gap: 1re
 .tab { border: 0; background: none; color: var(--muted); padding: .35rem .8rem; border-radius: 8px; cursor: pointer; text-transform: capitalize; }
 .tab.active { background: var(--bg); color: var(--fg); }
 #frame { position: relative; background: #000; min-height: 12rem; display: grid; place-items: center; }
-#picture { display: block; width: 100%; height: auto; }
+#picture { display: block; width: 100%; height: auto; color: #d2d2d7; text-align: center; }
 #picture:not([src]) { min-height: 12rem; }
 #start-stream { position: absolute; padding: .6rem 1rem; border-radius: 10px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
 .group { background: var(--card); border-radius: 12px; padding: .2rem .8rem; }

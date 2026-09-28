@@ -47,7 +47,8 @@ async function write(e, value, row) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     });
-    body = await r.json();
+    const text = await r.text();
+    try { body = JSON.parse(text); } catch { body = { ok: false, error: `HTTP ${r.status}` }; }
   } catch (err) {
     body = { ok: false, error: String(err) };
   }
@@ -60,8 +61,14 @@ async function write(e, value, row) {
   }
   // Accepted is not applied: the next state event for this key clears it.
   if (!e.state_key) { setTimeout(() => row.classList.remove("pending"), 800); return; }
-  clearTimeout(pending.get(e.state_key));
-  pending.set(e.state_key, setTimeout(() => row.classList.remove("pending"), 15000));
+  const key = e.state_key;
+  clearTimeout(pending.get(key));
+  // Never confirmed: show the camera's real value again, and say so.
+  pending.set(key, setTimeout(() => {
+    row.classList.remove("pending");
+    rows.get(key)?.update(values[key], true);
+    row.error.textContent = "Not confirmed by the camera; showing its current value.";
+  }, 15000));
 }
 
 // -- rendering ------------------------------------------------------------------
@@ -70,6 +77,7 @@ function relative(iso) {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return iso;
   const s = Math.round((Date.now() - t) / 1000);
+  if (s < 5) return "just now";     // also a clock a little ahead of this one
   if (s < 60) return `${s} s ago`;
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
@@ -146,6 +154,7 @@ function renderEntities() {
       if (e.state_key) {
         rows.set(e.state_key, {
           update(v, force) { c.update(v, force); row.classList.remove("pending"); },
+          row,
         });
         c.update(values[e.state_key]);
       }
@@ -162,8 +171,11 @@ let stillUrl = null;
 async function showSnapshot(m, img) {
   try {
     const r = await fetch(m.url, { cache: "no-store" });
+    if (activeMedia !== m) return;            // another view was chosen meanwhile
     if (!r.ok) { img.alt = `Not available yet (HTTP ${r.status})`; img.removeAttribute("src"); return; }
-    const url = URL.createObjectURL(await r.blob());
+    const blob = await r.blob();
+    if (activeMedia !== m) return;
+    const url = URL.createObjectURL(blob);
     if (stillUrl) URL.revokeObjectURL(stillUrl);
     stillUrl = url;
     img.src = url;
@@ -172,9 +184,20 @@ async function showSnapshot(m, img) {
   }
 }
 
+function showStart(m, verb) {
+  const img = document.getElementById("picture");
+  const start = document.getElementById("start-stream");
+  start.hidden = false;
+  start.textContent = m.holds_phone ? `${verb} (keeps the phone awake while it runs)` : verb;
+  start.onclick = () => { start.hidden = true; img.src = m.url; };
+}
+
 function stopStream() {
   const img = document.getElementById("picture");
-  if (activeMedia && activeMedia.kind === "stream") img.removeAttribute("src");   // closes the connection
+  if (activeMedia && activeMedia.kind === "stream" && img.getAttribute("src")) {
+    img.removeAttribute("src");                // closes the connection
+    showStart(activeMedia, "Resume");
+  }
 }
 
 function selectMedia(m) {
@@ -188,10 +211,7 @@ function selectMedia(m) {
     start.hidden = true;
     showSnapshot(m, img);
   } else {
-    start.hidden = false;
-    start.textContent = m.holds_phone
-      ? "Start (keeps the phone awake while it runs)" : "Start";
-    start.onclick = () => { start.hidden = true; img.src = m.url; };
+    showStart(m, "Start");
   }
 }
 
@@ -213,7 +233,8 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) stopS
 function apply(delta) {
   Object.assign(values, delta);
   for (const [k, v] of Object.entries(delta)) {
-    rows.get(k)?.update(v);
+    const r = rows.get(k);
+    if (r) { r.update(v); r.row.error.textContent = ""; }
     clearTimeout(pending.get(k));
   }
   if ("last_still" in delta && activeMedia && activeMedia.id === "still") {
@@ -233,16 +254,37 @@ function setConnected(on) {
   document.getElementById("conn").title = on ? "live" : "reconnecting";
 }
 
+let backoff = 1000;
+
+function reconnectLater() {
+  setTimeout(connect, backoff);
+  backoff = Math.min(backoff * 2, 30000);
+}
+
 function connect() {
   const es = new EventSource(routes.events);
-  es.addEventListener("open", () => setConnected(true));
-  es.addEventListener("error", () => setConnected(false));   // EventSource retries by itself
+  es.addEventListener("open", () => { setConnected(true); backoff = 1000; });
+  es.addEventListener("error", () => {
+    setConnected(false);
+    // EventSource retries a dropped connection by itself, but gives up for good
+    // on any answer but 200 -- a 503 while the service shuts down, a proxy's 502.
+    if (es.readyState === EventSource.CLOSED) reconnectLater();
+  });
   es.addEventListener("snapshot", async (ev) => {
     const d = JSON.parse(ev.data);
+    // Replaced at once, before anything awaits: a delta arriving while the
+    // objects reload must land on top of this snapshot, not under it.
     for (const k of Object.keys(values)) delete values[k];
-    if (d.objects_version !== objectsVersion) await loadObjects();
-    apply(d.state);
-    for (const [k, r] of rows) if (!(k in d.state)) r.update(undefined);
+    Object.assign(values, d.state);
+    if (d.objects_version !== objectsVersion) {
+      try {
+        await loadObjects();
+      } catch {
+        es.close(); setConnected(false); reconnectLater(); return;
+      }
+    }
+    for (const [k, r] of rows) r.update(values[k]);
+    if (activeMedia && activeMedia.id === "still") showSnapshot(activeMedia, document.getElementById("picture"));
   });
   es.addEventListener("state", (ev) => apply(JSON.parse(ev.data).state));
   es.addEventListener("objects_changed", () => loadObjects().then(() => apply({ ...values })));

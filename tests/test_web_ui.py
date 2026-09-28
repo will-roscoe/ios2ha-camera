@@ -11,7 +11,6 @@ import tomllib
 from importlib import resources
 from pathlib import Path
 
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from ios2ha_camera.api import INFO, ROUTES, make_api
@@ -55,11 +54,19 @@ def test_the_address_on_its_own_leads_to_the_page():
     assert headers["Location"] == "/ui/"
 
 
-def test_there_is_no_page_without_the_api():
-    """With EXPOSE_API off the API routes are never added, and neither is a page
-    whose every request would fail."""
-    (ui, _, _), (root, _, _) = _fetch(web.Application(), "/ui/", "/")
-    assert ui == 404 and root == 404
+def test_assets_are_revalidated_so_an_upgrade_is_not_hidden_by_a_cache():
+    """Without Cache-Control a browser keeps app.js for about a tenth of its age --
+    hours, after an upgrade -- while the page itself is never cached: new page, old
+    script. no-cache keeps the ETag round trip cheap."""
+    got = _fetch(make_api(dict, Settings()), "/ui/app.js", "/ui/style.css", "/ui/")
+    for status, headers, _ in got:
+        assert status == 200
+        assert headers.get("Cache-Control") in ("no-cache", "no-store"), headers
+
+
+def test_the_page_address_without_its_slash_leads_to_it():
+    status, headers, _ = _fetch(make_api(dict, Settings()), "/ui")
+    assert status in (301, 302, 307, 308) and headers["Location"] == "/ui/"
 
 
 def test_the_page_names_no_path_it_should_discover():
@@ -80,7 +87,7 @@ def test_the_page_never_parses_api_data_as_html():
 def test_the_page_ships_in_the_package():
     """The image installs the package with pip; files not declared as package data
     are left behind, and the page would 404 in production only."""
-    pyproject = tomllib.loads(Path("pyproject.toml").read_text())
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
     data = pyproject["tool"]["setuptools"]["package-data"]["ios2ha_camera"]
     assert "web/*" in data
     for name in ("index.html", "app.js", "style.css"):

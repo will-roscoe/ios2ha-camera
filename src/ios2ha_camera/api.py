@@ -331,18 +331,26 @@ def _add_page(app):
     """The control page, a client of this API like any other: served here so it
     exists exactly when the API does, and never with EXPOSE_API off.
 
-    The service's bare address leads to it, since nothing else answers there. The
-    page itself is static; everything it shows comes from the routes above.
+    Only its three files are served, by name, rather than a directory. Each goes out
+    with `no-cache`: the page must never run a script older than the service it talks
+    to, and without it a browser keeps app.js for a tenth of its age -- hours after
+    an upgrade. The ETag keeps revalidating cheap.
     """
+    files = {"": "index.html", "app.js": "app.js", "style.css": "style.css"}
+
     async def to_page(request):
         raise web.HTTPFound("/ui/")
 
-    async def page(request):
-        return web.FileResponse(_WEB / "index.html", headers=_NO_STORE)
+    async def page_file(request):
+        name = files.get(request.match_info.get("name", ""))
+        if name is None:
+            raise web.HTTPNotFound()
+        return web.FileResponse(_WEB / name, headers={"Cache-Control": "no-cache"})
 
     app.router.add_get("/", to_page)
-    app.router.add_get("/ui/", page)
-    app.router.add_static("/ui/", _WEB, append_version=False)
+    app.router.add_get("/ui", to_page)
+    app.router.add_get("/ui/", page_file)
+    app.router.add_get("/ui/{name}", page_file)
 
 
 def make_api(state, settings, on_control=lambda n, v: None, events=None):
