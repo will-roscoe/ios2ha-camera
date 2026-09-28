@@ -29,6 +29,7 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
 | `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
@@ -90,12 +91,21 @@ region — it is a percentile of the whole-frame luminance histogram after black
 Lower tracks the darkest parts and stacks harder; higher tracks midtones and stacks less. There is
 no spatial region selection.
 
-**"Control the focal point."** You cannot. Focus mode is the only imaging control that works, and
-**turning autofocus off makes things worse** — see [OPERATIONS.md](OPERATIONS.md#what-the-phone-will-and-will-not-do).
+**"The picture is soft at night."** Check focus before anything else. Autofocus at night, and
+through a window, can settle well away from the scene: measured on 2026-09-28 it sat at lens
+position 0.68 while the skyline was sharpest at 0.78–0.82, with about five times the edge detail.
+Find the right position in daylight, when autofocus gets it right: leave autofocus on and read
+**`focus_position`**, which follows the lens while autofocus is on. Then write that value back (or
+switch autofocus off) and the lens is held there, day and night, across restarts and app relaunches.
+Stacking and smoothing cannot put back detail the lens never resolved.
 
 ## Controls
 
 All are `entity_category: config`, so Home Assistant files them under Configuration.
+
+Since 2.13.0 every control keeps its value across a restart, in `CONTROLS_FILE`. Restarts are not
+rare: each phone reboot restarts the service, and before this every one of them put every control
+back to the default shown here.
 
 ### Numbers
 
@@ -113,6 +123,7 @@ All are `entity_category: config`, so Home Assistant files them under Configurat
 | `number.ios2ha_camera_stretch_strength` | Stretch strength | 1–60 step 1 | | `25.0` |
 | `number.ios2ha_camera_chroma_radius` | Chroma smoothing radius | 0–12 step 0.5 | px | `3.0` |
 | `number.ios2ha_camera_denoise_strength` | Denoise strength | 0–20 step 0.5 | | `3.0` |
+| `number.ios2ha_camera_focus_position` | Focus position | 0–1 step 0.01 | | `1.0`, then wherever autofocus puts the lens |
 | `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |
@@ -129,9 +140,17 @@ What the less obvious ones do:
   less. Depth is capped at `fps × window_max` regardless of `max_depth`.
 - **Ramp time constant** smooths depth across intervals. At the default 900 s, dusk raises depth
   over about fifteen minutes rather than jumping.
-- **Black level overrides** are blank until you set one, which means "estimate it per stack" — the
-  right default, because a fixed value tints the still (two runs measured 0.47/0.37/0.51 and
-  0.24/0.46/0.21). Blank is not zero; setting one to 0 pins it to zero.
+- **Black level override** is off by default, which means "estimate it per stack" — the right
+  default, because a fixed value tints the still (two runs measured 0.47/0.37/0.51 and
+  0.24/0.46/0.21). The three numbers only take effect while the switch is on, and writing one
+  switches it on.
+- **Focus position** is the lens position, 0 (near) to 1 (the far end of the lens's travel). 1 is
+  *not* infinity: on the phone measured, infinity was about 0.80 and 1.0 was as blurred as 0.6. While
+  autofocus is on, this follows where autofocus put the lens, read at the end of each capture. Writing
+  it moves the lens there and switches autofocus off; switching autofocus off holds the lens at the
+  value shown. Either way the phone is checked at the start of every capture and put back if it has
+  drifted — which it does after every app relaunch, because the app always starts on autofocus. A
+  change made while the app is asleep is kept and applied at the next capture, rather than refused.
 - **Denoise strength** is conservative on purpose: at higher strengths it sharpens text but paints
   flat areas into mottling.
 - **Background below / Resume above** are a hysteresis band, not two independent settings. The app
@@ -151,7 +170,7 @@ What the less obvious ones do:
 | `select.ios2ha_camera_white_balance` | `as-shot`, `grey-world`, `brightest-patch` | `as-shot` |
 | `select.ios2ha_camera_render_intent` | `natural`, `inspection` | `natural` |
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
-| `switch.ios2ha_camera_autofocus` | **Leave this on** | on |
+| `switch.ios2ha_camera_autofocus` | On: the phone focuses itself. Off: the lens is held at `focus_position`. See "The picture is soft at night" above for choosing | on |
 | `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
 | `switch.ios2ha_camera_backgrounding` | Allows the app to be backgrounded between captures when the battery is low, which is what lets the phone actually charge. Turning it off while the app is backgrounded foregrounds it immediately | on |
 
@@ -193,6 +212,7 @@ illuminance would need exposure and gain metadata the app does not provide.
 | `sensor.ios2ha_camera_depth_used` | frames | Frames actually stacked |
 | `sensor.ios2ha_camera_depth_required` | frames | Before clamping — shows when limits rather than light are setting depth |
 | `sensor.ios2ha_camera_capture_duration` | s | |
+| `sensor.ios2ha_camera_last_still` | timestamp | When the last still was made. Changes once per still and at no other time, so it is the trigger for a timelapse automation on either integration path (see [OPERATIONS.md](OPERATIONS.md)) |
 | `sensor.ios2ha_camera_effective_exposure_required` / `_achieved` | s | Depth ÷ frame rate. An upper bound until auto-exposure has hit its limit |
 | `sensor.ios2ha_camera_wb_gain_r/g/b` | | The gains actually applied |
 | `sensor.ios2ha_camera_black_level_applied_r/g/b` | | The black level actually applied — the measured value with the override switch off, the three numbers with it on. This is the pair to read when asking "is my override in effect?" |

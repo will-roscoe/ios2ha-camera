@@ -66,6 +66,11 @@ VIEWER_LINGER_S = 30.0  # keep the phone connection open this long after the las
 # kernel only wakes a paused writer once much of the send buffer has drained. The cost of the
 # longer wait is that a genuinely stalled viewer holds the phone for this plus the linger.
 WRITE_TIMEOUT_S = 30.0
+# How often a viewer with nothing to send checks whether it is still connected.
+# aiohttp does not wake a handler when its client goes, only the next write
+# finds out, so a viewer that left while no frames were coming would otherwise
+# keep its hold -- and the session it keeps open -- for as long as none came.
+IDLE_CHECK_S = 1.0
 
 
 def _offer(queue, frame):
@@ -156,7 +161,18 @@ def _stream_handler(clients, source, attach=None, detach=None):
                     _offer(queue, latest)
                 try:
                     while True:
-                        frame = await queue.get()
+                        try:
+                            frame = await asyncio.wait_for(queue.get(), IDLE_CHECK_S)
+                        except TimeoutError:
+                            # Nothing to send. Measured 2026-09-28: a viewer that
+                            # left while the app was backgrounded kept its hold,
+                            # the hold kept the session open, and an open session
+                            # is never woken -- so no frame ever came to reveal
+                            # that the viewer had gone.
+                            transport = request.transport
+                            if transport is None or transport.is_closing():
+                                break
+                            continue
                         # Bounded because this viewer holds the phone connection:
                         # aiohttp has no write timeout, so a client that stays
                         # connected but stops reading would hold it for good.

@@ -2,11 +2,19 @@
 
 The camera app's /onvif/* endpoints need a WS-Security UsernameToken digest in
 the SOAP header, not HTTP auth -- HTTP Basic only works on the media endpoints
-(/snapshot.jpg, /mjpeg). Autofocus mode is the only imaging control exposed
-here because it is the only one confirmed to change device behaviour:
-brightness is accepted and does nothing, exposure is absent, and
-SetVideoEncoderConfiguration answers ActionNotSupported. Measured against the
-real phone, not assumed from the ONVIF spec.
+(/snapshot.jpg, /mjpeg). Focus is the only imaging control exposed here because
+it is the only one confirmed to change device behaviour: brightness is accepted
+and does nothing, exposure is absent, and SetVideoEncoderConfiguration answers
+ActionNotSupported. Measured against the real phone, not assumed from the ONVIF
+spec.
+
+Focus is two controls: the mode (AUTO or MANUAL) and, in MANUAL, an absolute lens
+position from 0 to 1 that GetStatus reads back. Measured 2026-09-28 on a night
+skyline through a window: night autofocus sat at 0.68 and edge detail peaked at
+0.78-0.82, about five times what autofocus gave, while both 0.6 and 1.0 were
+badly out of focus. 1.0 is the far end of the lens's travel, not infinity -- an
+earlier test that commanded only the two ends saw two similar blurs and wrongly
+concluded the lens did not move.
 """
 
 import base64
@@ -53,6 +61,21 @@ class OnvifClient:
         r = self._soap('<GetImagingSettings xmlns="%s"><VideoSourceToken>%s</VideoSourceToken></GetImagingSettings>' % (IMG_NS, TOKEN))
         m = re.search(r"<\w*:?AutoFocusMode>([^<]+)<", r)
         return m.group(1) if m else "unknown"
+
+    def focus_position(self):
+        """The lens position the phone reports, 0 to 1, or None if it gives none."""
+        r = self._soap('<GetStatus xmlns="%s"><VideoSourceToken>%s</VideoSourceToken></GetStatus>'
+                       % (IMG_NS, TOKEN))
+        m = re.search(r"<\w*:?Position>([^<]+)<", r)
+        return float(m.group(1)) if m else None
+
+    def move_focus(self, position):
+        """Move the lens to an absolute position, 0 to 1. Only honoured in MANUAL."""
+        body = ('<Move xmlns="%s"><VideoSourceToken>%s</VideoSourceToken><Focus>'
+                '<Absolute xmlns="http://www.onvif.org/ver10/schema">'
+                '<Position>%s</Position><Speed>1</Speed></Absolute></Focus></Move>'
+                ) % (IMG_NS, TOKEN, position)
+        return "Fault" not in self._soap(body)
 
     def set_autofocus(self, mode):
         body = ('<SetImagingSettings xmlns="%s"><VideoSourceToken>%s</VideoSourceToken>'

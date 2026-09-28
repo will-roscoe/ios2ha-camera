@@ -10,6 +10,7 @@ from . import version
 from .api import INFO, add_api_routes
 from .app_open import AppOpener
 from .archive import Archive
+from .control_store import ControlStore
 from .emergency import EmergencyBackgrounder
 from .events import EventHub
 from .ingest import Ingestor
@@ -129,6 +130,10 @@ def main():
         format="%(asctime)s %(levelname)-7s %(name)s %(message)s",
     )
     s = Settings.from_env(os.environ)
+    # Before anything reads a control: every phone reboot restarts this service,
+    # and without it each restart put Home Assistant's settings back to defaults.
+    store = ControlStore(s.controls_file) if s.controls_file else None
+    restored = store.load(s) if store is not None else []
     buf = RingBuffer(int(os.environ.get("BUFFER_BYTES", 1 << 30)))
     archive = Archive(s.archive_dir)
     onvif = OnvifClient(s.phone_host, s.phone_port, s.phone_user, s.phone_password)
@@ -178,7 +183,7 @@ def main():
         allowed=lambda: bool(getattr(s, "emergency_keyboard", True)))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
                      starter=starter, keyboard=keyboard, opener=opener,
-                     rebooter=rebooter, emergency=emergency)
+                     rebooter=rebooter, emergency=emergency, store=store)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 
@@ -200,6 +205,9 @@ def main():
     log.info("ios2ha-camera %s, built %s", version.full(), version.BUILT)
     log.info("supervisor up: phone %s:%s, live view on :%s, interval %ss, archive %s",
              s.phone_host, s.phone_port, s.live_port, s.interval_s, s.archive_dir)
+    log.info("controls: %s", (f"restored {len(restored)} from {s.controls_file}" if restored
+                              else f"defaults, kept in {s.controls_file}" if store is not None
+                              else "defaults, not kept across restarts (CONTROLS_FILE is empty)"))
     _start_interfaces(s, sup, app, mqtt)
     for t in threads:
         t.start()

@@ -1,6 +1,6 @@
 """Every entity this service publishes, declared once.
 
-These 86 records are the whole declaration. `mqtt_io` is one renderer over them,
+These records are the whole declaration. `mqtt_io` is one renderer over them,
 turning each into a Home Assistant discovery payload; it is not the only intended
 one, which is why the declaration is here rather than inside it. A Home Assistant
 custom component living in its own repository, on its own release cycle, needs the
@@ -22,7 +22,7 @@ The two cameras carry `topic` instead of a state key: their payloads are the JPE
 PNG published to their own topics, not a value under `state/`.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import version
 from .app_open import APP_OPEN_STATES
@@ -33,7 +33,7 @@ from .stream_start import STREAM_START_STATES
 
 
 def device_info():
-    """The device all 86 entities hang off, declared once for both renderers.
+    """The device every entity hangs off, declared once for both renderers.
 
     MQTT repeats it inside every discovery payload and the API serves it from
     `/api/v1/info`, because a component built from the API has to describe the
@@ -79,6 +79,11 @@ class Entity:
     # The payload topic of a camera entity, relative to the MQTT prefix. Only the
     # cameras use it; everything else derives its topics from `object_id`.
     topic: str | None = None
+    # What the entity shows or controls, in plain words, for the generated entity
+    # reference in the docs. Filled from _DESCRIPTIONS below rather than passed
+    # to each helper, so the declarations above stay readable; a test holds every
+    # entity to having one. Not served by MQTT or the API: it is documentation.
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -183,6 +188,8 @@ _NUMBERS = [
             icon="mdi:circle-opacity"),
     _number("live_max_window_s", "Stacked feed window", lo=0.5, hi=15, step=0.5, unit="s",
             device_class="duration", icon="mdi:motion-outline"),
+    _number("focus_position", "Focus position", lo=0, hi=1, step=0.01,
+            icon="mdi:image-filter-center-focus-weak"),
 ]
 
 # The options are the vocabulary Settings.apply_control will accept; a select
@@ -262,6 +269,10 @@ _SENSORS = [
     # age that stays correct on its own.
     _sensor("last_frame", "Last frame", device_class="timestamp",
             category="diagnostic", icon="mdi:clock-outline"),
+    # Changes once per still and at no other time, which makes it the trigger a
+    # timelapse automation wants. The per-still MQTT event did that job, but it
+    # reaches nobody with MQTT off, and the JSON API carries no events at all.
+    _sensor("last_still", "Last still", device_class="timestamp", icon="mdi:camera-timer"),
     _sensor("depth_required", "Depth required before clamping", unit="frames",
             state_class="measurement", category="diagnostic", icon="mdi:layers-outline"),
     _sensor("capture_duration", "Capture duration", unit="s", device_class="duration",
@@ -394,10 +405,276 @@ _BINARY_SENSORS = [
     _binary("keyboard_connected", "Keyboard connected", "connectivity"),
 ]
 
+# What each entity shows or controls, keyed by (domain, object_id) because
+# `screenshot` is both a camera and a button. Written for someone looking at the
+# entity in Home Assistant and wondering what it is for.
+_DESCRIPTIONS = {
+    # -- cameras
+    ("camera", "still"):
+        "The latest stacked still, made every capture interval: many frames averaged into one, "
+        "then brightened for the dark. Served from memory, so viewing it never wakes the phone. "
+        "This is the device's main picture.",
+    ("camera", "screenshot"):
+        "The phone's screen, as the Phone screenshot button last captured it. Empty until the "
+        "button has been pressed since the service started.",
+    # -- numbers
+    ("number", "interval_s"):
+        "How often a still is made. Each one wakes the phone for as long as it takes to gather "
+        "its frames, so a shorter interval costs battery.",
+    ("number", "background_below_pct"):
+        "Battery level below which the camera app is sent to the background between captures, "
+        "so the phone can charge. The lower end of a band with Resume above.",
+    ("number", "resume_above_pct"):
+        "Battery level above which the app is left in the foreground again. Must be above "
+        "Background below, or backgrounding switches itself off and logs why.",
+    ("number", "fixed_depth"):
+        "Frames per still when Stacking mode is fixed.",
+    ("number", "target_level"):
+        "How bright the dark part of the scene should come out, 0-255. The service stacks "
+        "enough frames to reach it without the noise showing; frames needed rise with the "
+        "square of this, so doubling it quadruples capture time.",
+    ("number", "subject_percentile"):
+        "Which part of the picture counts as the subject for Target subject level: the darkest "
+        "this many per cent of pixels. Lower stacks harder for the shadows.",
+    ("number", "clean_factor"):
+        "How clean a still must be, as a multiplier on frames stacked. Raise for less grain at "
+        "the cost of longer captures.",
+    ("number", "max_depth"):
+        "The most frames any still may stack, whatever the light asks for.",
+    ("number", "window_max_s"):
+        "The longest a still may gather frames over. Keeps moving things from smearing and caps "
+        "how long each capture keeps the phone awake.",
+    ("number", "ramp_tau_s"):
+        "How gradually frames per still follow the light. At 900 s, dusk raises depth over about "
+        "fifteen minutes rather than all at once.",
+    ("number", "night_key"):
+        "How bright the night picture is rendered. Lower is darker and moodier and shows less "
+        "grain; higher lifts the shadows. Free to change: it only affects rendering.",
+    ("number", "stretch_strength"):
+        "How hard the inspection render stretches shadows. Only used when Render intent is "
+        "inspection.",
+    ("number", "chroma_radius"):
+        "How much colour speckle is smoothed away, in pixels. Blurs colour only, not detail, but "
+        "large values bleed colour across edges. Scaled down automatically in daylight.",
+    ("number", "denoise_strength"):
+        "How hard grain is smoothed after stacking. Higher is cleaner but softer, and paints flat "
+        "areas into blotches. Scaled down automatically in daylight.",
+    ("number", "emergency_below_pct"):
+        "Battery level below which the Bluetooth keyboard may press Home to background the app, "
+        "when the cable cannot. Emergency use only.",
+    ("number", "black_level_0"):
+        "Fixed red black level, used while Black level override is on. Writing it switches the "
+        "override on.",
+    ("number", "black_level_1"):
+        "Fixed green black level, used while Black level override is on. Writing it switches the "
+        "override on.",
+    ("number", "black_level_2"):
+        "Fixed blue black level, used while Black level override is on. Writing it switches the "
+        "override on.",
+    ("number", "live_max_window_s"):
+        "How many seconds of frames the stacked live feed blends together. Longer is cleaner but "
+        "smears movement.",
+    ("number", "focus_position"):
+        "Lens position, 0 (near) to 1 (far end of travel, which is past infinity). With "
+        "autofocus off the lens is held here, and put back at every capture; with it on, this "
+        "shows where autofocus put the lens. Writing it switches autofocus off.",
+    # -- selects
+    ("select", "stacking_mode"):
+        "auto stacks as many frames as the light needs; fixed always stacks Fixed depth; off "
+        "uses a single frame.",
+    ("select", "white_balance"):
+        "as-shot keeps the phone's colour; brightest-patch neutralises the brightest area; "
+        "grey-world assumes the scene averages to grey, which a mostly one-colour view defeats.",
+    ("select", "render_intent"):
+        "natural renders a night picture that looks like a photograph; inspection stretches the "
+        "shadows to read detail, and looks processed.",
+    # -- switches
+    ("switch", "stacking_allowed"):
+        "Off forces single-frame stills whatever Stacking mode says.",
+    ("switch", "autofocus"):
+        "On: the phone focuses itself. Off: the lens is held at Focus position. Night autofocus, "
+        "especially through glass, can settle well off the scene.",
+    ("switch", "on_demand"):
+        "On: the phone is connected only while capturing or while someone views a live feed. "
+        "Off: connected all the time, which drains the battery.",
+    ("switch", "backgrounding"):
+        "Allows the app to be backgrounded between captures when the battery falls into the "
+        "Background below / Resume above band. Off brings it back to the foreground.",
+    ("switch", "auto_start"):
+        "Allows the service to press Start streaming in the app itself, over the Bluetooth "
+        "keyboard, and to reopen the app after a phone restart.",
+    ("switch", "auto_reboot"):
+        "Allows the service to reboot the phone when its developer services have been wedged "
+        "for fifteen minutes. Turn off while investigating a wedge by hand.",
+    ("switch", "emergency_keyboard"):
+        "Allows the Bluetooth keyboard to background the app when the cable cannot and the "
+        "battery is below Emergency keyboard below.",
+    ("switch", "black_level_override_on"):
+        "On: use the three fixed Black level numbers. Off: measure the black level from each "
+        "still, which is almost always better.",
+    # -- buttons
+    ("button", "capture_now"):
+        "Makes a still now, without moving the schedule.",
+    ("button", "screenshot"):
+        "Takes a screenshot of the phone's screen, shown on the Screenshot camera. Useful for "
+        "seeing what the app is showing.",
+    ("button", "relaunch_app"):
+        "Relaunches the camera app over the cable. Streaming comes back off, so use it only for "
+        "a dead app.",
+    ("button", "prepare_phone"):
+        "Runs the phone set-up checks over the cable: connection, Developer Mode, developer "
+        "image, app launch. Reported as an event.",
+    ("button", "start_streaming"):
+        "Presses Start streaming in the app now, over the Bluetooth keyboard, ignoring the Auto "
+        "start switch and its rate limit. Still refuses unless the app is open and idle.",
+    ("button", "reboot_phone"):
+        "Reboots the phone now, ignoring the Auto reboot switch and its limits. The camera is "
+        "dark for about five minutes.",
+    # -- sensors
+    ("sensor", "stream_state"):
+        "What the camera is doing: unavailable (nothing answers), backgrounded (the app is "
+        "asleep), streaming_off (app open, Start streaming not pressed), stalled (the app's "
+        "picture has frozen), ready (idle and healthy), or streaming / capturing / in_use (frames "
+        "flowing, for nobody in particular / a still / a viewer).",
+    ("sensor", "cable_state"):
+        "The USB cable side: ok, no_device (unplugged, which is ordinary), or usbmuxd_down (the "
+        "host's USB daemon is unreachable: battery, app control and reboots are all dead).",
+    ("sensor", "subject_level"):
+        "How bright the subject was in the last still before rendering, 0-255. What the frames "
+        "per still are chosen from.",
+    ("sensor", "depth_used"):
+        "Frames stacked into the last still.",
+    ("sensor", "motion"):
+        "How much changed between the last two frames looked at. Near the noise level on a still "
+        "scene; higher with movement.",
+    ("sensor", "frame_rate"):
+        "Frames per second arriving from the phone while connected.",
+    ("sensor", "last_frame"):
+        "When the newest frame arrived from the phone.",
+    ("sensor", "last_still"):
+        "When the last still was made. Changes once per still and at no other time, so it is "
+        "the trigger for a timelapse automation.",
+    ("sensor", "depth_required"):
+        "Frames the light asked for before the limits applied. Far above Depth used means the "
+        "limits, not the light, are setting depth.",
+    ("sensor", "capture_duration"):
+        "How long the last still took from start to published, including stacking and "
+        "rendering. Above the capture interval, stills are being missed.",
+    ("sensor", "colour_temperature"):
+        "Estimated colour temperature of the brightest part of the last still, in kelvin.",
+    ("sensor", "effective_exposure_required"):
+        "The exposure the light asked for, as seconds of frames: Depth required over the frame "
+        "rate.",
+    ("sensor", "effective_exposure_achieved"):
+        "The exposure the last still actually got, as seconds of frames: Depth used over the "
+        "frame rate.",
+    ("sensor", "lum_mean"):
+        "Average brightness of the last still before rendering, 0-255 above black.",
+    ("sensor", "dynamic_range"):
+        "Ratio of the brightest to the darkest parts of the last still, before black-level "
+        "subtraction.",
+    ("sensor", "highlight_clip"):
+        "Share of the last still that is blown out to white in any colour.",
+    ("sensor", "noise"):
+        "Grain left in the darkest tenth of the finished still, after all smoothing.",
+    ("sensor", "snr"):
+        "Signal to noise in the darkest tenth of the finished still. Higher is cleaner.",
+    ("sensor", "focus_sharpness"):
+        "Edge detail in the last stacked still. Compare it at similar light only: at night it "
+        "rises with grain as well as with focus.",
+    ("sensor", "battery"):
+        "The phone's battery level, read over the cable every five minutes.",
+    ("sensor", "battery_temperature"):
+        "The phone's battery temperature.",
+    ("sensor", "archive_free_gb"):
+        "Free space where stills are archived. Archiving stops below 2 GB.",
+    ("sensor", "battery_current_ma"):
+        "Current into the battery; negative means it is losing charge even while plugged in. "
+        "The honest charging figure on a weak supply.",
+    ("sensor", "charger_watts"):
+        "What the phone reports its power supply can give.",
+    ("sensor", "battery_health_pct"):
+        "The battery's maximum capacity against when new.",
+    ("sensor", "stream_start"):
+        "How the last attempt to press Start streaming went, from idle through started to the "
+        "reasons it could not (see OPERATIONS.md).",
+    ("sensor", "app_open"):
+        "How the last attempt to open or bring forward the camera app went.",
+    ("sensor", "emergency_background"):
+        "How the last emergency keyboard backgrounding went. Anything but idle means the cable "
+        "could not background the app and the battery was low.",
+    ("sensor", "phone_reboot"):
+        "How the last automatic or manual phone reboot went: rebooting, recovered, still_wedged, "
+        "given_up and so on (see OPERATIONS.md).",
+    ("sensor", "phone_reboots"):
+        "Phone reboots in the last 24 hours, counted since the service last started.",
+    ("sensor", "stream_start_attempts"):
+        "Start streaming attempts in the last hour, against the rate limit.",
+    ("sensor", "dvt_failures"):
+        "Consecutive failures of the phone's developer services, which backgrounding and app "
+        "control need. Zero normally; a number that stays up is a wedge.",
+    ("sensor", "lum_p1"): "Brightness of the darkest 1% of the last still, 0-255 above black.",
+    ("sensor", "lum_p10"): "Brightness of the darkest 10% of the last still, 0-255 above black.",
+    ("sensor", "lum_p50"): "Median brightness of the last still, 0-255 above black.",
+    ("sensor", "lum_p90"): "Brightness below which 90% of the last still sits, 0-255 above black.",
+    ("sensor", "lum_p99"): "Brightness below which 99% of the last still sits, 0-255 above black.",
+    ("sensor", "wb_gain_r"): "Red gain the white balance applied to the last still. 1 is none.",
+    ("sensor", "wb_gain_g"): "Green gain the white balance applied to the last still. 1 is none.",
+    ("sensor", "wb_gain_b"): "Blue gain the white balance applied to the last still. 1 is none.",
+    ("sensor", "black_level_applied_r"):
+        "Red black level subtracted from the last still: measured, or the override while it is on.",
+    ("sensor", "black_level_applied_g"):
+        "Green black level subtracted from the last still: measured, or the override while it is "
+        "on.",
+    ("sensor", "black_level_applied_b"):
+        "Blue black level subtracted from the last still: measured, or the override while it is "
+        "on.",
+    ("sensor", "holders"):
+        "Who is keeping the phone connected right now: capture, viewer, either with (linger) "
+        "just after they finish, or none.",
+    ("sensor", "live_fps"):
+        "Frames per second the stacked live feed is producing, while someone watches it.",
+    ("sensor", "duty_1h"):
+        "Share of the last hour the phone was connected. About 10-12% from captures alone; much "
+        "more means something is holding it.",
+    ("sensor", "tick_age"):
+        "Seconds since the connection manager last checked in. Above 180 it has stalled and "
+        "every other reading is stale.",
+    # -- binary sensors
+    ("binary_sensor", "camera_online"):
+        "Whether the camera is working: frames recently, or idle and healthy, or deliberately "
+        "backgrounded to charge. What the offline alert watches.",
+    ("binary_sensor", "charging"):
+        "Whether the phone says it is charging. It can say so while still losing charge; see "
+        "Phone battery current.",
+    ("binary_sensor", "reachable_over_cable"):
+        "Whether the USB cable connection to the phone works.",
+    ("binary_sensor", "reachable_over_wifi"):
+        "Whether the phone answers on WiFi, even if the app is asleep.",
+    ("binary_sensor", "app_running"):
+        "Whether the camera app's process is alive, read over the cable. Separates an app that "
+        "is asleep from one iOS has killed.",
+    ("binary_sensor", "app_streaming"):
+        "Whether the app is open and willing to send frames.",
+    ("binary_sensor", "capturing_stills"):
+        "Whether a still is being captured right now.",
+    ("binary_sensor", "being_viewed"):
+        "Whether someone is watching a live feed right now, which keeps the phone connected.",
+    ("binary_sensor", "backgrounding_active"):
+        "Whether the battery saver is engaged, backgrounding the app between captures. The "
+        "Backgrounding switch only allows it.",
+    ("binary_sensor", "backgrounded_by_keyboard"):
+        "Whether the app was last backgrounded by the emergency keyboard rather than the cable.",
+    ("binary_sensor", "keyboard_connected"):
+        "Whether the phone is connected to the Bluetooth keyboard the service emulates. Needed "
+        "to press Start streaming; usually off because Bluetooth is off on the phone.",
+}
+
 # Declaration order is publication order, which is the order Home Assistant sees
 # on a reconnect: cameras first so the device's main feature is registered before
 # anything that could otherwise claim the device name.
-ENTITIES = tuple(_CAMERAS + _NUMBERS + _SELECTS + _SWITCHES + _BUTTONS
+ENTITIES = tuple(replace(e, description=_DESCRIPTIONS.get((e.domain, e.object_id), ""))
+                 for e in _CAMERAS + _NUMBERS + _SELECTS + _SWITCHES + _BUTTONS
                  + _SENSORS + _BINARY_SENSORS)
 
 

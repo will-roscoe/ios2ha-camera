@@ -15,7 +15,7 @@ CONTROLS = {
     "window_max_s", "ramp_tau_s", "black_level_override", "black_level_override_on",
     "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
-    "denoise_strength", "autofocus", "on_demand", "live_max_window_s",
+    "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -40,6 +40,7 @@ _ENV_MAP = {
     "LIVE_PORT": "live_port",
     "EXPOSE_MQTT": "expose_mqtt",
     "EXPOSE_API": "expose_api",
+    "CONTROLS_FILE": "controls_file",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -102,6 +103,10 @@ class Settings:
     mqtt_password: str = ""
     mqtt_prefix: str = "ios2ha_camera"
     archive_dir: str = "/data/archive"
+    # Where the control values Home Assistant writes are kept, so a restart --
+    # which every phone reboot causes, through the usbmuxd hook -- does not put
+    # them back to these defaults. Empty keeps them in memory only.
+    controls_file: str = "/data/controls.json"
     live_port: int = 8099
     # Which interfaces reach Home Assistant. Media routes are always served --
     # they are the camera -- so turning both off is a loud warning, not a
@@ -136,6 +141,11 @@ class Settings:
     chroma_radius: float = 3.0
     denoise_strength: float = 3.0
     autofocus: bool = True
+    # The lens position held while autofocus is off, 0 (near) to 1 (the far end
+    # of the lens's travel, which is past infinity on the phone measured). While
+    # autofocus is on it follows where autofocus put the lens, so switching
+    # autofocus off holds the lens about where it was; see Supervisor._apply_focus.
+    focus_position: float = 1.0
     on_demand: bool = True               # False keeps the connection open continuously
     live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
     # Backgrounding between captures. iOS suspends a backgrounded app's listening
