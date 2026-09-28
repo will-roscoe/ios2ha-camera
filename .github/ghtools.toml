@@ -25,8 +25,13 @@ pages = true                                 # actions/deploy-pages in workflows
 
 [status]
 enabled = true                               # ghtools publishes the status card to its own branch
+logo = ".github/logo.svg"                      # the card shows the project logo
 
 [[ci.gate]]
 name = "docs-secrets"
 run = "python .github/scripts/check_docs_secrets.py \"$(ghtools docs html-dir)\""
 after = "docs"
+
+[[readme.block]]
+name = "status"
+kind = "status"                              # the status card under the title
