@@ -23,6 +23,46 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.13.0 — 2026-09-28
+
+A week of running unattended, reviewed, found four things wrong. All four are fixed here.
+
+**The camera could go dark while every sensor said it was fine.** Seen live on 2026-09-28 from 18:55
+UTC: a viewer left and another arrived 0.2 s later, and the "sleep the app" queued for the first
+session ran under the second, which nothing would ever wake. A viewer that had left then kept its
+hold open, because with no frames arriving its handler never wrote and so never noticed, and that
+hold kept the session open. `camera_online` stayed true throughout, because the backgrounding looked
+deliberate, so no alert fired. Both halves are fixed: the session hooks now decide on the device
+worker when they run rather than when they are queued, and a viewer with nothing to send checks its
+connection every second. A still that cannot be made is now logged as `still failed: <reason>`;
+before, with MQTT off, it left no trace.
+
+**Controls now survive a restart.** Every phone reboot restarts the service, nine times in the week
+reviewed, and each restart put every control back to its default: autofocus switched off at 22:22 on
+the 24th was back on at 14:20 on the 25th. Values are kept in `CONTROLS_FILE`, default
+`/data/controls.json` inside the existing data volume, so nothing needs changing in compose.
+
+**Focus can be held where it is sharp.** New `number.ios2ha_camera_focus_position`. A night sweep
+read the lens position back at every step: autofocus had settled at 0.68, where edge detail scored
+0.88, against 4.4–4.7 at 0.78–0.82 — the difference between a soft blur and a building whose
+windows resolve. With autofocus off the lens is held at `focus_position` and put back at the start of
+every capture, because the app starts on autofocus every time it is relaunched; with autofocus on the
+number shows where autofocus put the lens, which in daylight is the value worth keeping. A change
+made while the app is asleep is kept and applied at the next capture, instead of being refused and
+flipped back. The documentation that said manual focus made things worse was wrong and is corrected:
+that test commanded only the two ends of the lens's travel, which on this phone are two similar
+blurs.
+
+**`sensor.ios2ha_camera_last_still` is the timelapse trigger.** It changes once per still and at no
+other time. A timelapse automation triggered by the MQTT topic `ios2ha_camera/event` stopped on
+2026-09-18, the day this installation moved to the native component with MQTT off: nothing is
+published there any more, and the JSON API carries no events. OPERATIONS.md has an automation that
+works on both integration paths.
+
+The generated entity reference now says what every entity shows or controls.
+
+Two new entities, so both interface versions stay at `1`.
+
 ## 2.12.0 — 2026-09-22
 
 **The black level override now has a switch**, so the three numbers always carry a value.
