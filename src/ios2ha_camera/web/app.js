@@ -17,6 +17,7 @@ let deviceName = "Camera";
 const values = {};            // state key -> value
 const rows = new Map();       // state key -> {update(value)}
 const pending = new Map();    // state key -> timer
+const heard = new Map();      // state key -> when its last state event arrived
 
 function $(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
@@ -39,6 +40,7 @@ async function getJSON(path) {
 // -- writes ---------------------------------------------------------------------
 
 async function write(e, value, row) {
+  const sent = performance.now();
   row.classList.add("pending");
   row.error.textContent = "";
   let body;
@@ -63,6 +65,9 @@ async function write(e, value, row) {
   if (!e.state_key) { setTimeout(() => row.classList.remove("pending"), 800); return; }
   const key = e.state_key;
   clearTimeout(pending.get(key));
+  // The camera echoes a write as soon as it is stored, and that event can beat
+  // this response here: then it is already confirmed.
+  if ((heard.get(key) ?? -1) >= sent) { row.classList.remove("pending"); return; }
   // Never confirmed: show the camera's real value again, and say so.
   pending.set(key, setTimeout(() => {
     row.classList.remove("pending");
@@ -309,7 +314,10 @@ function dragBox(ev) {
 async function writeRegion(box) {
   const tools = document.getElementById("region-tools");
   for (const [i, k] of REGION_KEYS.entries()) {
-    await write(entity("number", k), Math.round(box[i] * 1000) / 1000, tools);
+    const e = entity("number", k), value = Math.round(box[i] * 1000) / 1000;
+    // An unchanged value brings no state event, so it would never be confirmed.
+    if (values[e.state_key] === value) continue;
+    await write(e, value, tools);
     if (tools.error.textContent) { drawRegion(); return; }   // refused: stop there
   }
   tools.classList.remove("pending");
@@ -361,7 +369,9 @@ function bindPicker() {
 
 function apply(delta) {
   Object.assign(values, delta);
+  const now = performance.now();
   for (const [k, v] of Object.entries(delta)) {
+    heard.set(k, now);
     const r = rows.get(k);
     if (r) { r.update(v); r.row.error.textContent = ""; }
     clearTimeout(pending.get(k));
