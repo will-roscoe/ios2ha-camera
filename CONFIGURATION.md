@@ -129,6 +129,10 @@ back to the default shown here.
 | `number.ios2ha_camera_chroma_radius` | Chroma smoothing radius | 0–12 step 0.5 | px | `3.0` |
 | `number.ios2ha_camera_denoise_strength` | Denoise strength | 0–20 step 0.5 | | `3.0` |
 | `number.ios2ha_camera_focus_position` | Focus position | 0–1 step 0.01 | | `1.0`, then wherever autofocus puts the lens |
+| `number.ios2ha_camera_colour_region_x0` | Colour region left | 0–1 step 0.001 | | `0.35` |
+| `number.ios2ha_camera_colour_region_y0` | Colour region top | 0–1 step 0.001 | | `0.35` |
+| `number.ios2ha_camera_colour_region_x1` | Colour region right | 0–1 step 0.001 | | `0.65` |
+| `number.ios2ha_camera_colour_region_y1` | Colour region bottom | 0–1 step 0.001 | | `0.65` |
 | `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |
