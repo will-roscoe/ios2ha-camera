@@ -353,11 +353,17 @@ class Supervisor:
         is the silent failure this service exists to end.
         """
         try:
-            return self._produce_still(now_fps, now)
+            event = self._produce_still(now_fps, now)
         except Exception as e:
             log.exception("capture failed")
             return self._event({"ts": time.time() if now is None else now,
                                 "error": f"{type(e).__name__}: {e}"})
+        # The event only reaches MQTT, and with MQTT off it reaches nobody: on
+        # 2026-09-28 a capture that found no frames left the log silent for as
+        # long as the camera stayed dark.
+        if event.get("error"):
+            log.warning("still failed: %s", event["error"])
+        return event
 
     def _produce_still(self, now_fps=None, now=None):
         now = time.time() if now is None else now
@@ -889,13 +895,30 @@ class Supervisor:
     # already serialises MQTT-driven device actions, so two phone calls can never
     # overlap on the cable.
 
+    # Both hooks decide on the worker, when the action runs, never here when it
+    # is queued. Measured 2026-09-28: a viewer left and another arrived 0.2 s
+    # later. The close queued a background; the open, asking here whether the
+    # app was backgrounded, was told "not yet" and queued nothing; then the
+    # background ran under the new session, which nothing would ever wake.
+
     def on_session_open(self):
-        if self.backgrounding.backgrounded:
-            self._device_executor.submit(self.backgrounding.on_session_open)
+        # Always queued, even when the app is awake now: a background already
+        # queued ahead of it may put it to sleep before this runs. When it
+        # finds nothing to wake it costs no phone call.
+        self._device_executor.submit(self.backgrounding.on_session_open)
 
     def on_session_close(self):
         if self.backgrounding.active:
-            self._device_executor.submit(self.backgrounding.on_session_close)
+            self._device_executor.submit(self._background_if_still_closed)
+
+    def _background_if_still_closed(self):
+        # The worker may reach this long after the session closed. A session
+        # open again by then has frames to fetch, and sleeping the app under it
+        # would leave it dark.
+        if self.upstream is not None and self.upstream.session_start_ts() is not None:
+            log.info("not backgrounding: a session opened again before the worker got to it")
+            return
+        self.backgrounding.on_session_close()
 
     def _boolean_state(self, state, held):
         """The independent axes behind `stream_state`, as plain booleans.

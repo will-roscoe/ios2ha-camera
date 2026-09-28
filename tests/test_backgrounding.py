@@ -419,3 +419,101 @@ class _StubUpstream:
 
     def session_start_ts(self):
         return None
+
+
+class Deferred:
+    """The device worker when it is busy: work queues, and runs only when told,
+    in order, as the single real worker thread runs it."""
+
+    def __init__(self):
+        self.queue = []
+
+    def submit(self, fn, *a):
+        self.queue.append((fn, a))
+
+    def run_all(self):
+        while self.queue:
+            fn, a = self.queue.pop(0)
+            fn(*a)
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        pass
+
+
+class SessionUpstream:
+    """Just enough Upstream for the session hooks: whether one is open now."""
+
+    def __init__(self):
+        self.opened_at = None
+
+    def session_start_ts(self):
+        return self.opened_at
+
+
+def _racing_sup(phone):
+    from tests.test_supervisor import FakeArchive, FakeMqtt
+
+    from ios2ha_camera.ring_buffer import RingBuffer
+    from ios2ha_camera.settings import Settings
+    from ios2ha_camera.supervisor import Supervisor
+    ex, up = Deferred(), SessionUpstream()
+    sup = Supervisor(Settings(), RingBuffer(1 << 20), FakeMqtt(), FakeArchive(),
+                     phone=phone, upstream=up, device_executor=ex)
+    return sup, ex, up
+
+
+def test_a_session_reopened_before_the_background_runs_leaves_the_app_awake():
+    """Seen live on 2026-09-28 at 18:55:13: a viewer left, and 0.2 s later
+    another arrived. The close queued a background; the open, finding the app
+    not yet backgrounded, queued nothing; then the background ran -- under an
+    open session that nothing would ever wake again."""
+    phone = BatteryPhone(30)
+    sup, ex, up = _racing_sup(phone)
+    sup.phone_state()
+    phone.calls.clear()
+
+    up.opened_at = None
+    sup.on_session_close()          # queued behind whatever the worker is doing
+    up.opened_at = 1000.0
+    sup.on_session_open()           # a new viewer, before the worker gets there
+    ex.run_all()
+
+    assert sup.backgrounding.backgrounded is False
+    assert phone.calls in ([], ["background", "foreground"])
+
+
+def test_a_session_that_opens_while_the_background_runs_is_woken():
+    """The other half of the same race: the session opens after the worker has
+    decided to background but before the call finishes. The open's wake-up
+    must still be queued, and decided when it runs."""
+    phone = BatteryPhone(30)
+    sup, ex, up = _racing_sup(phone)
+    sup.phone_state()
+    phone.calls.clear()
+
+    real_background = phone.background
+
+    def background_then_open():
+        real_background()
+        up.opened_at = 1000.0
+        sup.on_session_open()       # Upstream's tick, while the call was in flight
+        return True
+    phone.background = background_then_open
+
+    sup.on_session_close()
+    ex.run_all()
+
+    assert phone.calls == ["background", "foreground"]
+    assert sup.backgrounding.backgrounded is False
+
+
+def test_a_closed_session_is_still_backgrounded():
+    """The fix must not stop the saving itself."""
+    phone = BatteryPhone(30)
+    sup, ex, up = _racing_sup(phone)
+    sup.phone_state()
+    phone.calls.clear()
+    sup.on_session_close()
+    ex.run_all()
+    assert phone.calls == ["background"]
+    assert sup.backgrounding.backgrounded is True
