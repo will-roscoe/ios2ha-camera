@@ -50,6 +50,15 @@ FOCUS_TOLERANCE = 0.005
 FOCUS_ATTEMPTS = 3
 FOCUS_RETRY_S = 1.0
 
+# A flat field is gathered like a still, but at a fixed depth: the grain it records
+# is at the level of the stills, so it needs about as many frames to rise above
+# the frame-to-frame noise. 600 frames is ~45 s at the phone's 13.9 fps.
+FLAT_FRAMES = 600
+FLAT_WINDOW_S = 90.0
+FLAT_MIN_FRAMES = 100
+# How long the app stays in the background when restarting its capture session.
+WB_RESET_PAUSE_S = 5.0
+
 log = logging.getLogger(__name__)
 
 
@@ -158,7 +167,7 @@ class Supervisor:
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
                  starter=None, keyboard=None, opener=None, rebooter=None,
-                 emergency=None, store=None, sleep=time.sleep):
+                 emergency=None, store=None, sleep=time.sleep, flat=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -182,6 +191,10 @@ class Supervisor:
         # memory only, which is what every test that does not ask for it gets.
         self.store = store
         self._sleep = sleep
+        # The sensor's recorded fixed grain, or None when the feature is off.
+        self.flat = flat
+        self._flat_state = "ready" if getattr(flat, "ready", False) else "none"
+        self._flat_requested = False
         # Reads the switch and both thresholds live, because all three are Home
         # Assistant controls that can change between one capture and the next.
         self.backgrounding = BackgroundingPolicy(
@@ -456,7 +469,15 @@ class Supervisor:
         # already drives depth -- one number, two consumers, so they cannot
         # disagree about how much brightening the scene needs.
         weight = render.night_weight(subject, self.s.target_level)
-        rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight)
+        # Before the black level is read, so it is measured on the corrected
+        # stack; the pattern has no mean of its own, so it barely moves it.
+        scales, smoothing = None, 1.0
+        if self.flat is not None and self.s.flat_field_correction:
+            stacked, scales, smoothing = self.flat.correct(stacked, weight)
+            if scales is not None:
+                black, gains = render.calibration(stacked, self.s)
+        rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
+                            smoothing=smoothing)
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
         self.mqtt.publish_still(jpeg)
@@ -477,6 +498,8 @@ class Supervisor:
 
         self.publish_state({
             "last_still": datetime.fromtimestamp(now, tz=UTC).isoformat(),
+            "flat_field_scale": (round(sum(scales) / len(scales), 2)
+                                 if scales is not None else 0.0),
             "depth_used": used,
             "depth_required": required,
             "subject_level": round(subject, 2),
@@ -540,6 +563,13 @@ class Supervisor:
                 # manual=True: a person asking overrides the pause switch and
                 # the rate limit, though never the guards around the keys.
                 self._submit(name, lambda: self.starter.attempt(True))
+            elif name == "record_flat_field":
+                if self.flat is None:
+                    raise RuntimeError("the flat field is switched off (FLAT_FIELD_FILE is empty)")
+                # On the capture thread, like a still: it takes the same hold
+                # and must never gather frames alongside one.
+                self._flat_requested = True
+                self.capture_requested.set()
             elif name == "reboot_phone":
                 if self.rebooter is None:
                     raise RuntimeError("the rebooter is not configured")
@@ -900,6 +930,7 @@ class Supervisor:
         d["keyboard_connected"] = bool(self.keyboard is not None and self.keyboard.connected())
         d["app_open"] = self.opener.state if self.opener is not None else "idle"
         d["phone_reboot"] = self.rebooter.state if self.rebooter is not None else "idle"
+        d["flat_field"] = self._flat_state
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
@@ -1097,6 +1128,64 @@ class Supervisor:
             return False
         return True
 
+    # -- the flat field -----------------------------------------------------
+
+    def record_flat_field(self, now=None):
+        """Gather a minute of frames and keep their fixed grain. See flat.py.
+
+        Only frames from after the press are used: the lens has to be covered
+        first, and a viewer's session may already hold frames of the view.
+        """
+        self._set_flat_state("recording")
+        now = time.time() if now is None else now
+        hold = (self.upstream.hold("capture") if self.upstream is not None
+                else contextlib.nullcontext())
+        with hold:
+            if self.upstream is not None:
+                floor = max(self.upstream.session_start_ts() or now, now)
+                self.upstream.wait_for_frames(FLAT_FRAMES, floor, FLAT_WINDOW_S)
+                frames = [f for f in self.buffer.recent(FLAT_FRAMES) if f.ts >= floor]
+            else:
+                frames = [f for f in self.buffer.recent(FLAT_FRAMES) if f.ts >= now]
+        # Whatever the outcome, the lens was covered, and that throws the phone's
+        # white balance: measured 2026-09-28, stills after a flat field were cyan
+        # (green/red 1.48 against 0.97), and at night there is too little light
+        # for iOS to find its way back. Restarting the app's capture session
+        # makes it look again; that cured it.
+        self._submit("reset_white_balance", self._reset_white_balance)
+        if len(frames) < FLAT_MIN_FRAMES:
+            log.warning("flat field: only %d frames arrived; not recorded", len(frames))
+            return self._set_flat_state("rejected_no_frames")
+        reason = self.flat.record(stack.stack_frames(frames))
+        if reason is not None:
+            log.warning("flat field: refused, %s; the previous one is kept",
+                        reason.replace("_", " "))
+            return self._set_flat_state(f"rejected_{reason}")
+        log.info("flat field: recorded from %d frames", len(frames))
+        return self._set_flat_state("ready")
+
+    def _reset_white_balance(self):
+        """Background the app and bring it back, so the phone re-reads the light.
+
+        Runs on the device worker, after the recording's hold is released. The
+        battery policy may have wanted the app asleep, so it is asked again once
+        the app is back in front.
+        """
+        if self.phone is None:
+            return
+        self.phone.background()
+        self._sleep(WB_RESET_PAUSE_S)
+        self.phone.foreground()
+        log.info("flat field: restarted the camera so its white balance re-reads the scene")
+        self.backgrounding.backgrounded = False
+        self._background_if_still_closed()
+
+    def _set_flat_state(self, state):
+        self._flat_state = state
+        self.publish_state({"flat_field": state})
+        self._event({"ts": time.time(), "control": "record_flat_field", "result": state})
+        return state
+
     # -- loops --------------------------------------------------------------
 
     def run_capture(self, stop):
@@ -1109,7 +1198,11 @@ class Supervisor:
                 break
             self.capture_requested.clear()
             try:
-                self.produce_still(None)
+                if self._flat_requested:
+                    self._flat_requested = False
+                    self.record_flat_field()
+                else:
+                    self.produce_still(None)
             except Exception:
                 log.exception("capture failed")
             if not manual:

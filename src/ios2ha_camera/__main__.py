@@ -13,6 +13,7 @@ from .archive import Archive
 from .control_store import ControlStore
 from .emergency import EmergencyBackgrounder
 from .events import EventHub
+from .flat import FlatField
 from .ingest import Ingestor
 from .keyboard import Keyboard
 from .live import make_live_app
@@ -190,7 +191,8 @@ def main():
         allowed=lambda: bool(getattr(s, "emergency_keyboard", True)))
     sup = Supervisor(s, buf, mqtt, archive, onvif=onvif, phone=phone, upstream=up,
                      starter=starter, keyboard=keyboard, opener=opener,
-                     rebooter=rebooter, emergency=emergency, store=store)
+                     rebooter=rebooter, emergency=emergency, store=store,
+                     flat=FlatField(s.flat_field_file) if s.flat_field_file else None)
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
 

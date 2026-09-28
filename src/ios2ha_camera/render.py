@@ -124,7 +124,7 @@ def calibration(stacked, settings):
     return bl, gains
 
 
-def render(stacked, settings, applied=None, night_weight=1.0):
+def render(stacked, settings, applied=None, night_weight=1.0, smoothing=1.0):
     """Render a stacked (H, W, 3) float array to a display-ready uint8 RGB array.
 
     `applied` is an optional (black_level, gains) pair from calibration(), for a
@@ -136,6 +136,10 @@ def render(stacked, settings, applied=None, night_weight=1.0):
     top of it. 1.0, the default, reproduces today's render exactly.
     `inspection` ignores it outright: it exists to read detail, not to look
     natural.
+
+    `smoothing` scales the chroma and denoise settings by how much grain is left
+    to smooth: with the sensor's fixed grain subtracted (see flat.py) there is
+    less of it, and the full setting would only soften detail for nothing.
     """
     bl, gains = applied if applied is not None else calibration(stacked, settings)
     x = np.clip(stacked - bl, 0, None)
@@ -156,14 +160,14 @@ def render(stacked, settings, applied=None, night_weight=1.0):
 
     # Scaled by the same weight as the blend above: a daylight still (w == 0)
     # is the camera's own frame and must not be softened on top of that.
-    chroma_radius = settings.chroma_radius * w
+    chroma_radius = settings.chroma_radius * w * smoothing
     if chroma_radius > 1e-6:
         y, cb, cr = Image.fromarray(img8).convert("YCbCr").split()
         img8 = np.asarray(Image.merge("YCbCr", (
             y, cb.filter(ImageFilter.GaussianBlur(chroma_radius)),
             cr.filter(ImageFilter.GaussianBlur(chroma_radius)),
         )).convert("RGB"))
-    denoise_strength = settings.denoise_strength * w
+    denoise_strength = settings.denoise_strength * w * smoothing
     if denoise_strength > 1e-6:
         import cv2
         h = float(denoise_strength)

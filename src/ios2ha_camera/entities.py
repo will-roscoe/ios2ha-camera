@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, replace
 from . import version
 from .app_open import APP_OPEN_STATES
 from .emergency import EMERGENCY_STATES
+from .flat import FLAT_FIELD_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
@@ -212,6 +213,7 @@ _SWITCHES = [
             "mdi:keyboard-outline"),
     _switch("black_level_override_on", "Black level override",
             "mdi:circle-opacity"),
+    _switch("flat_field_correction", "Flat field correction", "mdi:grid"),
 ]
 
 # capture_now stays uncategorised: it is the one button that belongs on a
@@ -232,6 +234,10 @@ _BUTTONS = [
     # a person can see what this service cannot. The reachability guard holds,
     # because an unreachable phone has nothing to send the request over.
     _button("reboot_phone", "Reboot phone", device_class="restart",
+            category="config"),
+    # Records the sensor's fixed grain. Only meaningful with the lens covered by
+    # something that lets a little light through evenly; see flat.py.
+    _button("record_flat_field", "Record flat field", icon="mdi:grid",
             category="config"),
 ]
 
@@ -341,6 +347,10 @@ _SENSORS = [
     # Consecutive failures of calls needing the phone's developer services. Zero
     # normally; a number that stays up means app control is wedged, which is how
     # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
+    _sensor("flat_field", "Flat field", device_class="enum",
+            options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
+    _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
+            category="diagnostic", icon="mdi:grid"),
     _sensor("dvt_failures", "Developer connection failures", unit="failures",
             state_class="measurement", category="diagnostic",
             icon="mdi:usb-flash-drive-outline"),
@@ -509,6 +519,20 @@ _DESCRIPTIONS = {
     ("switch", "emergency_keyboard"):
         "Allows the Bluetooth keyboard to background the app when the cable cannot and the "
         "battery is below Emergency keyboard below.",
+    ("switch", "flat_field_correction"):
+        "On: subtract the sensor's recorded fixed grain from night stills, and halve-or-so the "
+        "smoothing to match what is left. Does nothing until a flat field has been recorded.",
+    ("button", "record_flat_field"):
+        "Records the sensor's fixed grain. Cover the lens with a tissue or thin paper so it sees "
+        "a dim, even glow, then press; takes about a minute. Refused if the picture is not "
+        "evenly lit, so pressing it with the lens uncovered changes nothing.",
+    ("sensor", "flat_field"):
+        "Whether a flat field is recorded: none, recording, ready, or why the last recording "
+        "was refused (too dark, too bright, not flat -- the lens was not covered -- or no "
+        "frames).",
+    ("sensor", "flat_field_scale"):
+        "How strongly the recorded grain was subtracted from the last still, fitted per still; "
+        "about 0.9 when it matches, 0 when nothing was subtracted.",
     ("switch", "black_level_override_on"):
         "On: use the three fixed Black level numbers. Off: measure the black level from each "
         "still, which is almost always better.",

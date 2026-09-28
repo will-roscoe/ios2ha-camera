@@ -535,6 +535,37 @@ docker compose up -d --force-recreate ios2ha-camera
 
 A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
 
+## Removing the sensor's fixed grain
+
+Stacking removes only what changes from frame to frame. Measured 2026-09-28, at a night stack depth
+of ~600 frames the grain left in the dark sky was about 90% a pattern fixed to the sensor's pixels:
+two independent half-stacks matched at 0.91, and two captures 25 minutes apart and at different focus
+at 0.92. No depth can touch that, and the smoothing that hid it is what painted the sky into blotches.
+
+It can be recorded once and subtracted from every night still. **A dark frame does not work**: with
+the lens covered, iOS clips everything below black before encoding, so the pattern is flattened away
+(it matched the sky's at 0.07). It shows only with a little light on every pixel, so record a
+**flat field**:
+
+1. At night, cover the lens with a tissue or thin paper so the phone sees a dim, even glow.
+2. Press **Record flat field**. It gathers about a minute of frames after the press.
+3. Uncover the lens. `sensor.ios2ha_camera_flat_field` reads `ready`, or says why it refused:
+   `rejected_not_flat` (the lens was not covered: there are edges in the picture), `rejected_too_dark`
+   (too little light gets through: the pattern is under the black clamp), `rejected_too_bright` or
+   `rejected_no_frames`. A refusal keeps the previous recording.
+
+Recorded on 2026-09-28, the tissue's pattern matched the night sky's at 0.85, and subtracting it at
+the fitted scale (`sensor.ios2ha_camera_flat_field_scale`, about 0.9) left 62% of the grain. The
+smoothing is then scaled by the same share, so the sky comes out cleaner than before with the
+detail the full smoothing used to soften. It applies only at night, fading out with the night render.
+
+**Covering the lens throws the phone's white balance.** Stills after the recording on 2026-09-28
+were cyan -- green/red 1.48 against 0.97 -- because the camera adapted to the tissue, and at night
+there is too little light for iOS to find its way back. Restarting the app's capture session makes
+it look again, so the service backgrounds and foregrounds the app after every recording attempt.
+If stills ever turn cyan after anything else covers the lens, the same cycle fixes it: set
+`background_below_pct` above the battery level for one capture, or wait for daylight.
+
 ## A timelapse in Home Assistant
 
 The supervisor already keeps every still, under `ARCHIVE_DIR` by date and time. To also collect them
