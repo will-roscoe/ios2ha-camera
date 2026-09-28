@@ -28,7 +28,7 @@ from PIL import Image
 
 # Every value sensor.focus_run can take, for the Home Assistant enum.
 FOCUS_RUN_STATES = ("idle", "running", "focused", "unchanged_no_clear_peak",
-                    "failed_no_frames", "failed_phone")
+                    "unchanged_already_sharpest", "failed_no_frames", "failed_phone")
 
 NEAR = 0.60
 FAR = 1.00

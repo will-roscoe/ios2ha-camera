@@ -551,13 +551,22 @@ most detailed quarter of the picture, border excluded. It probes 1.00, 0.90, 0.8
 brackets the farthest peak within 10% of the best -- near-equal peaks go far -- and narrows it by
 golden-section comparison to 0.01. About 40 s, and the whole score curve is logged.
 
-The result is written to `focus_position`, so it is held exactly as a value you type would be. A run
-that finds no clear peak (fog, darkness, a covered lens) changes nothing; one the phone fails puts
-the lens back as it was. `sensor.ios2ha_camera_focus_run` says which.
+A result is kept only if it beats the position it would replace, measured then and there: the held
+position is scored either side of the result, which cancels a steady change in the light, because
+contrast changing through a run -- lights coming on at dusk, the phone changing exposure -- can fake
+a peak. A kept result is written to `focus_position`, held exactly as a value you type would be.
+Otherwise nothing changes: no clear peak (fog, darkness, a covered lens), not better than the held
+focus, or a phone that failed the run -- which also puts the lens back.
+`sensor.ios2ha_camera_focus_run` says which.
 
-**The dusk run** follows the first still each day whose scene has started to need brightening but
-still has light for edges (night weight between 0 and 0.5). It runs once on success, tries at most
-three times, and only while autofocus is off -- with autofocus on the phone is in charge.
+A run first waits for the phone to answer: at dusk the battery policy has usually backgrounded the
+app, which refuses every call until the session the run opens has woken it.
+
+**The dusk run** follows a still taken in the afternoon or evening whose scene needs more brightening
+than the one before -- the light is falling -- but still has light for edges (night weight between 0
+and 0.5). Dawn does not count, although the light passes through the same band. It runs once a day
+on success, tries at most three times, and only while autofocus is off -- with autofocus on the
+phone is in charge.
 
 **The lens is re-driven at every capture.** The phone reports a lens position, but it is not to be
 trusted: after the app's capture session restarted on 2026-09-28 it reported 0.804 while the lens

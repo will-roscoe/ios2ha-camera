@@ -351,6 +351,9 @@ _SENSORS = [
     # Consecutive failures of calls needing the phone's developer services. Zero
     # normally; a number that stays up means app control is wedged, which is how
     # backgrounding stopped unnoticed for 24 hours on 2026-09-14.
+    _sensor("dvt_failures", "Developer connection failures", unit="failures",
+            state_class="measurement", category="diagnostic",
+            icon="mdi:usb-flash-drive-outline"),
     _sensor("focus_run", "Focus run", device_class="enum",
             options=tuple(FOCUS_RUN_STATES), category="diagnostic",
             icon="mdi:image-filter-center-focus"),
@@ -358,9 +361,6 @@ _SENSORS = [
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
             category="diagnostic", icon="mdi:grid"),
-    _sensor("dvt_failures", "Developer connection failures", unit="failures",
-            state_class="measurement", category="diagnostic",
-            icon="mdi:usb-flash-drive-outline"),
 ]
 _SENSORS += [
     _sensor(f"lum_p{p}", f"Scene luminance {_ordinal(p)} percentile",
@@ -536,8 +536,8 @@ _DESCRIPTIONS = {
         "switches autofocus off. About 40 seconds.",
     ("sensor", "focus_run"):
         "How the last focus run went: running, focused, unchanged_no_clear_peak (fog, too "
-        "dark: nothing changed), failed_no_frames or failed_phone. A failed run puts the "
-        "lens back where it was.",
+        "dark), unchanged_already_sharpest (what it found did not beat the held focus), "
+        "failed_no_frames or failed_phone. Anything but focused leaves the lens where it was.",
     ("switch", "flat_field_correction"):
         "On: subtract the sensor's recorded fixed grain from night stills, and halve-or-so the "
         "smoothing to match what is left. Does nothing until a flat field has been recorded.",
