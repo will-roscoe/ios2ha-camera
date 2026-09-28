@@ -538,10 +538,13 @@ triggers:
   - trigger: state
     entity_id: sensor.ios2ha_camera_last_still
 conditions:
-  # Not on the service starting up or reconnecting, when it goes to or from unknown.
+  # A fresh still only. Checking freshness rather than refusing a change *from*
+  # unknown matters: after a restart the sensor starts unknown, and refusing that
+  # transition would drop the first still after every restart. It also refuses the
+  # old value the native component replays when it reloads.
   - condition: template
-    value_template: "{{ trigger.from_state.state not in ('unknown', 'unavailable')
-                        and trigger.to_state.state not in ('unknown', 'unavailable') }}"
+    value_template: "{{ trigger.to_state.state not in ('unknown', 'unavailable')
+                        and (now() - as_datetime(trigger.to_state.state)).total_seconds() < 120 }}"
 actions:
   - action: camera.snapshot
     target:
