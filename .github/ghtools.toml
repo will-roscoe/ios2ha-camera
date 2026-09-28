@@ -16,6 +16,9 @@ install = "-e .[dev]"                        # pip install in workflows
 gates = ["ruff"]                             # tool configuration and existing workflows
 docker = true                                # Dockerfile + docker build step
 
+[ci.coverage]
+package = "src/ios2ha_camera"                # [tool.coverage.run] source; the old ci.yml ran pytest --cov
+
 [docs]
 enabled = true                               # docs/conf.py
 dir = "docs"                                 # docs/conf.py
