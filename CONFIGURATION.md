@@ -29,6 +29,7 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `COLOUR_REFERENCE_FILE` | `/data/colour_reference.npz` | Where the colour reference is kept once recorded with **Set colour reference** (see [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour)). Empty turns the feature off, and the button with it |
 | `FLAT_FIELD_FILE` | `/data/flat_field.npy` | Where the sensor's fixed grain is kept once recorded with **Record flat field** (see [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain)). Empty turns the feature off, and the button with it |
 | `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
@@ -171,7 +172,7 @@ What the less obvious ones do:
 | Entity | Options | Default |
 |---|---|---|
 | `select.ios2ha_camera_stacking_mode` | `off` (single frame), `fixed`, `auto` | `auto` |
-| `select.ios2ha_camera_white_balance` | `as-shot`, `grey-world`, `brightest-patch` | `as-shot` |
+| `select.ios2ha_camera_white_balance` | `as-shot`, `grey-world`, `brightest-patch`, `reference` | `as-shot` |
 | `select.ios2ha_camera_render_intent` | `natural`, `inspection` | `natural` |
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | On: the phone focuses itself. Off: the lens is held at `focus_position`. See "The picture is soft at night" above for choosing | on |
@@ -190,6 +191,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
+| `button.ios2ha_camera_set_colour_reference` | Remembers the colour region's colour from the last still; `reference` white balance then holds night stills to it. Refused in daylight. See [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour) |
 | `button.ios2ha_camera_focus_now` | Finds the sharpest far-field focus and holds it: a far-to-near sweep of the lens, averaging ~3 s of frames per position, then a golden-section refine. About 40 s. Switches autofocus off. See [OPERATIONS.md](OPERATIONS.md#keeping-the-picture-in-focus) |
 | `button.ios2ha_camera_record_flat_field` | Records the sensor's fixed grain from a flat field: cover the lens with a tissue so it sees a dim, even glow, then press. About a minute. Refused, keeping any earlier recording, unless the picture is evenly lit; restarts the camera afterwards to reset its white balance. See [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain) |
 | `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |
