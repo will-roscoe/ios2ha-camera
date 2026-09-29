@@ -23,6 +23,60 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.15.0 — 2026-09-29
+
+**The service focuses the camera itself.** The phone's own autofocus is not good enough at night --
+measured on 2026-09-28 it parked the lens at 0.68 while the sharpest position was 0.78-0.82, about
+five times the edge detail -- and a fixed position drifts: 0.80 to 0.77 in one evening. A focus run
+sweeps the lens from far to near over 0.60-1.00 only, so the window and anything else within a metre
+can never win; averages about three seconds of frames at each position, because a single night frame
+is too dark to judge; brackets the farthest peak within 10% of the best; and narrows it by
+golden-section comparison to 0.01. About 40 seconds. The result is held in `focus_position` like a
+value you type, and only if it beats the position it would replace. A run with no clear peak (fog,
+darkness) changes nothing; one the phone fails puts the lens back. New:
+`button.ios2ha_camera_focus_now`, `switch.ios2ha_camera_focus_at_dusk` (a run each evening as the
+light starts to fall, only while autofocus is off), and `sensor.ios2ha_camera_focus_run`.
+
+**The lens is re-driven at every capture.** After the app's capture session restarted, the phone
+reported its lens at 0.804 while it sat elsewhere, and stills went soft; the service believed it and
+left it. Held focus is now always driven -- nudged away and back -- instead of trusted.
+
+**A control page.** `http://<host>:8099/` (it redirects to `/ui/`) shows every entity Home Assistant
+has -- readings, switches, selects, numbers, buttons, each with what it does -- beside the still, the
+stacked and live feeds and the screenshot, and stays current over the event stream. It is a client
+of the same `/api/v1` routes as the Home Assistant component, finding every path from `/api/v1/info`,
+so it can do nothing they cannot. Served only while `EXPOSE_API` is on. `/api/v1/objects` now carries
+each entity's `description`.
+
+**Night stills can be held to a reference colour.** At night the phone's white balance moves and
+cannot come back without light: on 2026-09-28 covering the lens left stills cyan for the rest of the
+night, and a curtain opening behind the camera made them bluer. Pick a region of the view that is lit
+the same way every night -- on the control page, **Pick colour region** and drag over the still --
+press **Set colour reference** on a night still that looks right, and set white balance to the new
+`reference` option. Each later night still is registered against the reference, so a nudged camera is
+followed, and the region's colour is restored with brightness untouched; daylight is left as shot.
+`sensor.ios2ha_camera_colour_reference` says whether the last still was corrected, or why not -- the
+view no longer matches (`no_match`), or the region's light is out (`region_too_dark`). New: the four
+`number.ios2ha_camera_colour_region_*` edges, the button and the sensor. See OPERATIONS.md, "Holding
+the night colour".
+
+**Stills can be levelled.** **Level horizon** measures how far the last daylight still leans from the
+verticals in the view -- building edges, window frames; rooflines lean with every facade's angle to
+the camera -- and adds it to the new `number.ios2ha_camera_rotation`, which turns stills back by
+that much, zoomed just enough that no corner shows. The live feeds are left as they are. Checked on
+the archive: one framing read -0.31 to -0.71 degrees across three and a half days, the current one
++0.71 to +0.79 by day. Refused at night, where reflections in the glass mislead it, and without clear
+verticals; `sensor.ios2ha_camera_horizon` says which. See OPERATIONS.md, "Levelling the view".
+
+**Fixed:**
+
+- A flat-field file left empty or cut short -- a power cut during a first recording -- stopped the
+  service starting, and it restarted in a loop until the file was deleted. It is now logged and the
+  flat field left off; recordings are flushed to disk before they replace the previous one.
+
+Twelve new entities and a new `white_balance` option; nothing existing changes, so both interface
+versions stay at `1`.
+
 ## 2.14.0 — 2026-09-28
 
 **The sensor's fixed grain can be recorded once and subtracted.** Stacking removes only what changes
