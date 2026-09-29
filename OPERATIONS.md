@@ -614,9 +614,9 @@ stills should be held to), with no still yet, or when the region is too dark to 
 ## Levelling the view
 
 Press **Level horizon** (`button.ios2ha_camera_level_horizon`) on a day when the last still is a
-daylight one. It measures how far the view leans and adds that to `number.ios2ha_camera_rotation`;
-from the next still on, stills are turned back by it and zoomed just enough that no corner shows (at
-2 degrees, about 4% of the view). The live and stacked feeds are left as the phone sends them.
+daylight one. It measures how far the view leans, adds that to `number.ios2ha_camera_rotation` and
+takes a still at once to show it: stills are turned by the rotation (clockwise for positive) and
+zoomed just enough that no corner shows (at 2 degrees, about 4% of the view). The live and stacked feeds are left as the phone sends them.
 `sensor.ios2ha_camera_horizon` says what happened: `levelled`, or why it was refused.
 
 The lean is read from the verticals -- building edges, window frames -- not the rooflines: on the
@@ -627,15 +627,21 @@ three and a half days and nights, the current one +0.71 to +0.79 by day.
 
 It is refused:
 
-- at night or dusk (`rejected_night`): verticals then include reflections in the glass, and one night
-  still read 1.4 degrees off while looking certain of it;
+- at night or late dusk (`rejected_night`, when the still used more than half the night render):
+  verticals then include reflections in the glass, and one night still read 1.4 degrees off while
+  looking certain of it. A grey day's little night weight does not count;
 - with too few clear verticals, or ones that disagree (`rejected_no_clear_lines`);
 - before the first still (`rejected_no_still`).
 
-Pressing it again on a level view changes nothing: it measures the still as shown, already turned.
-Set the rotation by hand to undo it. A colour reference records the region as drawn on the levelled
-still, so record it again after a large change of rotation (it reads `no_match` if it no longer
-fits).
+Pressing it again changes nothing more than the first press did: the lean is measured on the still
+as shown and added to the rotation that still was turned by, so a second press before the next still
+gives the same answer. Set the rotation by hand to undo it. The black level, the gains and the
+sharpness and clipping readings are taken from the stack before it is turned, so setting a rotation
+does not shift them.
+
+A colour reference records the region as drawn on the levelled still. **Record it again after
+changing the rotation**: a reference from before keeps being applied -- a small turn still
+correlates -- but measured slightly off, which moves its gains by a few per cent.
 
 ## Removing the sensor's fixed grain
 
