@@ -27,11 +27,11 @@ from datetime import UTC, datetime
 import cv2
 import numpy as np
 
-from . import measure, render, stack
+from . import focus, horizon, measure, render, stack
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .reboot import WEDGE_FOR_S
-from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, _coerce_bool
+from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, MAX_ROTATION, _coerce_bool
 from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
@@ -48,6 +48,8 @@ FOCUS_TOLERANCE = 0.005
 # needs up to a second after being foregrounded before it answers again
 # (measured: the stream resumes 0.9-1.1 s after the foreground call returns).
 FOCUS_ATTEMPTS = 3
+# How far the lens is nudged away before being driven to its held position.
+FOCUS_NUDGE = 0.03
 FOCUS_RETRY_S = 1.0
 
 # A flat field is gathered like a still, but at a fixed depth: the grain it records
@@ -56,6 +58,24 @@ FOCUS_RETRY_S = 1.0
 FLAT_FRAMES = 600
 FLAT_WINDOW_S = 90.0
 FLAT_MIN_FRAMES = 100
+# A focus probe: let the lens settle, then average a few seconds of frames -- a
+# single night frame is too dark to judge edges on. Measured 2026-09-28: ~40-frame
+# averages gave clean curves where single frames did not.
+FOCUS_FRAMES = 35
+FOCUS_MIN_FRAMES = 10
+FOCUS_SETTLE_S = 0.5
+FOCUS_PROBE_TIMEOUT_S = 8.0
+# The dusk run waits for the scene to start needing brightening (night weight above
+# 0) and not to be dark yet (below this), so it has light to judge edges by and a
+# restart in the night never triggers it.
+DUSK_MAX_WEIGHT = 0.5
+DUSK_TRIES = 3
+# Level horizon refuses a still made with more of the night render than this.
+# Measured 28 Sep: at night, reflections in the glass misled it by 1.4 degrees;
+# daytime stills measured only just above the default target level, so an overcast
+# noon has a little night weight and must not be refused as night.
+LEVEL_MAX_WEIGHT = 0.5
+
 # How long the app stays in the background when restarting its capture session.
 WB_RESET_PAUSE_S = 5.0
 
@@ -142,6 +162,14 @@ class _FocusRejected(Exception):
     """The phone answered and refused: retrying at once would be refused again."""
 
 
+class _NoFocusFrames(Exception):
+    """A focus probe gathered too few frames to judge."""
+
+
+def _curve_text(curve):
+    return ", ".join(f"{p:.3f}:{v:.3g}" for p, v in sorted(curve.items(), reverse=True))
+
+
 def _dark_noise(rgb):
     """Noise and signal-to-noise in the darkest tenth of the finished still.
 
@@ -167,7 +195,7 @@ class Supervisor:
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
                  starter=None, keyboard=None, opener=None, rebooter=None,
-                 emergency=None, store=None, sleep=time.sleep, flat=None):
+                 emergency=None, store=None, sleep=time.sleep, flat=None, colour=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -195,6 +223,35 @@ class Supervisor:
         self.flat = flat
         self._flat_state = "ready" if getattr(flat, "ready", False) else "none"
         self._flat_requested = False
+        # The colour a picked region is held to at night, or None when off.
+        self.colour = colour
+        self._colour_state = "ready" if getattr(colour, "ready", False) else "none"
+        # The last still as it was rendered: (linear stack, black level, night
+        # weight, white-balance gains), set together once it is made, so Set colour
+        # reference on another thread never pairs one still's stack with another's
+        # weight, and records the colour a person saw rather than the stack under it.
+        # The stack is flat-corrected and levelled: the region is drawn on the still.
+        self._last_render = None
+        self._horizon_state = "none"
+        # The last still's JPEG and night weight, set together so the Level horizon
+        # button, on another thread, never pairs one still with another's weight.
+        self._last_shown = None
+        # The service's own focus runs; see run_focus.
+        self._focus_requested = False
+        # The lens has one owner at a time: a focus run holds this for its whole
+        # sweep, and applying held focus skips rather than wait for it.
+        self._lens_lock = threading.Lock()
+        self._focus_state = "idle"
+        # The last still's night weight, which the dusk run is decided on; None
+        # when the last still failed, so a failure never looks like dusk.
+        self._last_weight = None
+        # The one before it, from the last still that had one: dusk is the light
+        # falling, which takes two readings to see.
+        self._prev_weight = None
+        self._good_weight = None
+        self._dusk_day = None
+        self._dusk_tries = 0
+        self._dusk_done = False
         # Reads the switch and both thresholds live, because all three are Home
         # Assistant controls that can change between one capture and the next.
         self.backgrounding = BackgroundingPolicy(
@@ -398,6 +455,7 @@ class Supervisor:
 
     def _produce_still(self, now_fps=None, now=None):
         now = time.time() if now is None else now
+        self._last_weight = None
         t0 = time.monotonic()
 
         # The `with` block is load-bearing: produce_still() swallows every
@@ -469,6 +527,8 @@ class Supervisor:
         # already drives depth -- one number, two consumers, so they cannot
         # disagree about how much brightening the scene needs.
         weight = render.night_weight(subject, self.s.target_level)
+        self._prev_weight, self._good_weight = self._good_weight, weight
+        self._last_weight = weight
         # Before the black level is read, so it is measured on the corrected
         # stack; the pattern has no mean of its own, so it barely moves it.
         scales, smoothing = None, 1.0
@@ -476,10 +536,22 @@ class Supervisor:
             stacked, scales, smoothing = self.flat.correct(stacked, weight)
             if scales is not None:
                 black, gains = render.calibration(stacked, self.s)
+        # Levelled after the flat field, which is fixed to the sensor's pixels, and
+        # before anything measured on the view, whose regions are drawn on the still.
+        # The black level, gains and the stack's own readings stay those of the
+        # unturned stack: resampling narrows its noise and softens it a little, and
+        # setting a rotation must not look like the black level or the focus moving.
+        rotation = self.s.rotation            # once: the still is paired with it
+        unturned = stacked
+        if rotation:
+            stacked = horizon.level(stacked, rotation)
+        gains = self._colour_gains(stacked, black, gains, weight)
         rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
                             smoothing=smoothing)
+        self._last_render = (stacked, black, weight, np.asarray(gains, dtype=np.float64))
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
+        self._last_shown = (jpeg, weight, rotation)
         self.mqtt.publish_still(jpeg)
 
         free = self.archive.free_bytes()
@@ -509,12 +581,12 @@ class Supervisor:
             **{f"lum_p{int(p)}": round(pct[p], 2) for p in (1, 10, 50, 90, 99)},
             "dynamic_range": round(raw[99.5] / max(raw[0.5], 1.0), 1),
             # Per cent, to match the sensor's declared unit.
-            "highlight_clip": round(float((stacked.max(axis=2) >= 250).mean()) * 100, 2),
+            "highlight_clip": round(float((unturned.max(axis=2) >= 250).mean()) * 100, 2),
             "noise": noise,
             "snr": snr,
             "motion": (round(measure.motion_level(probe[-2], probe[-1]), 3)
                        if len(probe) >= 2 else 0.0),
-            "focus_sharpness": round(measure.focus_sharpness(stacked), 1),
+            "focus_sharpness": round(measure.focus_sharpness(unturned), 1),
             "frame_rate": round(now_fps, 1),
             "effective_exposure_required": round(required / max(now_fps, 1e-6), 2),
             "effective_exposure_achieved": round(used / max(now_fps, 1e-6), 2),
@@ -563,6 +635,20 @@ class Supervisor:
                 # manual=True: a person asking overrides the pause switch and
                 # the rate limit, though never the guards around the keys.
                 self._submit(name, lambda: self.starter.attempt(True))
+            elif name == "set_colour_reference":
+                if self.colour is None:
+                    raise RuntimeError("the colour reference is switched off "
+                                       "(COLOUR_REFERENCE_FILE is empty)")
+                self._submit(name, self._set_colour_reference)
+            elif name == "level_horizon":
+                self._submit(name, self._level_horizon)
+            elif name == "focus_now":
+                if self.onvif is None:
+                    raise RuntimeError("focus control is not configured")
+                # On the capture thread: a run holds the phone and gathers frames,
+                # and must never do so alongside a still.
+                self._focus_requested = True
+                self.capture_requested.set()
             elif name == "record_flat_field":
                 if self.flat is None:
                     raise RuntimeError("the flat field is switched off (FLAT_FIELD_FILE is empty)")
@@ -808,6 +894,17 @@ class Supervisor:
         """
         if self.onvif is None:
             return
+        # A focus run owns the lens while it sweeps; the session it opens must not
+        # put the held position back in the middle of it. Taken, not just checked,
+        # so a run started meanwhile waits for this to finish instead.
+        if not self._lens_lock.acquire(blocking=False):
+            return
+        try:
+            self._apply_focus_attempts()
+        finally:
+            self._lens_lock.release()
+
+    def _apply_focus_attempts(self):
         for attempt in range(FOCUS_ATTEMPTS):
             try:
                 self._apply_focus_once()
@@ -832,12 +929,15 @@ class Supervisor:
         if mode != "MANUAL" and not self.onvif.set_autofocus("MANUAL"):
             raise _FocusRejected("the camera rejected manual focus")
         target = self.s.focus_position
-        position = self.onvif.focus_position()
-        if position is not None and abs(position - target) < FOCUS_TOLERANCE:
-            return
-        if not self.onvif.move_focus(target):
-            raise _FocusRejected(f"the camera rejected moving the lens to {target}")
-        log.info("focus: lens moved from %s to %s", position, target)
+        # Never trusted, the phone's reported position: measured 2026-09-28, after
+        # the app's capture session restarted it reported MANUAL at 0.804 while the
+        # lens sat elsewhere, and the stills went soft. So every session drives the
+        # lens -- away and back, because a move to where the phone believes it
+        # already is may do nothing at all.
+        nudge = target + FOCUS_NUDGE if target + FOCUS_NUDGE <= 1.0 else target - FOCUS_NUDGE
+        for position in (round(nudge, 3), target):
+            if not self.onvif.move_focus(position):
+                raise _FocusRejected(f"the camera rejected moving the lens to {position}")
 
     def _follow_autofocus(self):
         """While autofocus is on, keep focus_position at where it put the lens.
@@ -850,11 +950,15 @@ class Supervisor:
         """
         if self.onvif is None or not self.s.autofocus:
             return
+        if not self._lens_lock.acquire(blocking=False):
+            return
         try:
             position = self.onvif.focus_position()
         except Exception as e:
             log.info("focus: could not read the lens position: %s: %s", type(e).__name__, e)
             return
+        finally:
+            self._lens_lock.release()
         if position is None or abs(position - self.s.focus_position) < FOCUS_TOLERANCE:
             return
         self.s.apply_control("focus_position", round(position, 3))
@@ -931,6 +1035,9 @@ class Supervisor:
         d["app_open"] = self.opener.state if self.opener is not None else "idle"
         d["phone_reboot"] = self.rebooter.state if self.rebooter is not None else "idle"
         d["flat_field"] = self._flat_state
+        d["focus_run"] = self._focus_state
+        d["colour_reference"] = self._colour_state
+        d["horizon"] = self._horizon_state
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
@@ -1128,6 +1235,238 @@ class Supervisor:
             return False
         return True
 
+    # -- the colour reference ------------------------------------------------
+
+    def _colour_gains(self, stacked, black, gains, weight):
+        """The white-balance gains for this still: the reference's at night when it
+        is chosen and the view still matches, otherwise the ones already computed."""
+        if self.colour is None:
+            return gains
+        if self.s.white_balance != "reference":
+            self._set_colour_state("ready" if self.colour.ready else "none")
+            return gains
+        if not weight > 0:
+            # Daylight: the phone's white balance has light to work with, and whether
+            # the view matches a night reference is not worth asking.
+            self._set_colour_state("ready" if self.colour.ready else "none")
+            return np.ones(3)
+        try:
+            found, state = self.colour.gains(np.clip(stacked - black, 0, None))
+        except Exception:
+            # Never worth the still: it goes out as the phone shot it.
+            log.exception("colour reference: could not be applied; this still is as shot")
+            return np.ones(3)
+        if found is None:
+            self._set_colour_state(state)
+            return np.ones(3)
+        self._set_colour_state("applied")
+        # Faded with the night render, so dusk eases into it.
+        return 1 + weight * (np.asarray(found) - 1)
+
+    def _set_colour_reference(self):
+        if self._last_render is None:
+            return self._set_colour_state("rejected_no_still")
+        stacked, black, weight, gains = self._last_render
+        if not weight > 0:
+            return self._set_colour_state("rejected_daylight")
+        region = (self.s.colour_region_x0, self.s.colour_region_y0,
+                  self.s.colour_region_x1, self.s.colour_region_y1)
+        # With its gains: the colour approved is the one shown, which may already be
+        # corrected -- by this reference, or by another white balance mode.
+        reason = self.colour.record(np.clip(stacked - black, 0, None) * gains, region)
+        if reason is not None:
+            log.info("colour reference: refused, %s", reason.replace("_", " "))
+            return self._set_colour_state(f"rejected_{reason}")
+        log.info("colour reference: recorded region %s", region)
+        return self._set_colour_state("ready")
+
+    def _set_colour_state(self, state):
+        if state != self._colour_state:
+            self._colour_state = state
+        self.publish_state({"colour_reference": state})
+        return state
+
+    # -- levelling the view --------------------------------------------------
+
+    def _level_horizon(self):
+        """Measure the last still's lean and add it to the rotation that still was
+        turned by. See horizon.py.
+
+        Added to that rotation, not to the one in use now: a second press before the
+        next still, or a rotation typed since, would otherwise count the same lean
+        twice. A still made with this rotation is asked for at once, so the result
+        shows without waiting for the schedule."""
+        if self._last_shown is None:
+            return self._set_horizon_state("rejected_no_still")
+        jpeg, weight, shown_with = self._last_shown
+        if weight is None or weight > LEVEL_MAX_WEIGHT:
+            return self._set_horizon_state("rejected_night")
+        bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        try:
+            lean = horizon.estimate_tilt(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        except horizon.NoClearHorizon as e:
+            log.info("level horizon: refused, %s", e)
+            return self._set_horizon_state("rejected_no_clear_lines")
+        rotation = round(min(MAX_ROTATION, max(-MAX_ROTATION, shown_with + lean)), 1)
+        log.info("level horizon: the still leans %+.2f degrees; rotation %.1f -> %.1f",
+                 lean, shown_with, rotation)
+        # Written as a person's write is: persisted, and echoed to every client.
+        self._apply_setting("rotation", rotation)
+        self.capture_requested.set()
+        return self._set_horizon_state("levelled")
+
+    def _set_horizon_state(self, state):
+        self._horizon_state = state
+        self.publish_state({"horizon": state})
+        self._event({"ts": time.time(), "control": "level_horizon", "result": state})
+        return state
+
+    # -- the service's own focus ---------------------------------------------
+
+    def run_focus(self, reason="button"):
+        """Find the sharpest far-field lens position and hold it. See focus.py.
+
+        Runs on the capture thread under a capture hold, and owns the lens for the
+        whole run: a focus already being applied finishes first, and none starts
+        until it is over. Any failure puts the lens back as it was -- autofocus on
+        again if it was on -- and changes no setting; a result is kept only if it
+        beats the position it would replace, and is then written through
+        focus_position exactly as a person's write is.
+        """
+        if self.onvif is None:
+            return self._set_focus_run("failed_phone")
+        with self._lens_lock:
+            return self._run_focus_owning_the_lens(reason)
+
+    def _run_focus_owning_the_lens(self, reason):
+        was_auto, previous = self.s.autofocus, self.s.focus_position
+        self._set_focus_run("running")
+        hold = (self.upstream.hold("capture") if self.upstream is not None
+                else contextlib.nullcontext())
+        # Everything inside the hold, restoring included: once it is released the
+        # battery policy may background the app, which then refuses every call.
+        with hold:
+            try:
+                self._wake_for_focus()
+                position, curve = focus.search(self._focus_measure)
+                better = self._beats_the_held_position(position, previous, was_auto)
+            except focus.NoClearPeak as e:
+                log.info("focus run (%s): no clear peak, nothing changed: %s", reason,
+                         _curve_text(e.curve))
+                return self._focus_failed("unchanged_no_clear_peak", was_auto, previous)
+            except _NoFocusFrames as e:
+                log.warning("focus run (%s): %s; nothing changed", reason, e)
+                return self._focus_failed("failed_no_frames", was_auto, previous)
+            except Exception as e:
+                log.warning("focus run (%s): the phone failed it (%s: %s); nothing changed",
+                            reason, type(e).__name__, e)
+                return self._focus_failed("failed_phone", was_auto, previous)
+            if not better:
+                log.info("focus run (%s): %.3f did not beat the held %.3f; nothing changed. "
+                         "Curve %s", reason, position, previous, _curve_text(curve))
+                return self._focus_failed("unchanged_already_sharpest", was_auto, previous)
+            log.info("focus run (%s): lens %.3f (was %.3f), curve %s", reason, position,
+                     previous, _curve_text(curve))
+            self.s.apply_control("focus_position", round(position, 3))
+            self.s.apply_control("autofocus", False)
+            self._persist()
+            self.publish_state({"autofocus": False, "focus_position": self.s.focus_position})
+            try:
+                self.onvif.move_focus(self.s.focus_position)
+            except Exception as e:
+                # Held regardless: the next session puts it there.
+                log.info("focus run: could not move the lens to its result now: %s", e)
+            return self._set_focus_run("focused")
+
+    def _wake_for_focus(self):
+        """Wait for the app to answer, then take manual focus.
+
+        At dusk the battery policy has usually backgrounded the app, and a hold
+        only asks for a session: every call is refused until that session has
+        woken it, and for up to a second after (see FOCUS_RETRY_S).
+        """
+        if self.upstream is not None:
+            if self.upstream.wait_for_frames(1, time.time(), CAPTURE_OPEN_TIMEOUT_S) < 1:
+                raise _NoFocusFrames("the phone sent nothing after the run asked for it")
+        for attempt in range(FOCUS_ATTEMPTS):
+            try:
+                if not self.onvif.set_autofocus("MANUAL"):
+                    raise _FocusRejected("the camera refused manual focus")
+                return
+            except _FocusRejected:
+                raise
+            except Exception:
+                if attempt + 1 == FOCUS_ATTEMPTS:
+                    raise
+                self._sleep(FOCUS_RETRY_S)
+
+    def _beats_the_held_position(self, position, previous, was_auto):
+        """Whether `position` is sharper than the one it would replace, now.
+
+        Contrast changing through a run -- lights coming on at dusk, the phone
+        changing exposure -- can fake a peak. So the held position is measured
+        either side of the result, which cancels a steady drift, and the result
+        is kept only if it scores at least as well. With autofocus on there is no
+        held position to defend.
+        """
+        if was_auto or abs(position - previous) < 0.005 or not focus.NEAR <= previous <= focus.FAR:
+            return True
+        before = self._focus_measure(previous)
+        new = self._focus_measure(position)
+        after = self._focus_measure(previous)
+        log.info("focus run: result %.3f scores %.3g; the held %.3f scores %.3g and %.3g",
+                 position, new, previous, before, after)
+        return new >= (before + after) / 2
+
+    def _focus_measure(self, position):
+        if not self.onvif.move_focus(position):
+            raise _FocusRejected(f"the camera refused to move the lens to {position}")
+        self._sleep(FOCUS_SETTLE_S)
+        since = time.time()
+        if self.upstream is not None:
+            self.upstream.wait_for_frames(FOCUS_FRAMES, since, FOCUS_PROBE_TIMEOUT_S)
+        frames = [f for f in self.buffer.recent(FOCUS_FRAMES) if f.ts >= since]
+        if len(frames) < FOCUS_MIN_FRAMES:
+            raise _NoFocusFrames(f"only {len(frames)} frames arrived at lens {position}")
+        return focus.score(focus.average(frames))
+
+    def _focus_failed(self, state, was_auto, previous):
+        try:
+            if was_auto:
+                self.onvif.set_autofocus("AUTO")
+            else:
+                self.onvif.move_focus(previous)
+        except Exception as e:
+            log.info("focus run: could not put the lens back (%s: %s); the next session "
+                     "will", type(e).__name__, e)
+        return self._set_focus_run(state)
+
+    def _set_focus_run(self, state):
+        self._focus_state = state
+        self.publish_state({"focus_run": state})
+        return state
+
+    def _dusk_focus_due(self, now=None):
+        """Whether the evening's focus run is due, from the last still's light."""
+        if not self.s.focus_at_dusk or self.s.autofocus or self.onvif is None:
+            return False
+        weight, before = self._last_weight, self._prev_weight
+        if weight is None or not 0 < weight < DUSK_MAX_WEIGHT:
+            return False
+        # Dusk, not dawn: in the morning the light rises back through the same
+        # band, and a run then would use up the evening's.
+        local = time.localtime(now)
+        if before is None or not weight > before or local.tm_hour < 12:
+            return False
+        today = time.strftime("%Y-%m-%d", local)
+        if today != self._dusk_day:
+            self._dusk_day, self._dusk_tries, self._dusk_done = today, 0, False
+        return not self._dusk_done and self._dusk_tries < DUSK_TRIES
+
+    def _dusk_ran(self, result):
+        self._dusk_tries += 1
+        self._dusk_done = self._dusk_done or result == "focused"
+
     # -- the flat field -----------------------------------------------------
 
     def record_flat_field(self, now=None):
@@ -1201,8 +1540,19 @@ class Supervisor:
                 if self._flat_requested:
                     self._flat_requested = False
                     self.record_flat_field()
+                elif self._focus_requested:
+                    self._focus_requested = False
+                    self.run_focus("button")
                 else:
                     self.produce_still(None)
+                    if self._dusk_focus_due():
+                        # Counted whatever happens, or a run that raised would be
+                        # tried again after every still of the evening.
+                        result = "failed_phone"
+                        try:
+                            result = self.run_focus("dusk")
+                        finally:
+                            self._dusk_ran(result)
             except Exception:
                 log.exception("capture failed")
             if not manual:

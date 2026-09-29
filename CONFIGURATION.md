@@ -29,10 +29,11 @@ not the flag.
 | `PHONE_PASSWORD` | — | HTTP Basic for `/mjpeg` and `/snapshot.jpg`; WS-Security digest for `/onvif/*` |
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
+| `COLOUR_REFERENCE_FILE` | `/data/colour_reference.npz` | Where the colour reference is kept once recorded with **Set colour reference** (see [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour)). Empty turns the feature off, and the button with it |
 | `FLAT_FIELD_FILE` | `/data/flat_field.npy` | Where the sensor's fixed grain is kept once recorded with **Record flat field** (see [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain)). Empty turns the feature off, and the button with it |
 | `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
-| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) and the control page at `/ui/` (`/` redirects there) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
 | `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Turning it **off** also *removes* the entities it created: at startup the supervisor makes one bounded attempt to reach the broker and clears every retained discovery topic and the retained availability message, which deletes the MQTT entities from Home Assistant and frees their entity ids. With no broker reachable this is one warning in the log and nothing else. Switching it back on recreates them. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
@@ -96,10 +97,12 @@ no spatial region selection.
 **"The picture is soft at night."** Check focus before anything else. Autofocus at night, and
 through a window, can settle well away from the scene: measured on 2026-09-28 it sat at lens
 position 0.68 while the skyline was sharpest at 0.78–0.82, with about five times the edge detail.
-Find the right position in daylight, when autofocus gets it right: leave autofocus on and read
-**`focus_position`**, which follows the lens while autofocus is on. Then write that value back (or
-switch autofocus off) and the lens is held there, day and night, across restarts and app relaunches.
-Stacking and smoothing cannot put back detail the lens never resolved.
+Press **Focus now** and the service finds the sharpest far-field position itself and holds it: it
+sweeps the lens from far to near, averaging a few seconds of frames at each position so it works in
+the dark, and never looks nearer than the window. With **Focus at dusk** on, it does this once each
+evening while there is still light, which catches the slow drift a fixed position suffers (0.80 to
+0.77 in one evening, measured). Stacking and smoothing cannot put back detail the lens never
+resolved.
 
 ## Controls
 
@@ -126,6 +129,11 @@ back to the default shown here.
 | `number.ios2ha_camera_chroma_radius` | Chroma smoothing radius | 0–12 step 0.5 | px | `3.0` |
 | `number.ios2ha_camera_denoise_strength` | Denoise strength | 0–20 step 0.5 | | `3.0` |
 | `number.ios2ha_camera_focus_position` | Focus position | 0–1 step 0.01 | | `1.0`, then wherever autofocus puts the lens |
+| `number.ios2ha_camera_colour_region_x0` | Colour region left | 0–1 step 0.001 | | `0.35` |
+| `number.ios2ha_camera_colour_region_y0` | Colour region top | 0–1 step 0.001 | | `0.35` |
+| `number.ios2ha_camera_colour_region_x1` | Colour region right | 0–1 step 0.001 | | `0.65` |
+| `number.ios2ha_camera_colour_region_y1` | Colour region bottom | 0–1 step 0.001 | | `0.65` |
+| `number.ios2ha_camera_rotation` | Rotation | -10–10 step 0.1 | ° | `0.0`; set by Level horizon |
 | `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |
@@ -169,11 +177,12 @@ What the less obvious ones do:
 | Entity | Options | Default |
 |---|---|---|
 | `select.ios2ha_camera_stacking_mode` | `off` (single frame), `fixed`, `auto` | `auto` |
-| `select.ios2ha_camera_white_balance` | `as-shot`, `grey-world`, `brightest-patch` | `as-shot` |
+| `select.ios2ha_camera_white_balance` | `as-shot`, `grey-world`, `brightest-patch`, `reference` | `as-shot` |
 | `select.ios2ha_camera_render_intent` | `natural`, `inspection` | `natural` |
 | `switch.ios2ha_camera_stacking_allowed` | Forces depth 1 when off, whatever the mode | on |
 | `switch.ios2ha_camera_autofocus` | On: the phone focuses itself. Off: the lens is held at `focus_position`. See "The picture is soft at night" above for choosing | on |
 | `switch.ios2ha_camera_on_demand` | Off restores the old always-connected behaviour: the phone connection is held open for the life of the process instead of opened per capture or viewer | on |
+| `switch.ios2ha_camera_focus_at_dusk` | Run the service's own focus search once each evening, as the light starts to fall; only while autofocus is off | on |
 | `switch.ios2ha_camera_flat_field_correction` | Subtract the recorded fixed grain from night stills, with the smoothing lightened to match what is left. Does nothing until a flat field is recorded | on |
 | `switch.ios2ha_camera_backgrounding` | Allows the app to be backgrounded between captures when the battery is low, which is what lets the phone actually charge. Turning it off while the app is backgrounded foregrounds it immediately | on |
 
@@ -187,6 +196,9 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
+| `button.ios2ha_camera_set_colour_reference` | Remembers the colour region's colour from the last still; `reference` white balance then holds night stills to it. Refused in daylight. See [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour) |
+| `button.ios2ha_camera_level_horizon` | Measures how far the last still leans from the verticals in the view and adds it to `rotation`, which turns stills (not the live feeds) back by that much. Needs a daylight still. See [OPERATIONS.md](OPERATIONS.md#levelling-the-view) |
+| `button.ios2ha_camera_focus_now` | Finds the sharpest far-field focus and holds it: a far-to-near sweep of the lens, averaging ~3 s of frames per position, then a golden-section refine. About 40 s. Switches autofocus off. See [OPERATIONS.md](OPERATIONS.md#keeping-the-picture-in-focus) |
 | `button.ios2ha_camera_record_flat_field` | Records the sensor's fixed grain from a flat field: cover the lens with a tissue so it sees a dim, even glow, then press. About a minute. Refused, keeping any earlier recording, unless the picture is evenly lit; restarts the camera afterwards to reset its white balance. See [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain) |
 | `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |
 

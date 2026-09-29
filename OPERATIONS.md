@@ -174,6 +174,19 @@ A still that could not be made is a warning, `still failed: <reason>` — most o
 `no frames: <stream state>`. Before 2.13.0 that reason went only into the MQTT event, so with MQTT
 off a camera that had stopped producing stills left no trace in the log at all.
 
+## The control page
+
+`http://<host>:8099/` (it redirects to `/ui/`) shows every entity Home Assistant has -- readings,
+switches, numbers, selects and buttons -- with what each one does, updating live, and the picture.
+It is a client of the JSON API like the Home Assistant component: it hardcodes only
+`/api/v1/info`, writes through `/api/v1/control/{name}`, and shows the API's own error when a
+write is refused. So it exists exactly when `EXPOSE_API` is on, and needs no Home Assistant at all
+-- useful when Home Assistant is the thing that is down.
+
+The Stacked and Live views keep the phone connected, and awake, for as long as they are shown: they
+start only when you press Start, and stop when you switch view or the browser tab is hidden. Like
+the rest of the API the page has no login and is meant for the LAN only; do not publish port 8099.
+
 ## Health and alerts
 
 Availability is a last-will topic plus frame age. With the connection on demand, `camera_online` is
@@ -534,6 +547,101 @@ docker compose up -d --force-recreate ios2ha-camera
 ```
 
 A plain `docker restart` is enough too — what matters is that the bind mount is re-resolved.
+
+## Keeping the picture in focus
+
+The phone's own autofocus is not good enough at night, and a fixed lens position is not either.
+Measured 2026-09-28 on a skyline through a window: night autofocus parked the lens at 0.68 while
+the sharpest position was 0.78-0.82, with about five times the edge detail; by 23:00 the best had
+drifted to 0.77. So the service focuses itself.
+
+**A focus run** (`button.ios2ha_camera_focus_now`, and once each dusk with
+`switch.ios2ha_camera_focus_at_dusk`) searches lens positions 0.60 to 1.00 only. Anything within
+about a metre -- the window, a curtain -- focuses below 0.60, so it is never considered; 1.00 is the
+far end of the lens's travel, past infinity. At each position it lets the lens settle and averages
+~3 s of frames, because a single night frame is too dark to judge, and scores the edge detail of the
+most detailed quarter of the picture, border excluded. It probes 1.00, 0.90, 0.80, 0.70 and 0.60,
+brackets the farthest peak within 10% of the best -- near-equal peaks go far -- and narrows it by
+golden-section comparison to 0.01. About 40 s, and the whole score curve is logged.
+
+A result is kept only if it beats the position it would replace, measured then and there: the held
+position is scored either side of the result, which cancels a steady change in the light, because
+contrast changing through a run -- lights coming on at dusk, the phone changing exposure -- can fake
+a peak. A kept result is written to `focus_position`, held exactly as a value you type would be.
+Otherwise nothing changes: no clear peak (fog, darkness, a covered lens), not better than the held
+focus, or a phone that failed the run -- which also puts the lens back.
+`sensor.ios2ha_camera_focus_run` says which.
+
+A run first waits for the phone to answer: at dusk the battery policy has usually backgrounded the
+app, which refuses every call until the session the run opens has woken it.
+
+**The dusk run** follows a still taken in the afternoon or evening whose scene needs more brightening
+than the one before -- the light is falling -- but still has light for edges (night weight between 0
+and 0.5). Dawn does not count, although the light passes through the same band. It runs once a day
+on success, tries at most three times, and only while autofocus is off -- with autofocus on the
+phone is in charge.
+
+**The lens is re-driven at every capture.** The phone reports a lens position, but it is not to be
+trusted: after the app's capture session restarted on 2026-09-28 it reported 0.804 while the lens
+sat elsewhere, and stills went soft. So every session moves the lens 0.03 away and back to the held
+position rather than believing it is already there.
+
+## Holding the night colour
+
+The phone's automatic white balance moves at night and cannot come back without light. Measured
+2026-09-28: covering the lens left stills cyan (green/red 1.48 against 0.97) for the rest of the
+night; a curtain opening behind the camera made them bluer everywhere; restarting the app's capture
+session fixed it once and made it worse the second time. The app exposes no white-balance control.
+
+So the service holds the colour itself:
+
+1. On a night still whose colour looks right, choose a region of the view that is lit the same way
+   every night -- a wall under a street light, not a window whose light comes and goes. On the
+   control page, press **Pick colour region** and drag over the still (**Show region** shows the one
+   in use), or set `number.ios2ha_camera_colour_region_x0/y0/x1/y1` (fractions of the frame).
+2. Press **Set colour reference**. `sensor.ios2ha_camera_colour_reference` reads `ready`.
+3. Set `select.ios2ha_camera_white_balance` to `reference`.
+
+Each night still is then registered against the reference -- the camera may be nudged a little -- the
+region is measured where the whole view says it went, and the still gets the per-channel gains that
+give it its remembered colour, faded in with the night render; daylight stays as the phone shot it.
+Tested on 2026-09-28's real stacks: a reference from before the curtain, applied either side of the
+shift it caused, brought both to the same colours across the scene. `colour_reference` reads
+`applied` when a still was corrected and `no_match` when the view no longer matches -- the camera has
+moved too far: record it again. Recording is refused in daylight (a sunlit colour is not what night
+stills should be held to), with no still yet, or when the region is too dark to measure.
+
+## Levelling the view
+
+Press **Level horizon** (`button.ios2ha_camera_level_horizon`) on a day when the last still is a
+daylight one. It measures how far the view leans, adds that to `number.ios2ha_camera_rotation` and
+takes a still at once to show it: stills are turned by the rotation (clockwise for positive) and
+zoomed just enough that no corner shows (at 2 degrees, about 4% of the view). The live and stacked feeds are left as the phone sends them.
+`sensor.ios2ha_camera_horizon` says what happened: `levelled`, or why it was refused.
+
+The lean is read from the verticals -- building edges, window frames -- not the rooflines: on the
+28 Sep stills each facade's roofline leant 3 to 8 degrees by perspective alone. The camera looks up
+about 13 degrees, which fans the verticals out towards the edges, so the lean is taken where that
+fan has none, at the centre. Checked on the archive: one framing read -0.31 to -0.71 degrees across
+three and a half days and nights, the current one +0.71 to +0.79 by day.
+
+It is refused:
+
+- at night or late dusk (`rejected_night`, when the still used more than half the night render):
+  verticals then include reflections in the glass, and one night still read 1.4 degrees off while
+  looking certain of it. A grey day's little night weight does not count;
+- with too few clear verticals, or ones that disagree (`rejected_no_clear_lines`);
+- before the first still (`rejected_no_still`).
+
+Pressing it again changes nothing more than the first press did: the lean is measured on the still
+as shown and added to the rotation that still was turned by, so a second press before the next still
+gives the same answer. Set the rotation by hand to undo it. The black level, the gains and the
+sharpness and clipping readings are taken from the stack before it is turned, so setting a rotation
+does not shift them.
+
+A colour reference records the region as drawn on the levelled still. **Record it again after
+changing the rotation**: a reference from before keeps being applied -- a small turn still
+correlates -- but measured slightly off, which moves its gains by a few per cent.
 
 ## Removing the sensor's fixed grain
 

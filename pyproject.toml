@@ -4,7 +4,7 @@ name = "ios2ha-camera"
 # so there is no second copy in the source to drift. Semantics are in
 # CHANGELOG.md: the Home Assistant entity and topic surface is the public
 # interface, because that is what breaks other people's automations.
-version = "2.14.0"
+version = "2.15.0"
 description = "Turns an old iPhone running a camera app into a Home Assistant camera"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -64,6 +64,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The control page, served by api.py; without this pip leaves it out of the image.
+[tool.setuptools.package-data]
+ios2ha_camera = ["web/*"]
 
 [tool.pytest.ini_options]
 # "." so tests can import the shared fixtures as tests.fakes.*

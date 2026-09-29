@@ -58,9 +58,12 @@ def test_info_carries_the_device_block_mqtt_publishes():
     assert info["device"]["sw_version"].startswith(info["version"])
 
 
+ENTITIES_BY_KEY = {(e.domain, e.object_id): e for e in ENTITIES}
+
+
 def test_objects_describes_every_entity():
     _, doc = _get(_api(), "/api/v1/objects")
-    assert len(doc["objects"]) == len(ENTITIES) == 101
+    assert len(doc["objects"]) == len(ENTITIES) == 113
     assert [o["object_id"] for o in doc["objects"]] == [e.object_id for e in ENTITIES]
 
     by_key = {(o["domain"], o["object_id"]): o for o in doc["objects"]}
@@ -70,9 +73,11 @@ def test_objects_describes_every_entity():
         "state_class": None, "options": None, "lo": 30, "hi": 3600, "step": 1,
         "category": "config", "icon": "mdi:timer-outline", "writable": True,
         "precision": None,
+        "description": ENTITIES_BY_KEY[("number", "interval_s")].description,
     }
+    assert by_key[("number", "interval_s")]["description"].startswith("How often a still is made")
     assert by_key[("select", "white_balance")]["options"] == [
-        "as-shot", "grey-world", "brightest-patch"]
+        "as-shot", "grey-world", "brightest-patch", "reference"]
     assert by_key[("sensor", "battery")]["state_class"] == "measurement"
     # The one null name in the registry: Home Assistant reads it as "this is the
     # device's main feature". Serving it as a real null, not as an absent key.
@@ -95,7 +100,7 @@ def test_an_object_is_identified_by_domain_and_object_id_together():
     ids = [o["object_id"] for o in doc["objects"]]
     pairs = [(o["domain"], o["object_id"]) for o in doc["objects"]]
     assert len(set(ids)) < len(ids)
-    assert len(set(pairs)) == len(pairs) == 101
+    assert len(set(pairs)) == len(pairs) == 113
 
 
 def test_media_declares_whether_it_holds_the_phone():
@@ -243,7 +248,7 @@ def test_every_writable_entity_is_reachable_through_the_one_verb():
     Assistant offers and this service ignores."""
     _, doc = _get(_api(), "/api/v1/objects")
     writable = [o for o in doc["objects"] if o["writable"]]
-    assert len(writable) == 39
+    assert len(writable) == 48
 
     for o in writable:
         app, seen = _recording_api()

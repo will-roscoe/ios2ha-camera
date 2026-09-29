@@ -265,6 +265,31 @@ the only imaging control proven to do anything. The supervisor treats focus as a
 not a command to send once: it is checked against the phone at the start of every session and put
 back if it has drifted, because the app starts on autofocus every time it is relaunched.
 
+### `focus.py`
+The service's own autofocus, as a pure search over a `measure(position)` callable: `score` is the
+edge energy of the most detailed quarter of an averaged half-size luma, border excluded; `search`
+probes 1.00 to 0.60 far to near, brackets the far-most peak within 10% of the best and golden-section
+refines it. The supervisor supplies `measure` -- move the lens over ONVIF, gather frames after it
+settles, average, score -- and runs it on the capture thread (`Supervisor.run_focus`).
+
+### `colour_ref.py`
+Holds night stills to a picked region's remembered colour. `record` keeps the region's median colour
+and a small log-luma picture of the whole view; `gains` registers the whole view by phase correlation
+(its shift only -- its confidence was no guide at night), checks the aligned views still correlate,
+measures the region where the view says it went, and returns gains normalised so brightness is
+untouched. The whole view decides where the region went because matching the region locally locked
+onto a look-alike block 90 px away on real data.
+
+### `horizon.py`
+Levels stills. `estimate_tilt` takes line segments (OpenCV's LSD) within 10 degrees of vertical and
+fits lean = roll + k * x to them, robust and weighted by length: a camera pitched up fans its
+verticals out in proportion to their distance from the centre, so the roll is the lean at the
+centre. Rooflines are not used -- each facade's leant 3 to 8 degrees by perspective on real stills. A
+view with too few verticals, a loose fit or an uncertain roll raises `NoClearHorizon`. `level` turns a
+picture back about its centre and zooms just enough that no corner shows. The supervisor turns the
+stack after the flat field (fixed to the sensor's pixels) and before white balance and the colour
+reference (whose region is drawn on the levelled still).
+
 ### `flat.py`
 The sensor's fixed grain. `check` accepts only a recording that is lit above the black clamp, below
 white, and free of edges (so the uncovered view is refused); `pattern` is the fine texture at a

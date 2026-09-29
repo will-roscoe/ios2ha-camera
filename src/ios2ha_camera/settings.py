@@ -1,6 +1,7 @@
 """Runtime settings: defaults, environment overrides, and Home Assistant control writes."""
 
 import logging
+import math
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -16,7 +17,9 @@ CONTROLS = {
     "white_balance",
     "render_intent", "night_key", "stretch_strength", "chroma_radius",
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
-    "flat_field_correction",
+    "flat_field_correction", "focus_at_dusk",
+    "colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1",
+    "rotation",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -44,6 +47,7 @@ _ENV_MAP = {
     "CONTROLS_FILE": "controls_file",
     "REBOOTS_FILE": "reboots_file",
     "FLAT_FIELD_FILE": "flat_field_file",
+    "COLOUR_REFERENCE_FILE": "colour_reference_file",
 }
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -60,7 +64,7 @@ _EXPOSE_ENV_KEYS = {"EXPOSE_MQTT", "EXPOSE_API"}
 # otherwise be accepted and then silently fall back to a default mid-render.
 _CHOICES = {
     "stacking_mode": ("off", "fixed", "auto"),
-    "white_balance": ("as-shot", "grey-world", "brightest-patch"),
+    "white_balance": ("as-shot", "grey-world", "brightest-patch", "reference"),
     "render_intent": ("natural", "inspection"),
 }
 
@@ -117,6 +121,9 @@ class Settings:
     # The sensor's fixed grain, recorded from a flat field; see flat.py. Empty
     # turns the feature off, and the Record flat field button with it.
     flat_field_file: str = "/data/flat_field.npy"
+    # The colour a picked region is held to at night; see colour_ref.py. Empty
+    # turns the feature off, and the Set colour reference button with it.
+    colour_reference_file: str = "/data/colour_reference.npz"
     live_port: int = 8099
     # Which interfaces reach Home Assistant. Media routes are always served --
     # they are the camera -- so turning both off is a loud warning, not a
@@ -144,7 +151,18 @@ class Settings:
     black_level: tuple = (0.0, 0.0, 0.0)
     black_level_override_on: bool = False
     black_level_override: tuple | None = None
-    white_balance: str = "as-shot"       # as-shot | grey-world | brightest-patch
+    white_balance: str = "as-shot"       # as-shot | grey-world | brightest-patch | reference
+    # The region the colour reference is taken from, as fractions of the frame:
+    # left, top, right, bottom. Drawn on the control page; recorded with the Set
+    # colour reference button, which is when a change to these takes effect.
+    colour_region_x0: float = 0.35
+    colour_region_y0: float = 0.35
+    colour_region_x1: float = 0.65
+    colour_region_y1: float = 0.65
+    # Degrees stills are turned by, clockwise for positive -- correcting a view
+    # that leans counter-clockwise -- and zoomed so no corner shows. Set by the
+    # Level horizon button; stills only, not the live feeds.
+    rotation: float = 0.0
     render_intent: str = "natural"       # natural | inspection
     night_key: float = 0.09
     stretch_strength: float = 25.0
@@ -159,6 +177,9 @@ class Settings:
     # autofocus is on it follows where autofocus put the lens, so switching
     # autofocus off holds the lens about where it was; see Supervisor._apply_focus.
     focus_position: float = 1.0
+    # Run the service's own focus search once each evening, while there is still
+    # light to judge edges by. Only while autofocus is off; see Supervisor.run_focus.
+    focus_at_dusk: bool = True
     on_demand: bool = True               # False keeps the connection open continuously
     live_max_window_s: float = 3.0       # live feed's depth cap, in seconds of real time
     # Backgrounding between captures. iOS suspends a backgrounded app's listening
@@ -227,6 +248,8 @@ class Settings:
             raise ValueError(f"{name} must be one of {_CHOICES[name]}, not {value!r}")
         if name in _BOOL_CONTROLS:
             value = _coerce_bool(value)
+        if name == "rotation":
+            value = _rotation(value)
         if name == "black_level_override" and value is not None:
             try:
                 value = tuple(float(v) for v in value)
@@ -260,6 +283,23 @@ class Settings:
         half goes through here so the two can never disagree.
         """
         self.black_level_override = self.black_level if self.black_level_override_on else None
+
+
+# The largest rotation a still may be turned by, either way. Home Assistant's
+# number keeps to it; an MQTT or hand-typed write need not, and a rotation that
+# cannot be applied would fail every still, and be restored on every start.
+MAX_ROTATION = 10.0
+
+
+def _rotation(value):
+    try:
+        angle = float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"rotation must be a number of degrees, not {value!r}") from e
+    if not math.isfinite(angle) or abs(angle) > MAX_ROTATION:
+        raise ValueError(f"rotation must be within {MAX_ROTATION:g} degrees either way, "
+                         f"not {value!r}")
+    return angle
 
 
 # Boolean controls, derived from the dataclass itself: exactly the CONTROLS

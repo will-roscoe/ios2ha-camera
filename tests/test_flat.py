@@ -114,3 +114,11 @@ def test_a_rejected_recording_keeps_the_previous_one(tmp_path):
     img, _ = _scene()
     assert ff.record(img) == "not_flat"
     assert FlatField(str(tmp_path / "flat.npy")).ready
+
+
+def test_an_empty_recording_is_not_fatal(tmp_path):
+    """Built at start: an exception here is a crash loop, and a power cut during a
+    first recording can leave the file empty."""
+    path = tmp_path / "flat.npy"
+    path.write_bytes(b"")
+    assert not FlatField(str(path)).ready

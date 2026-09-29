@@ -118,7 +118,7 @@ def test_bool_controls_are_derived_from_the_dataclass():
     assert _BOOL_CONTROLS == {
         "stacking_allowed", "on_demand", "autofocus", "backgrounding", "auto_start",
         "auto_reboot", "emergency_keyboard", "black_level_override_on",
-        "flat_field_correction",
+        "flat_field_correction", "focus_at_dusk",
     }
 
 
