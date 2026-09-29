@@ -321,6 +321,23 @@
     "name": "Phone screenshot",
     "unique_id": "ios2ha_button_screenshot"
   },
+  "homeassistant/button/ios2ha/set_colour_reference/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/set_colour_reference",
+    "default_entity_id": "button.ios2ha_camera_set_colour_reference",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:palette",
+    "name": "Set colour reference",
+    "unique_id": "ios2ha_button_set_colour_reference"
+  },
   "homeassistant/button/ios2ha/start_streaming/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/start_streaming",
@@ -505,6 +522,94 @@
     "state_topic": "ios2ha_camera/state/clean_factor",
     "step": 1,
     "unique_id": "ios2ha_number_clean_factor"
+  },
+  "homeassistant/number/ios2ha/colour_region_x0/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/colour_region_x0",
+    "default_entity_id": "number.ios2ha_camera_colour_region_x0",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:selection-drag",
+    "max": 1,
+    "min": 0,
+    "mode": "box",
+    "name": "Colour region left",
+    "state_topic": "ios2ha_camera/state/colour_region_x0",
+    "step": 0.001,
+    "unique_id": "ios2ha_number_colour_region_x0"
+  },
+  "homeassistant/number/ios2ha/colour_region_x1/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/colour_region_x1",
+    "default_entity_id": "number.ios2ha_camera_colour_region_x1",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:selection-drag",
+    "max": 1,
+    "min": 0,
+    "mode": "box",
+    "name": "Colour region right",
+    "state_topic": "ios2ha_camera/state/colour_region_x1",
+    "step": 0.001,
+    "unique_id": "ios2ha_number_colour_region_x1"
+  },
+  "homeassistant/number/ios2ha/colour_region_y0/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/colour_region_y0",
+    "default_entity_id": "number.ios2ha_camera_colour_region_y0",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:selection-drag",
+    "max": 1,
+    "min": 0,
+    "mode": "box",
+    "name": "Colour region top",
+    "state_topic": "ios2ha_camera/state/colour_region_y0",
+    "step": 0.001,
+    "unique_id": "ios2ha_number_colour_region_y0"
+  },
+  "homeassistant/number/ios2ha/colour_region_y1/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/colour_region_y1",
+    "default_entity_id": "number.ios2ha_camera_colour_region_y1",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:selection-drag",
+    "max": 1,
+    "min": 0,
+    "mode": "box",
+    "name": "Colour region bottom",
+    "state_topic": "ios2ha_camera/state/colour_region_y1",
+    "step": 0.001,
+    "unique_id": "ios2ha_number_colour_region_y1"
   },
   "homeassistant/number/ios2ha/denoise_strength/config": {
     "availability_topic": "ios2ha_camera/available",
@@ -887,7 +992,8 @@
     "options": [
       "as-shot",
       "grey-world",
-      "brightest-patch"
+      "brightest-patch",
+      "reference"
     ],
     "state_topic": "ios2ha_camera/state/white_balance",
     "unique_id": "ios2ha_select_white_balance"
@@ -1137,6 +1243,34 @@
     "state_topic": "ios2ha_camera/state/charger_watts",
     "unique_id": "ios2ha_sensor_charger_watts",
     "unit_of_measurement": "W"
+  },
+  "homeassistant/sensor/ios2ha/colour_reference/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_colour_reference",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:palette",
+    "name": "Colour reference",
+    "options": [
+      "none",
+      "ready",
+      "applied",
+      "no_match",
+      "region_too_dark",
+      "rejected_daylight",
+      "rejected_too_dark",
+      "rejected_no_still"
+    ],
+    "state_topic": "ios2ha_camera/state/colour_reference",
+    "unique_id": "ios2ha_sensor_colour_reference"
   },
   "homeassistant/sensor/ios2ha/colour_temperature/config": {
     "availability_topic": "ios2ha_camera/available",

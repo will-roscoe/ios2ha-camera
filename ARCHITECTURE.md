@@ -272,6 +272,14 @@ probes 1.00 to 0.60 far to near, brackets the far-most peak within 10% of the be
 refines it. The supervisor supplies `measure` -- move the lens over ONVIF, gather frames after it
 settles, average, score -- and runs it on the capture thread (`Supervisor.run_focus`).
 
+### `colour_ref.py`
+Holds night stills to a picked region's remembered colour. `record` keeps the region's median colour
+and a small log-luma picture of the whole view; `gains` registers the whole view by phase correlation
+(its shift only -- its confidence was no guide at night), checks the aligned views still correlate,
+measures the region where the view says it went, and returns gains normalised so brightness is
+untouched. The whole view decides where the region went because matching the region locally locked
+onto a look-alike block 90 px away on real data.
+
 ### `flat.py`
 The sensor's fixed grain. `check` accepts only a recording that is lit above the black clamp, below
 white, and free of edges (so the uncovered view is refused); `pattern` is the fine texture at a

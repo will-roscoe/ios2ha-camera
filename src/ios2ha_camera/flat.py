@@ -86,8 +86,10 @@ class FlatField:
             self._pattern = np.load(path).astype(np.float32)
         except FileNotFoundError:
             pass
-        except (OSError, ValueError) as e:
-            log.warning("flat field: could not read %s, correcting nothing: %s", path, e)
+        except Exception as e:
+            # Anything: this is built at start, where an exception is a crash loop, and
+            # a power cut during a first recording can leave the file empty.
+            log.warning("flat field: could not read %s, correcting nothing: %r", path, e)
 
     @property
     def ready(self):
@@ -106,6 +108,8 @@ class FlatField:
         tmp = self.path + ".tmp"
         with open(tmp, "wb") as f:
             np.save(f, p.astype(np.float16))
+            f.flush()
+            os.fsync(f.fileno())      # on disk before it replaces a good one
         os.replace(tmp, self.path)
         self._pattern = p
         return None
