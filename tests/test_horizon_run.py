@@ -140,10 +140,71 @@ def test_the_colour_reference_is_recorded_from_the_levelled_view(tmp_path):
     sup.produce_still(now_fps=12.0)
     sup.handle_control("set_colour_reference", "PRESS")
     levelled = horizon.level(sup.last_stack, 3.0)
-    black, _ = render.calibration(levelled, sup.s)
+    black, _ = render.calibration(sup.last_stack, sup.s)    # the black level is the stack's
     assert np.allclose(seen["linear"], np.clip(levelled - black, 0, None))
 
 
 def test_the_state_is_published_from_the_start():
     sup, _ = _sup()
     assert sup.health_state()["horizon"] == "none"
+
+
+def test_pressing_again_before_the_next_still_does_not_add_the_lean_twice():
+    """The still does not change until the next one is made; a second press on it
+    measures the same lean, which is already in the rotation."""
+    sup, buf = _sup(target_level=DAY)
+    _fill(buf, _rolled(_city(), 1.5))
+    sup.produce_still(now_fps=12.0)
+    sup.handle_control("level_horizon", "PRESS")
+    sup.handle_control("level_horizon", "PRESS")
+    assert sup.s.rotation == pytest.approx(1.5, abs=0.2)
+
+
+def test_a_rotation_typed_since_the_still_does_not_skew_the_answer():
+    sup, buf = _sup(target_level=DAY)
+    _fill(buf, _rolled(_city(), 1.5))
+    sup.produce_still(now_fps=12.0)
+    sup.handle_control("rotation", 1.0)
+    sup.handle_control("level_horizon", "PRESS")
+    assert sup.s.rotation == pytest.approx(1.5, abs=0.2)
+
+
+def test_a_grey_day_is_not_taken_for_night():
+    """Weight rises above zero whenever the scene is below the target level, which
+    an overcast noon can be; only a real night view has reflections to mislead."""
+    subject = 1.1                                  # what the synthetic city measures
+    sup, buf = _sup(target_level=subject * 1.6)    # weight about 0.2
+    _fill(buf, _rolled(_city(), 1.5))
+    sup.produce_still(now_fps=12.0)
+    assert 0 < sup._last_shown[1] < 0.5
+    sup.handle_control("level_horizon", "PRESS")
+    assert sup.mqtt.published["horizon"] == "levelled"
+
+
+def test_a_rotation_leaves_the_readings_taken_from_the_stack_alone():
+    """Black level, sharpness and clipping describe the stack; turning the picture
+    resamples it, which narrows its noise and softens it, and must not look like
+    the focus or the black level moving."""
+    keys = ("black_level_applied_r", "black_level_applied_g", "black_level_applied_b",
+            "focus_sharpness", "highlight_clip")
+    rng = np.random.default_rng(5)
+    view = np.clip(_city().astype(np.float32) * 0.3 + rng.normal(0, 3, (540, 960, 3)), 0, 255)
+    sup, buf = _sup(target_level=NIGHT)
+    _fill(buf, view.astype(np.uint8))
+    sup.produce_still(now_fps=12.0)
+    before = {k: sup.mqtt.published[k] for k in keys}
+    sup.handle_control("rotation", 0.7)
+    sup.produce_still(now_fps=12.0)
+    assert {k: sup.mqtt.published[k] for k in keys} == before
+
+
+@pytest.mark.parametrize("value", ["abc", float("nan"), 45, None])
+def test_a_rotation_that_is_not_a_small_angle_is_refused(value):
+    """Home Assistant keeps to the range; an MQTT or hand-typed write need not, and
+    a rotation that cannot be applied would fail every still, even after a restart."""
+    sup, buf = _sup(target_level=DAY, rotation=0.6)
+    sup.handle_control("rotation", value)
+    assert sup.s.rotation == 0.6
+    _fill(buf, _city())
+    sup.produce_still(now_fps=12.0)
+    assert sup.mqtt.stills

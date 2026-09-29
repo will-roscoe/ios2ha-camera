@@ -541,13 +541,15 @@ _DESCRIPTIONS = {
         "still that looks right. White balance reference then pulls later night stills back "
         "to it. Press again after moving the camera or the region.",
     ("number", "rotation"):
-        "Degrees the stills are turned back by, counter-clockwise, zoomed just enough "
-        "that no corner shows: at 2 degrees about 4% of the view. Stills only; the live "
-        "feeds are left as the phone sends them. Set by Level horizon.",
+        "Degrees the stills are turned by, clockwise for positive -- correcting a view "
+        "that leans counter-clockwise -- zoomed just enough that no corner shows: at 2 "
+        "degrees about 4% of the view. Stills only; the live feeds are left as the phone "
+        "sends them. Set by Level horizon.",
     ("button", "level_horizon"):
         "Measure how far the last still leans from the verticals in the view -- building "
-        "edges, window frames -- and add it to Rotation. Needs a daylight still: at night "
-        "reflections in the glass mislead it.",
+        "edges, window frames -- and add it to Rotation, then take a still to show it. "
+        "Needs a daylight still: at night reflections in the glass mislead it. Record the "
+        "colour reference again afterwards.",
     ("sensor", "horizon"):
         "What Level horizon last did: levelled, or why it was refused -- no still yet, a "
         "night still, or no clear verticals to go by.",

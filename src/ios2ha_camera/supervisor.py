@@ -31,7 +31,7 @@ from . import focus, horizon, measure, render, stack
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .reboot import WEDGE_FOR_S
-from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, _coerce_bool
+from .settings import BLACK_LEVEL_CHANNELS, CONTROLS, MAX_ROTATION, _coerce_bool
 from .states import ACTIVE_STATES
 from .upstream import CAPTURE_OPEN_TIMEOUT_S
 
@@ -70,6 +70,11 @@ FOCUS_PROBE_TIMEOUT_S = 8.0
 # restart in the night never triggers it.
 DUSK_MAX_WEIGHT = 0.5
 DUSK_TRIES = 3
+# Level horizon refuses a still made with more of the night render than this.
+# Measured 28 Sep: at night, reflections in the glass misled it by 1.4 degrees;
+# daytime stills measured only just above the default target level, so an overcast
+# noon has a little night weight and must not be refused as night.
+LEVEL_MAX_WEIGHT = 0.5
 
 # How long the app stays in the background when restarting its capture session.
 WB_RESET_PAUSE_S = 5.0
@@ -533,16 +538,20 @@ class Supervisor:
                 black, gains = render.calibration(stacked, self.s)
         # Levelled after the flat field, which is fixed to the sensor's pixels, and
         # before anything measured on the view, whose regions are drawn on the still.
-        if self.s.rotation:
-            stacked = horizon.level(stacked, self.s.rotation)
-            black, gains = render.calibration(stacked, self.s)
+        # The black level, gains and the stack's own readings stay those of the
+        # unturned stack: resampling narrows its noise and softens it a little, and
+        # setting a rotation must not look like the black level or the focus moving.
+        rotation = self.s.rotation            # once: the still is paired with it
+        unturned = stacked
+        if rotation:
+            stacked = horizon.level(stacked, rotation)
         gains = self._colour_gains(stacked, black, gains, weight)
         rgb = render.render(stacked, self.s, applied=(black, gains), night_weight=weight,
                             smoothing=smoothing)
         self._last_render = (stacked, black, weight, np.asarray(gains, dtype=np.float64))
         jpeg = render.to_jpeg(rgb)
         self._last_jpeg = jpeg
-        self._last_shown = (jpeg, weight)
+        self._last_shown = (jpeg, weight, rotation)
         self.mqtt.publish_still(jpeg)
 
         free = self.archive.free_bytes()
@@ -572,12 +581,12 @@ class Supervisor:
             **{f"lum_p{int(p)}": round(pct[p], 2) for p in (1, 10, 50, 90, 99)},
             "dynamic_range": round(raw[99.5] / max(raw[0.5], 1.0), 1),
             # Per cent, to match the sensor's declared unit.
-            "highlight_clip": round(float((stacked.max(axis=2) >= 250).mean()) * 100, 2),
+            "highlight_clip": round(float((unturned.max(axis=2) >= 250).mean()) * 100, 2),
             "noise": noise,
             "snr": snr,
             "motion": (round(measure.motion_level(probe[-2], probe[-1]), 3)
                        if len(probe) >= 2 else 0.0),
-            "focus_sharpness": round(measure.focus_sharpness(stacked), 1),
+            "focus_sharpness": round(measure.focus_sharpness(unturned), 1),
             "frame_rate": round(now_fps, 1),
             "effective_exposure_required": round(required / max(now_fps, 1e-6), 2),
             "effective_exposure_achieved": round(used / max(now_fps, 1e-6), 2),
@@ -1280,14 +1289,17 @@ class Supervisor:
     # -- levelling the view --------------------------------------------------
 
     def _level_horizon(self):
-        """Measure the last still's lean and add it to `rotation`. See horizon.py.
+        """Measure the last still's lean and add it to the rotation that still was
+        turned by. See horizon.py.
 
-        The still is already turned by the rotation in use, so what is measured is
-        what is left: a second press on a level view changes nothing."""
+        Added to that rotation, not to the one in use now: a second press before the
+        next still, or a rotation typed since, would otherwise count the same lean
+        twice. A still made with this rotation is asked for at once, so the result
+        shows without waiting for the schedule."""
         if self._last_shown is None:
             return self._set_horizon_state("rejected_no_still")
-        jpeg, weight = self._last_shown
-        if weight is None or weight > 0:
+        jpeg, weight, shown_with = self._last_shown
+        if weight is None or weight > LEVEL_MAX_WEIGHT:
             return self._set_horizon_state("rejected_night")
         bgr = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         try:
@@ -1295,11 +1307,12 @@ class Supervisor:
         except horizon.NoClearHorizon as e:
             log.info("level horizon: refused, %s", e)
             return self._set_horizon_state("rejected_no_clear_lines")
-        rotation = round(min(10.0, max(-10.0, self.s.rotation + lean)), 1)
+        rotation = round(min(MAX_ROTATION, max(-MAX_ROTATION, shown_with + lean)), 1)
         log.info("level horizon: the still leans %+.2f degrees; rotation %.1f -> %.1f",
-                 lean, self.s.rotation, rotation)
+                 lean, shown_with, rotation)
         # Written as a person's write is: persisted, and echoed to every client.
         self._apply_setting("rotation", rotation)
+        self.capture_requested.set()
         return self._set_horizon_state("levelled")
 
     def _set_horizon_state(self, state):

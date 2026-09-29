@@ -104,3 +104,15 @@ def test_levelling_leaves_no_black_corners():
 def test_no_rotation_is_no_change():
     img = _city()
     assert horizon.level(img, 0.0) is img
+
+
+def test_levelling_keeps_the_detail():
+    """Measured on a real still at 0.7 degrees: bilinear resampling cost 45% of the
+    sharpness score, which reads as the focus drifting."""
+    from ios2ha_camera import measure
+    rng = np.random.default_rng(2)
+    img = np.clip(_city().astype(np.float32) + rng.normal(0, 12, (540, 960, 3)), 0, 255)
+    img = cv2.GaussianBlur(img, (0, 0), 0.8)
+    before = measure.focus_sharpness(img)
+    after = measure.focus_sharpness(horizon.level(img, 0.7))
+    assert after > 0.8 * before
