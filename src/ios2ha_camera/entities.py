@@ -553,8 +553,9 @@ _DESCRIPTIONS = {
         "night still, or no clear verticals to go by.",
     ("sensor", "colour_reference"):
         "The colour reference: none, ready, applied (the last still was corrected), no_match "
-        "(the view no longer matches -- the camera moved too far: record it again), or why the "
-        "last recording was refused.",
+        "(the view no longer matches -- the camera moved too far: record it again), "
+        "region_too_dark (the region's light is out tonight, so it was left as shot), or why "
+        "the last recording was refused.",
     ("select", "render_intent"):
         "natural renders a night picture that looks like a photograph; inspection stretches the "
         "shadows to read detail, and looks processed.",

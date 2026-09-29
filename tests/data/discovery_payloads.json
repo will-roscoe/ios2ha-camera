@@ -1304,6 +1304,7 @@
       "ready",
       "applied",
       "no_match",
+      "region_too_dark",
       "rejected_daylight",
       "rejected_too_dark",
       "rejected_no_still"

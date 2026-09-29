@@ -119,3 +119,50 @@ def test_a_view_that_no_longer_matches_is_left_as_shot(tmp_path):
 def test_the_state_is_published_from_the_start(tmp_path):
     sup, _ = _sup(tmp_path)
     assert sup.health_state()["colour_reference"] == "none"
+
+
+def test_pressing_again_on_a_corrected_still_keeps_its_colour(tmp_path):
+    """The colour a person approves is the one they saw -- corrected. Recording the
+    stack under it would record the cast, and undo the correction."""
+    sup, buf = _sup(tmp_path, white_balance="reference")
+    _fill(buf, _night_view())
+    sup.produce_still(now_fps=12.0)
+    sup.handle_control("set_colour_reference", "PRESS")
+    _fill(buf, _night_view(), cast=(0.8, 1.0, 1.35))
+    sup.produce_still(now_fps=12.0)
+    assert sup.mqtt.published["colour_reference"] == "applied"
+    sup.handle_control("set_colour_reference", "PRESS")      # e.g. after moving the region
+    _fill(buf, _night_view(), cast=(0.8, 1.0, 1.35))
+    sup.produce_still(now_fps=12.0)
+    p = sup.mqtt.published
+    assert p["colour_reference"] == "applied"
+    assert p["wb_gain_r"] / p["wb_gain_b"] > 1.4
+
+
+def test_a_reference_that_fails_still_gives_a_still(tmp_path):
+    sup, buf = _sup(tmp_path, white_balance="reference")
+    _fill(buf, _night_view())
+    sup.produce_still(now_fps=12.0)
+    sup.handle_control("set_colour_reference", "PRESS")
+
+    def broken(linear):
+        raise KeyError("view")
+
+    sup.colour.gains = broken
+    before = len(sup.mqtt.stills)
+    sup.produce_still(now_fps=12.0)
+    assert len(sup.mqtt.stills) == before + 1
+    p = sup.mqtt.published
+    assert (p["wb_gain_r"], p["wb_gain_g"], p["wb_gain_b"]) == (1.0, 1.0, 1.0)
+
+
+def test_daylight_is_not_reported_as_a_lost_match(tmp_path):
+    """By day the reference is not used, so whether the view matches is not asked."""
+    sup, buf = _sup(tmp_path, white_balance="reference")
+    _fill(buf, _night_view())
+    sup.produce_still(now_fps=12.0)
+    sup.handle_control("set_colour_reference", "PRESS")
+    sup.s.target_level = 2.0
+    _fill(buf, np.flipud(_night_view(seed=5)).copy() * 5 + 20)
+    sup.produce_still(now_fps=12.0)
+    assert sup.mqtt.published["colour_reference"] == "ready"
