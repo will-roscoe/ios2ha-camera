@@ -611,6 +611,32 @@ shift it caused, brought both to the same colours across the scene. `colour_refe
 moved too far: record it again. Recording is refused in daylight (a sunlit colour is not what night
 stills should be held to), with no still yet, or when the region is too dark to measure.
 
+## Levelling the view
+
+Press **Level horizon** (`button.ios2ha_camera_level_horizon`) on a day when the last still is a
+daylight one. It measures how far the view leans and adds that to `number.ios2ha_camera_rotation`;
+from the next still on, stills are turned back by it and zoomed just enough that no corner shows (at
+2 degrees, about 4% of the view). The live and stacked feeds are left as the phone sends them.
+`sensor.ios2ha_camera_horizon` says what happened: `levelled`, or why it was refused.
+
+The lean is read from the verticals -- building edges, window frames -- not the rooflines: on the
+28 Sep stills each facade's roofline leant 3 to 8 degrees by perspective alone. The camera looks up
+about 13 degrees, which fans the verticals out towards the edges, so the lean is taken where that
+fan has none, at the centre. Checked on the archive: one framing read -0.31 to -0.71 degrees across
+three and a half days and nights, the current one +0.71 to +0.79 by day.
+
+It is refused:
+
+- at night or dusk (`rejected_night`): verticals then include reflections in the glass, and one night
+  still read 1.4 degrees off while looking certain of it;
+- with too few clear verticals, or ones that disagree (`rejected_no_clear_lines`);
+- before the first still (`rejected_no_still`).
+
+Pressing it again on a level view changes nothing: it measures the still as shown, already turned.
+Set the rotation by hand to undo it. A colour reference records the region as drawn on the levelled
+still, so record it again after a large change of rotation (it reads `no_match` if it no longer
+fits).
+
 ## Removing the sensor's fixed grain
 
 Stacking removes only what changes from frame to frame. Measured 2026-09-28, at a night stack depth
