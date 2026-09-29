@@ -30,6 +30,7 @@ from .colour_ref import COLOUR_REFERENCE_STATES
 from .emergency import EMERGENCY_STATES
 from .flat import FLAT_FIELD_STATES
 from .focus import FOCUS_RUN_STATES
+from .horizon import HORIZON_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
@@ -201,6 +202,8 @@ _NUMBERS = [
             icon="mdi:selection-drag"),
     _number("colour_region_y1", "Colour region bottom", lo=0, hi=1, step=0.001,
             icon="mdi:selection-drag"),
+    _number("rotation", "Rotation", lo=-10, hi=10, step=0.1, unit="°",
+            icon="mdi:rotate-left"),
 ]
 
 # The options are the vocabulary Settings.apply_control will accept; a select
@@ -254,6 +257,8 @@ _BUTTONS = [
     _button("focus_now", "Focus now", icon="mdi:image-filter-center-focus",
             category="config"),
     _button("set_colour_reference", "Set colour reference", icon="mdi:palette",
+            category="config"),
+    _button("level_horizon", "Level horizon", icon="mdi:image-filter-hdr",
             category="config"),
 ]
 
@@ -372,6 +377,9 @@ _SENSORS = [
     _sensor("colour_reference", "Colour reference", device_class="enum",
             options=tuple(COLOUR_REFERENCE_STATES), category="diagnostic",
             icon="mdi:palette"),
+    _sensor("horizon", "Horizon", device_class="enum",
+            options=tuple(HORIZON_STATES), category="diagnostic",
+            icon="mdi:image-filter-hdr"),
     _sensor("flat_field", "Flat field", device_class="enum",
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
@@ -532,6 +540,19 @@ _DESCRIPTIONS = {
         "Remember the colour region's colour from the last still, which should be a night "
         "still that looks right. White balance reference then pulls later night stills back "
         "to it. Press again after moving the camera or the region.",
+    ("number", "rotation"):
+        "Degrees the stills are turned by, clockwise for positive -- correcting a view "
+        "that leans counter-clockwise -- zoomed just enough that no corner shows: at 2 "
+        "degrees about 4% of the view. Stills only; the live feeds are left as the phone "
+        "sends them. Set by Level horizon.",
+    ("button", "level_horizon"):
+        "Measure how far the last still leans from the verticals in the view -- building "
+        "edges, window frames -- and add it to Rotation, then take a still to show it. "
+        "Needs a daylight still: at night reflections in the glass mislead it. Record the "
+        "colour reference again afterwards.",
+    ("sensor", "horizon"):
+        "What Level horizon last did: levelled, or why it was refused -- no still yet, a "
+        "night still, or no clear verticals to go by.",
     ("sensor", "colour_reference"):
         "The colour reference: none, ready, applied (the last still was corrected), no_match "
         "(the view no longer matches -- the camera moved too far: record it again), "

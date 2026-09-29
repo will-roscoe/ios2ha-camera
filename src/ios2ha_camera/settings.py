@@ -1,6 +1,7 @@
 """Runtime settings: defaults, environment overrides, and Home Assistant control writes."""
 
 import logging
+import math
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -18,6 +19,7 @@ CONTROLS = {
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
     "flat_field_correction", "focus_at_dusk",
     "colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1",
+    "rotation",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -157,6 +159,10 @@ class Settings:
     colour_region_y0: float = 0.35
     colour_region_x1: float = 0.65
     colour_region_y1: float = 0.65
+    # Degrees stills are turned by, clockwise for positive -- correcting a view
+    # that leans counter-clockwise -- and zoomed so no corner shows. Set by the
+    # Level horizon button; stills only, not the live feeds.
+    rotation: float = 0.0
     render_intent: str = "natural"       # natural | inspection
     night_key: float = 0.09
     stretch_strength: float = 25.0
@@ -242,6 +248,8 @@ class Settings:
             raise ValueError(f"{name} must be one of {_CHOICES[name]}, not {value!r}")
         if name in _BOOL_CONTROLS:
             value = _coerce_bool(value)
+        if name == "rotation":
+            value = _rotation(value)
         if name == "black_level_override" and value is not None:
             try:
                 value = tuple(float(v) for v in value)
@@ -275,6 +283,23 @@ class Settings:
         half goes through here so the two can never disagree.
         """
         self.black_level_override = self.black_level if self.black_level_override_on else None
+
+
+# The largest rotation a still may be turned by, either way. Home Assistant's
+# number keeps to it; an MQTT or hand-typed write need not, and a rotation that
+# cannot be applied would fail every still, and be restored on every start.
+MAX_ROTATION = 10.0
+
+
+def _rotation(value):
+    try:
+        angle = float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"rotation must be a number of degrees, not {value!r}") from e
+    if not math.isfinite(angle) or abs(angle) > MAX_ROTATION:
+        raise ValueError(f"rotation must be within {MAX_ROTATION:g} degrees either way, "
+                         f"not {value!r}")
+    return angle
 
 
 # Boolean controls, derived from the dataclass itself: exactly the CONTROLS

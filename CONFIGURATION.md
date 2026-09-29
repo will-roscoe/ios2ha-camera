@@ -133,6 +133,7 @@ back to the default shown here.
 | `number.ios2ha_camera_colour_region_y0` | Colour region top | 0–1 step 0.001 | | `0.35` |
 | `number.ios2ha_camera_colour_region_x1` | Colour region right | 0–1 step 0.001 | | `0.65` |
 | `number.ios2ha_camera_colour_region_y1` | Colour region bottom | 0–1 step 0.001 | | `0.65` |
+| `number.ios2ha_camera_rotation` | Rotation | -10–10 step 0.1 | ° | `0.0`; set by Level horizon |
 | `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |
@@ -196,6 +197,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
 | `button.ios2ha_camera_set_colour_reference` | Remembers the colour region's colour from the last still; `reference` white balance then holds night stills to it. Refused in daylight. See [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour) |
+| `button.ios2ha_camera_level_horizon` | Measures how far the last still leans from the verticals in the view and adds it to `rotation`, which turns stills (not the live feeds) back by that much. Needs a daylight still. See [OPERATIONS.md](OPERATIONS.md#levelling-the-view) |
 | `button.ios2ha_camera_focus_now` | Finds the sharpest far-field focus and holds it: a far-to-near sweep of the lens, averaging ~3 s of frames per position, then a golden-section refine. About 40 s. Switches autofocus off. See [OPERATIONS.md](OPERATIONS.md#keeping-the-picture-in-focus) |
 | `button.ios2ha_camera_record_flat_field` | Records the sensor's fixed grain from a flat field: cover the lens with a tissue so it sees a dim, even glow, then press. About a minute. Refused, keeping any earlier recording, unless the picture is evenly lit; restarts the camera afterwards to reset its white balance. See [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain) |
 | `button.ios2ha_camera_prepare_phone` | Runs the same steps as `./deploy.sh phone` (lockdown, Developer Mode check, developer image mount, relaunch, battery) over USB, reported as an event. Never enables Developer Mode itself — that reboots the phone, so only `--fix-developer-mode` on the command line can — and never waits for someone to tap Start streaming |

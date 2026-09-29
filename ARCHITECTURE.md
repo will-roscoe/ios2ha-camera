@@ -280,6 +280,16 @@ measures the region where the view says it went, and returns gains normalised so
 untouched. The whole view decides where the region went because matching the region locally locked
 onto a look-alike block 90 px away on real data.
 
+### `horizon.py`
+Levels stills. `estimate_tilt` takes line segments (OpenCV's LSD) within 10 degrees of vertical and
+fits lean = roll + k * x to them, robust and weighted by length: a camera pitched up fans its
+verticals out in proportion to their distance from the centre, so the roll is the lean at the
+centre. Rooflines are not used -- each facade's leant 3 to 8 degrees by perspective on real stills. A
+view with too few verticals, a loose fit or an uncertain roll raises `NoClearHorizon`. `level` turns a
+picture back about its centre and zooms just enough that no corner shows. The supervisor turns the
+stack after the flat field (fixed to the sensor's pixels) and before white balance and the colour
+reference (whose region is drawn on the levelled still).
+
 ### `flat.py`
 The sensor's fixed grain. `check` accepts only a recording that is lit above the black clamp, below
 white, and free of edges (so the uncovered view is refused); `pattern` is the fine texture at a
