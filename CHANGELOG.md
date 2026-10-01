@@ -23,6 +23,34 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.16.0 — 2026-10-01
+
+**The service builds timelapses.** Until now Home Assistant did it: an automation copied every
+still into `/media/timelapse` and four scripts ran ffmpeg there, only when pressed. The service now
+builds them from its own archive, which is never pruned, on request: a button per rolling range
+(`button.ios2ha_camera_build_timelapse_12h`, `_24h`, `_7d`, `_1mo`), or the `build_timelapse` action
+with a JSON spec -- a range or a `start`/`end` span, and `fps`, `width`, `every`, `quality`, `name`;
+unknown keys are refused, and more than 20 000 stills is refused with the `every` that fits. Builds
+run one at a time at the lowest priority on two threads, so stacking keeps the host, and a damaged
+still is left out rather than failing the build. `sensor.ios2ha_camera_timelapse` says what the last
+request came to, with the reason in its attributes; `sensor.ios2ha_camera_timelapses` counts them,
+with the catalogue in its `items` attribute; `sensor.ios2ha_camera_timelapse_progress` shows a build
+going. The videos are served at `/api/v1/timelapse/<name>.mp4`, H.264 with Range so players can
+seek, on the media port like the still. `TIMELAPSE_DIR` (default `/data/timelapse`; empty switches
+them off). The image now includes ffmpeg. See OPERATIONS.md, "Timelapses".
+
+**Every interface reaches the same things.** The shared API gains **actions** -- writes whose value
+is a JSON object, declared once with the fields a client needs to build a form, listed in
+`/api/v1/objects`, and sent the way every write is: `POST /api/v1/control/{name}` (refused with the
+reason) or MQTT `set/{name}`. An entity can carry a state key as its attributes (`attributes_key`;
+MQTT `json_attributes_topic`), and a media source with many items names the state key that lists
+them. The control page has a timelapse tab that plays, builds and deletes them, its form drawn from
+the action's fields; the Home Assistant component (0.5.0) adds them to the Media panel and as
+actions.
+
+Seven new entities and two actions; nothing existing changes, so both interface versions stay at `1`.
+Install ios2ha-camera-hass 0.5.0 before this: 0.4.x would show the new video media as a camera.
+
 ## 2.15.0 — 2026-09-29
 
 **The service focuses the camera itself.** The phone's own autofocus is not good enough at night --
