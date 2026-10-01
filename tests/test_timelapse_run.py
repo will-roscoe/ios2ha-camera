@@ -12,11 +12,34 @@ import pytest
 from PIL import Image
 from tests.test_supervisor import FakeArchive, FakeMqtt, Inline
 
+from ios2ha_camera import timelapse
 from ios2ha_camera.archive import Archive
 from ios2ha_camera.ring_buffer import RingBuffer
 from ios2ha_camera.settings import Settings
 from ios2ha_camera.supervisor import Supervisor
 from ios2ha_camera.timelapse import TimelapseBuilder
+
+
+@pytest.fixture(autouse=True)
+def _no_ffmpeg_needed(monkeypatch):
+    """These are about which way in reaches the builder and what comes out; the
+    encoding itself is tests/test_timelapse_build.py's, which needs ffmpeg."""
+    def encode(stills, spec, out_dir, progress=lambda d, t: None, ffmpeg="ffmpeg"):
+        import json
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, f"{spec.name}.mp4"), "wb") as f:
+            f.write(b"not really a video")
+        meta = {"name": spec.name, "kind": spec.kind, "range": spec.range,
+                "start": spec.start, "end": spec.end, "first": spec.start, "last": spec.end,
+                "frames": len(stills), "fps": spec.fps, "width": 64, "height": 48,
+                "duration_s": round(len(stills) / spec.fps, 2), "bytes": 18,
+                "built": spec.end, "spec": {}}
+        with open(os.path.join(out_dir, f"{spec.name}.json"), "w") as f:
+            json.dump(meta, f)
+        progress(len(stills), len(stills))
+        return meta
+    monkeypatch.setattr(timelapse, "encode", encode)
 
 
 def _sup(tmp_path, with_builder=True):
