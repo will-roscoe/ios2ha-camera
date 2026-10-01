@@ -11,6 +11,7 @@ ffmpeg encodes them (`encode`) at low priority so stacking keeps the host; and a
 builder (`TimelapseBuilder`) runs one build at a time and keeps the catalogue.
 """
 
+import collections
 import contextlib
 import json
 import logging
@@ -19,6 +20,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -301,3 +303,169 @@ def delete(out_dir, name):
     for ext in (".mp4", ".json"):
         with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(out_dir, name + ext))
+
+
+# -- the builder --------------------------------------------------------------------
+
+# Every value sensor.timelapse can take: what the last request came to.
+TIMELAPSE_STATES = ("idle", "queued", "building", "built", "deleted", "rejected_invalid",
+                    "rejected_busy", "rejected_duplicate", "rejected_unknown",
+                    "failed_no_stills", "failed_encoder")
+# Builds waiting behind the one running. More is refused: a burst of requests is a
+# misfiring automation, not a person.
+MAX_WAITING = 4
+_TIMES = ("start", "end", "first", "last", "built")
+
+
+def _iso(t):
+    return datetime.fromtimestamp(t).astimezone().isoformat(timespec="seconds")
+
+
+def _entry(meta):
+    """A sidecar as the catalogue publishes it: times readable, the spec left out,
+    and where to fetch it."""
+    out = {k: v for k, v in meta.items() if k != "spec"}
+    for k in _TIMES:
+        if isinstance(out.get(k), int | float):
+            out[k] = _iso(out[k])
+    out["url"] = media_path(meta["name"])
+    return out
+
+
+class TimelapseBuilder:
+    """Builds timelapses one at a time on a thread of its own.
+
+    `publish(d)` receives state keys -- `timelapse`, `timelapse_progress`,
+    `timelapse_count` and the catalogue `timelapses` -- and `event(d)` one event per
+    outcome, `{ts, control, name, result, reason}`: the supervisor hands both on to
+    MQTT, the API and the page alike.
+    """
+
+    def __init__(self, out_dir, archive_root, publish, event, ffmpeg="ffmpeg", clock=time.time):
+        self.out_dir, self.archive_root, self.ffmpeg = out_dir, archive_root, ffmpeg
+        self._publish, self._event, self._clock = publish, event, clock
+        self._lock = threading.Lock()
+        self._wake = threading.Condition(self._lock)
+        self._waiting = collections.deque()
+        self._building = None
+        self._catalogue = load_catalogue(out_dir)
+        self._state, self._progress = "idle", 0
+        self._thread, self._stopping = None, False
+
+    # -- what it publishes --
+
+    def state(self):
+        with self._lock:
+            return self._state_locked()
+
+    def _state_locked(self):
+        return {"timelapse": self._state, "timelapse_progress": self._progress,
+                "timelapse_count": len(self._catalogue),
+                "timelapses": {n: _entry(m) for n, m in sorted(self._catalogue.items())}}
+
+    def _outcome(self, name, state, reason=None, control="build_timelapse"):
+        with self._lock:
+            self._state = state
+            snapshot = self._state_locked()
+        (log.info if reason is None else log.warning)(
+            "timelapse %s: %s%s", name, state, f" ({reason})" if reason else "")
+        self._publish(snapshot)
+        self._event({"ts": self._clock(), "control": control, "name": name,
+                     "result": state, "reason": reason})
+        return state
+
+    def _on_progress(self, done, total):
+        pct = done * 100 // total if total else 100
+        with self._lock:
+            if pct == self._progress:
+                return
+            self._progress = pct
+        self._publish({"timelapse_progress": pct})
+
+    # -- requests --
+
+    def request(self, spec):
+        """Queue a build. Returns the state it left: queued, or why it was refused."""
+        with self._lock:
+            duplicate = spec.name == self._building or any(
+                s.name == spec.name for s in self._waiting)
+            full = len(self._waiting) >= MAX_WAITING
+            if not duplicate and not full:
+                self._waiting.append(spec)
+                self._wake.notify()
+        if duplicate:
+            return self._outcome(spec.name, "rejected_duplicate",
+                                 "a build of that name is already waiting or running")
+        if full:
+            return self._outcome(spec.name, "rejected_busy",
+                                 f"{MAX_WAITING} builds are already waiting")
+        return self._outcome(spec.name, "queued")
+
+    def delete(self, name):
+        with self._lock:
+            known = isinstance(name, str) and NAME.match(name) and name in self._catalogue
+            busy = name == self._building
+        if not known:
+            return self._outcome(str(name), "rejected_unknown",
+                                 "there is no timelapse of that name", control="delete_timelapse")
+        if busy:
+            return self._outcome(name, "rejected_busy", "it is being rebuilt",
+                                 control="delete_timelapse")
+        delete(self.out_dir, name)
+        with self._lock:
+            self._catalogue.pop(name, None)
+        return self._outcome(name, "deleted", control="delete_timelapse")
+
+    # -- building --
+
+    def run_once(self):
+        """Build the next waiting request on this thread. Returns its outcome, or None
+        with nothing waiting."""
+        with self._lock:
+            if not self._waiting:
+                return None
+            spec = self._waiting.popleft()
+            self._building, self._progress = spec.name, 0
+        try:
+            self._outcome(spec.name, "building")
+            try:
+                stills = select_stills(self.archive_root, spec.start, spec.end, spec.every)
+            except SpecError as e:
+                return self._outcome(spec.name, "rejected_invalid", str(e))
+            if not stills:
+                return self._outcome(spec.name, "failed_no_stills",
+                                     "the archive has no stills in that span")
+            try:
+                meta = encode(stills, spec, self.out_dir, progress=self._on_progress,
+                              ffmpeg=self.ffmpeg)
+            except EncodeError as e:
+                return self._outcome(spec.name, "failed_encoder", str(e))
+            except Exception as e:
+                log.exception("timelapse %s: the build failed", spec.name)
+                return self._outcome(spec.name, "failed_encoder", repr(e))
+            with self._lock:
+                self._catalogue[spec.name] = meta
+            return self._outcome(spec.name, "built")
+        finally:
+            with self._lock:
+                self._building = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="timelapse", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout=5.0):
+        with self._lock:
+            self._stopping = True
+            self._wake.notify_all()
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def _run(self):
+        while True:
+            with self._lock:
+                while not self._waiting and not self._stopping:
+                    self._wake.wait()
+                if self._stopping:
+                    return
+            self.run_once()
