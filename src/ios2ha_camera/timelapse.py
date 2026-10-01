@@ -187,8 +187,9 @@ def still_time(path):
 
 
 def select_stills(root, start, end, every):
-    """The archive's stills from `start` to `end` inclusive, oldest first, every
-    `every`th from the first. Only the day folders the span touches are read."""
+    """The archive's stills from `start` to `end` inclusive, oldest first, keeping
+    one in every `every` from the first. Only the day folders the span touches are
+    read."""
     found = []
     day = time.mktime(time.localtime(start)[:3] + (0, 0, 0, 0, 0, -1))
     while day <= end:
