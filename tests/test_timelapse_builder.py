@@ -64,7 +64,7 @@ def fake(monkeypatch):
 
 
 def test_the_states_the_sensor_can_take():
-    assert TIMELAPSE_STATES[0] == "idle"
+    assert TIMELAPSE_STATES[0] == "idle" and "off" in TIMELAPSE_STATES
     assert {"queued", "building", "built", "rejected_duplicate", "rejected_busy",
             "failed_no_stills", "failed_encoder", "deleted", "rejected_unknown"} <= set(TIMELAPSE_STATES)
 
@@ -78,7 +78,7 @@ def test_a_request_is_queued_then_built(tmp_path, fake):
     s = b.state()
     assert s["timelapse"] == "built" and s["timelapse_progress"] == 100
     assert s["timelapses"] == 1
-    entry = s["timelapse_catalogue"]["last_12h"]
+    entry = s["timelapse_catalogue"]["items"]["last_12h"]
     assert entry["url"] == "/api/v1/timelapse/last_12h.mp4" and entry["frames"] == 12
     assert "spec" not in entry
     assert r.state["timelapse_catalogue"] == s["timelapse_catalogue"]
@@ -134,7 +134,7 @@ def test_delete(tmp_path, fake):
     b.request(parse_spec({"range": "12h"}, NOW))
     b.run_once()
     assert b.delete("last_12h") == "deleted"
-    assert b.state()["timelapse_catalogue"] == {}
+    assert b.state()["timelapse_catalogue"] == {"items": {}}
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
@@ -150,5 +150,55 @@ def test_the_worker_builds_for_real_and_the_catalogue_survives(tmp_path):
         b.stop()
     assert r.state["timelapse"] == "built"
     again, _ = _builder(tmp_path)
-    assert again.state()["timelapse_catalogue"]["last_12h"]["frames"] == 12
+    assert again.state()["timelapse_catalogue"]["items"]["last_12h"]["frames"] == 12
     assert not any(t.name == "timelapse" for t in threading.enumerate())
+
+
+def test_the_last_outcome_and_its_reason_are_state_not_only_an_event(tmp_path, fake):
+    """With MQTT off there is no event channel at all: the reason has to be in the
+    state every interface reads."""
+    b, r = _builder(tmp_path)
+    b.request(parse_spec({"range": "12h"}, NOW))
+    b.request(parse_spec({"range": "12h"}, NOW))
+    last = r.state["timelapse_last"]
+    assert (last["name"], last["result"]) == ("last_12h", "rejected_duplicate")
+    assert last["reason"] and last["control"] == "build_timelapse" and last["ts"]
+    b.run_once()
+    assert r.state["timelapse_last"]["result"] == "built"
+
+
+def test_the_catalogue_is_nested_so_no_name_meets_home_assistants_own(tmp_path, fake):
+    """A timelapse called `icon` or `friendly_name` must not become an attribute of
+    that name on the sensor."""
+    b, _ = _builder(tmp_path)
+    b.request(parse_spec({"start": "2026-09-28T13:00:00", "name": "icon"}, NOW))
+    b.run_once()
+    assert set(b.state()["timelapse_catalogue"]) == {"items"}
+    assert "icon" in b.state()["timelapse_catalogue"]["items"]
+
+
+def test_queued_is_never_published_after_building(tmp_path, fake):
+    """The worker can take a request between `request` taking its snapshot and
+    publishing it; the sensor must still end on what really happened."""
+    order, started = [], []
+
+    def publish(d):
+        if "timelapse" in d:
+            if d["timelapse"] == "queued":
+                time.sleep(0.3)               # on its way while the worker runs
+            order.append(d["timelapse"])
+
+    b = TimelapseBuilder(str(tmp_path / "out"), _archive(tmp_path), publish, lambda e: None)
+    snapshot = b._state_locked
+
+    def snapshot_then_wake_the_worker():
+        s = snapshot()
+        if s["timelapse"] == "queued" and not started:
+            started.append(threading.Thread(target=b.run_once))
+            started[0].start()
+        return s
+
+    b._state_locked = snapshot_then_wake_the_worker
+    b.request(parse_spec({"range": "12h"}, NOW))
+    started[0].join(5)
+    assert order == ["queued", "building", "built"]

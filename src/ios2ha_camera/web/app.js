@@ -250,6 +250,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) stopS
 // rule the service does not publish.
 
 let clipBuilt = null;
+let pickSignature = null;
 
 function sensorKey(id) {
   return entity("sensor", id)?.state_key;
@@ -257,6 +258,11 @@ function sensorKey(id) {
 
 function catalogue() {
   const key = entity("sensor", "timelapses")?.attributes_key;
+  return (key && values[key]?.items) || {};
+}
+
+function lastOutcome() {
+  const key = entity("sensor", "timelapse")?.attributes_key;
   return (key && values[key]) || {};
 }
 
@@ -293,14 +299,23 @@ function refreshTimelapse(force = false) {
   const pick = document.getElementById("tl-pick");
   const cat = catalogue();
   const names = Object.keys(cat);
-  const keep = names.includes(pick.value) ? pick.value : names[0];
-  pick.replaceChildren(...names.map((n) => $("option", { value: n, text: describe(n, cat[n]) })));
-  if (!names.length) pick.append($("option", { value: "", text: "No timelapses built yet" }));
-  pick.value = keep ?? "";
+  // Rebuilt only when the catalogue itself changes: progress arrives many times a
+  // build, and replacing the options each time would close a list being chosen from.
+  const signature = JSON.stringify(names.map((n) => [n, cat[n].built]));
+  if (force || signature !== pickSignature) {
+    pickSignature = signature;
+    const keep = names.includes(pick.value) ? pick.value : names[0];
+    pick.replaceChildren(...names.map((n) => $("option", { value: n, text: describe(n, cat[n]) })));
+    if (!names.length) pick.append($("option", { value: "", text: "No timelapses built yet" }));
+    pick.value = keep ?? "";
+  }
   document.getElementById("tl-delete").disabled = !names.length;
   const state = values[sensorKey("timelapse")], pct = values[sensorKey("timelapse_progress")];
+  const last = lastOutcome();
+  const why = last.reason && last.result === state ? `: ${last.reason}` : "";
   document.getElementById("tl-status").textContent = state == null ? "" :
-    state === "building" ? `Building\u2026 ${pct ?? 0}%` : String(state).replaceAll("_", " ");
+    state === "building" ? `Building ${last.name ?? ""}\u2026 ${pct ?? 0}%`
+                         : `${String(state).replaceAll("_", " ")}${why}`;
   if (activeMedia?.kind === "video") showClip(force);
 }
 

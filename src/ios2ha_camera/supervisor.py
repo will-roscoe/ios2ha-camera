@@ -79,8 +79,11 @@ LEVEL_MAX_WEIGHT = 0.5
 # The range buttons, each a build_timelapse with its range and nothing else.
 _TIMELAPSE_BUTTONS = {f"build_timelapse_{r}": r for r in timelapse.RANGES}
 # What the timelapse sensors read with TIMELAPSE_DIR empty.
-_TIMELAPSE_OFF = {"timelapse": "idle", "timelapse_progress": 0, "timelapses": 0,
-                  "timelapse_catalogue": {}}
+_TIMELAPSE_OFF = {"timelapse": "off", "timelapse_progress": 0, "timelapses": 0,
+                  "timelapse_catalogue": {"items": {}},
+                  "timelapse_last": {"name": None, "control": None, "result": "off",
+                                     "reason": "timelapses are switched off (TIMELAPSE_DIR is "
+                                               "empty)", "ts": None}}
 
 # How long the app stays in the background when restarting its capture session.
 WB_RESET_PAUSE_S = 5.0
@@ -1052,7 +1055,11 @@ class Supervisor:
         d["focus_run"] = self._focus_state
         d["colour_reference"] = self._colour_state
         d["horizon"] = self._horizon_state
-        d.update(self.timelapse.state() if self.timelapse is not None else _TIMELAPSE_OFF)
+        # Switched off, these never change and are published here. Switched on, the
+        # builder publishes them itself, on every change: a tick that snapshotted
+        # before a build finished would otherwise put the old catalogue back.
+        if self.timelapse is None:
+            d.update(_TIMELAPSE_OFF)
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard

@@ -419,8 +419,11 @@ _SENSORS = [
     _sensor("horizon", "Horizon", device_class="enum",
             options=tuple(HORIZON_STATES), category="diagnostic",
             icon="mdi:image-filter-hdr"),
+    # Its attributes are the last outcome with its reason: with MQTT off there is
+    # no event channel, and every interface reads state.
     _sensor("timelapse", "Timelapse", device_class="enum",
-            options=tuple(TIMELAPSE_STATES), category="diagnostic", icon="mdi:movie-open-cog"),
+            options=tuple(TIMELAPSE_STATES), category="diagnostic", icon="mdi:movie-open-cog",
+            attributes_key="timelapse_last"),
     _sensor("timelapse_progress", "Timelapse progress", unit="%", state_class="measurement",
             category="diagnostic", icon="mdi:progress-clock"),
     # How many are built; the catalogue itself is its attributes.
@@ -603,12 +606,13 @@ _DESCRIPTIONS = {
     ("sensor", "timelapse"):
         "What the last timelapse request came to: queued, building, built, deleted, or why "
         "it was refused or failed -- an invalid spec, a full queue, a duplicate, no stills "
-        "in the span, or an encoder error. Each outcome is also an event with the reason.",
+        "in the span, or an encoder error -- and off when TIMELAPSE_DIR is empty. Its "
+        "attributes say which request and why, in words.",
     ("sensor", "timelapse_progress"):
         "How far the timelapse being built has got, in per cent of its frames.",
     ("sensor", "timelapses"):
-        "How many timelapses are built. Its attributes are the catalogue: each by name, "
-        "with its span, frames, frame rate, length, size and the url it is served at.",
+        "How many timelapses are built. Its attribute `items` is the catalogue: each by "
+        "name, with its span, frames, frame rate, length, size and the url it is served at.",
     ("sensor", "horizon"):
         "What Level horizon last did: levelled, or why it was refused -- no still yet, a "
         "night still, or no clear verticals to go by.",

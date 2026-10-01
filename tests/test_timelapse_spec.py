@@ -87,3 +87,11 @@ def test_a_custom_build_can_be_named():
 def test_what_is_refused_says_which_key(value, key):
     with pytest.raises(SpecError, match=key):
         parse_spec(value, NOW)
+
+
+@pytest.mark.parametrize("name", ["storm\n", "storm\r", "\nstorm"])
+def test_a_name_is_nothing_but_its_characters(name):
+    """`$` would let a trailing newline through, and a file named with one can never
+    be fetched."""
+    with pytest.raises(SpecError, match="name"):
+        parse_spec({"start": "2026-09-28T18:00:00", "name": name}, NOW)

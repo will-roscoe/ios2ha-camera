@@ -46,7 +46,7 @@ def test_a_spec_from_mqtt_or_the_api_is_built(tmp_path):
     assert sup.timelapse.run_once() == "built"
     p = sup.mqtt.published
     assert p["timelapse"] == "built" and p["timelapses"] == 1
-    assert p["timelapse_catalogue"]["last_12h"]["fps"] == 4
+    assert p["timelapse_catalogue"]["items"]["last_12h"]["fps"] == 4
     assert _events(sup, "build_timelapse")[-1]["result"] == "built"
 
 
@@ -64,7 +64,7 @@ def test_a_range_button_builds_its_range(tmp_path):
     sup = _sup(tmp_path)
     sup.handle_control("build_timelapse_12h", None)
     assert sup.timelapse.run_once() == "built"
-    assert "last_12h" in sup.mqtt.published["timelapse_catalogue"]
+    assert "last_12h" in sup.mqtt.published["timelapse_catalogue"]["items"]
 
 
 def test_delete(tmp_path):
@@ -77,7 +77,7 @@ def test_delete(tmp_path):
     assert sup.mqtt.published["timelapse"] == "rejected_invalid"
     sup.handle_control("delete_timelapse", {"name": "last_12h"})
     assert sup.mqtt.published["timelapse"] == "deleted"
-    assert sup.mqtt.published["timelapse_catalogue"] == {}
+    assert sup.mqtt.published["timelapse_catalogue"] == {"items": {}}
 
 
 def test_switched_off_is_said_and_harmless(tmp_path, caplog):
@@ -85,10 +85,13 @@ def test_switched_off_is_said_and_harmless(tmp_path, caplog):
     sup.handle_control("build_timelapse", {"range": "12h"})
     assert "TIMELAPSE_DIR" in caplog.text
     h = sup.health_state()
-    assert (h["timelapse"], h["timelapses"], h["timelapse_catalogue"]) == ("idle", 0, {})
+    assert (h["timelapse"], h["timelapses"], h["timelapse_catalogue"]) == ("off", 0, {"items": {}})
+    assert "TIMELAPSE_DIR" in h["timelapse_last"]["reason"]
 
 
-def test_the_state_is_published_from_the_start(tmp_path):
-    h = _sup(tmp_path).health_state()
-    assert (h["timelapse"], h["timelapse_progress"], h["timelapses"]) == ("idle", 0, 0)
-    assert h["timelapse_catalogue"] == {}
+def test_with_timelapses_on_the_builder_alone_publishes_them(tmp_path):
+    """The health tick snapshots and publishes later; with the builder publishing
+    on its own thread that could put an old catalogue back after a new one."""
+    sup = _sup(tmp_path)
+    assert "timelapse" not in sup.health_state()
+    assert sup.timelapse.state()["timelapse"] == "idle"

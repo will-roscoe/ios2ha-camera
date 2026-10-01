@@ -37,7 +37,9 @@ SPEC_VERSION = 1
 _INTS = {"fps": (1, 60, 15), "width": (160, 3840, None), "every": (1, 1000, 1),
          "quality": (15, 40, 23), "version": (SPEC_VERSION, SPEC_VERSION, SPEC_VERSION)}
 _KEYS = {"range", "start", "end", "name", *_INTS}
-NAME = re.compile(r"^[a-z0-9_-]{1,48}$")
+# \A and \Z, not ^ and $: `$` also matches before a trailing newline, and a file
+# named with one can never be fetched.
+NAME = re.compile(r"\A[a-z0-9_-]{1,48}\Z")
 # Range builds are named for their range and replace the last one; no custom build
 # may take one of those names.
 RESERVED = "last_"
@@ -349,7 +351,7 @@ def delete(out_dir, name):
 # Every value sensor.timelapse can take: what the last request came to.
 TIMELAPSE_STATES = ("idle", "queued", "building", "built", "deleted", "rejected_invalid",
                     "rejected_busy", "rejected_duplicate", "rejected_unknown",
-                    "failed_no_stills", "failed_encoder")
+                    "failed_no_stills", "failed_encoder", "off")
 # Builds waiting behind the one running. More is refused: a burst of requests is a
 # misfiring automation, not a person.
 MAX_WAITING = 4
@@ -375,7 +377,8 @@ class TimelapseBuilder:
     """Builds timelapses one at a time on a thread of its own.
 
     `publish(d)` receives state keys -- `timelapse`, `timelapse_progress`, the
-    count `timelapses` and the catalogue `timelapse_catalogue` -- and `event(d)` one event per
+    count `timelapses`, the catalogue `timelapse_catalogue` ({"items": {name: ...}})
+    and the last outcome with its reason `timelapse_last` -- and `event(d)` one event per
     outcome, `{ts, control, name, result, reason}`: the supervisor hands both on to
     MQTT, the API and the page alike.
     """
@@ -385,6 +388,13 @@ class TimelapseBuilder:
         self._publish, self._event, self._clock = publish, event, clock
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
+        # Held from taking a snapshot to publishing it, so what is published is
+        # always in the order it happened: without it the worker could publish
+        # "building" and "built" while a "queued" taken earlier was on its way,
+        # and the sensor would end on "queued". Always taken before `_lock`.
+        self._publishing = threading.RLock()
+        self._last = {"name": None, "control": None, "result": "idle", "reason": None,
+                      "ts": None}
         self._waiting = collections.deque()
         self._building = None
         self._catalogue = load_catalogue(out_dir)
@@ -398,29 +408,39 @@ class TimelapseBuilder:
             return self._state_locked()
 
     def _state_locked(self):
+        # The catalogue under one key: its names are chosen by whoever builds, and
+        # as attributes of their own a timelapse called `icon` would be one.
         return {"timelapse": self._state, "timelapse_progress": self._progress,
                 "timelapses": len(self._catalogue),
-                "timelapse_catalogue": {n: _entry(m)
-                                        for n, m in sorted(self._catalogue.items())}}
+                "timelapse_catalogue": {"items": {n: _entry(m)
+                                                  for n, m in sorted(self._catalogue.items())}},
+                "timelapse_last": dict(self._last)}
 
     def _outcome(self, name, state, reason=None, control="build_timelapse"):
-        with self._lock:
-            self._state = state
-            snapshot = self._state_locked()
-        (log.info if reason is None else log.warning)(
-            "timelapse %s: %s%s", name, state, f" ({reason})" if reason else "")
-        self._publish(snapshot)
-        self._event({"ts": self._clock(), "control": control, "name": name,
+        """Say what a request came to: as state -- including the reason, since with
+        MQTT off there is no event channel at all -- and as an event."""
+        now = self._clock()
+        with self._publishing:
+            with self._lock:
+                self._state = state
+                self._last = {"name": name, "control": control, "result": state,
+                              "reason": reason, "ts": _iso(now)}
+                snapshot = self._state_locked()
+            (log.info if reason is None else log.warning)(
+                "timelapse %s: %s%s", name, state, f" ({reason})" if reason else "")
+            self._publish(snapshot)
+        self._event({"ts": now, "control": control, "name": name,
                      "result": state, "reason": reason})
         return state
 
     def _on_progress(self, done, total):
         pct = done * 100 // total if total else 100
-        with self._lock:
-            if pct == self._progress:
-                return
-            self._progress = pct
-        self._publish({"timelapse_progress": pct})
+        with self._publishing:
+            with self._lock:
+                if pct == self._progress:
+                    return
+                self._progress = pct
+            self._publish({"timelapse_progress": pct})
 
     # -- requests --
 
@@ -430,21 +450,23 @@ class TimelapseBuilder:
         return self._outcome(name, "rejected_invalid", reason, control=control)
 
     def request(self, spec):
-        """Queue a build. Returns the state it left: queued, or why it was refused."""
-        with self._lock:
-            duplicate = spec.name == self._building or any(
-                s.name == spec.name for s in self._waiting)
-            full = len(self._waiting) >= MAX_WAITING
-            if not duplicate and not full:
-                self._waiting.append(spec)
-                self._wake.notify()
-        if duplicate:
-            return self._outcome(spec.name, "rejected_duplicate",
-                                 "a build of that name is already waiting or running")
-        if full:
-            return self._outcome(spec.name, "rejected_busy",
-                                 f"{MAX_WAITING} builds are already waiting")
-        return self._outcome(spec.name, "queued")
+        """Queue a build. Returns the state it left: queued, or why it was refused.
+        The worker cannot say "building" before this has said "queued"."""
+        with self._publishing:
+            with self._lock:
+                duplicate = spec.name == self._building or any(
+                    s.name == spec.name for s in self._waiting)
+                full = len(self._waiting) >= MAX_WAITING
+                if not duplicate and not full:
+                    self._waiting.append(spec)
+                    self._wake.notify()
+            if duplicate:
+                return self._outcome(spec.name, "rejected_duplicate",
+                                     "a build of that name is already waiting or running")
+            if full:
+                return self._outcome(spec.name, "rejected_busy",
+                                     f"{MAX_WAITING} builds are already waiting")
+            return self._outcome(spec.name, "queued")
 
     def delete(self, name):
         with self._lock:

@@ -2133,6 +2133,7 @@
     "device_class": "enum",
     "entity_category": "diagnostic",
     "icon": "mdi:movie-open-cog",
+    "json_attributes_topic": "ios2ha_camera/state/timelapse_last",
     "name": "Timelapse",
     "options": [
       "idle",
@@ -2145,7 +2146,8 @@
       "rejected_duplicate",
       "rejected_unknown",
       "failed_no_stills",
-      "failed_encoder"
+      "failed_encoder",
+      "off"
     ],
     "state_topic": "ios2ha_camera/state/timelapse",
     "unique_id": "ios2ha_sensor_timelapse"

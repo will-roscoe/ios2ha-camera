@@ -704,19 +704,22 @@ mosquitto_pub -t ios2ha_camera/set/build_timelapse -m '{"start": "2026-09-28T18:
 ```
 
 From Home Assistant with the native component, the same action is `ios2ha_camera.build_timelapse`.
-The API refuses a spec it cannot build with the reason; MQTT has no reply, so there the refusal is
-`sensor.ios2ha_camera_timelapse` reading `rejected_invalid` and an event carrying the reason.
+The API refuses a spec it cannot build with the reason. Whatever happens after that -- and anything
+MQTT delivered, which has no reply -- is on `sensor.ios2ha_camera_timelapse`: its state is the
+outcome and its attributes say which request and why, in words (`name`, `control`, `result`,
+`reason`, `ts`). That is state, so every interface sees it; the MQTT event repeats it.
 
 **What happens.** Builds run one at a time at the lowest CPU priority on two threads, so stacking
 keeps the host; up to four wait behind. `sensor.ios2ha_camera_timelapse` says what the last request
 came to -- `queued`, `building`, `built`, `deleted`, or `rejected_invalid`, `rejected_busy` (four
 already waiting), `rejected_duplicate` (that name is already waiting or building),
 `rejected_unknown` (deleting a name that does not exist), `failed_no_stills` (nothing archived in the
-span) or `failed_encoder` (ffmpeg's message is in the event). `sensor.ios2ha_camera_timelapse_progress`
+span), `failed_encoder` (ffmpeg's message is the reason), or `off` with `TIMELAPSE_DIR` empty. `sensor.ios2ha_camera_timelapse_progress`
 is the build's progress in per cent. A damaged still is left out rather than failing the build.
 
-**Watching one.** `sensor.ios2ha_camera_timelapses` counts them; its attributes are the catalogue:
-each by name with its span, frames, frame rate, length, size and `url`. The videos are served at
+**Watching one.** `sensor.ios2ha_camera_timelapses` counts them; its attribute `items` is the
+catalogue: each by name with its span, frames, frame rate, length, size and `url`. (Under one key,
+so a timelapse named `icon` cannot become the sensor's icon.) The videos are served at
 `/api/v1/timelapse/<name>.mp4` (H.264, with Range so players can seek), on the media port like the
 still, so they are there with `EXPOSE_API` off. The control page has a timelapse tab; the native
 component lists them in Home Assistant's Media panel and its card plays them. Delete one with the
