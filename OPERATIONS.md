@@ -674,41 +674,65 @@ it look again, so the service backgrounds and foregrounds the app after every re
 If stills ever turn cyan after anything else covers the lens, the same cycle fixes it: set
 `background_below_pct` above the battery level for one capture, or wait for daylight.
 
-## A timelapse in Home Assistant
+## Timelapses
 
-The supervisor already keeps every still, under `ARCHIVE_DIR` by date and time. To also collect them
-in Home Assistant — for a dashboard, or to render a video there — trigger on
-`sensor.ios2ha_camera_last_still`, which changes once per still and at no other time, and works the
-same on both integration paths:
+Since 2.16.0 the service builds timelapses itself, from its own archive, on request. The archive
+keeps every still under `ARCHIVE_DIR` by date and time and is never pruned.
 
-```yaml
-alias: Timelapse
-triggers:
-  - trigger: state
-    entity_id: sensor.ios2ha_camera_last_still
-conditions:
-  # Every real still, and nothing else. A change from `unavailable` is the
-  # native component replaying the old value as it reloads, so it is refused; a
-  # change from `unknown` is the first still after the service restarted, so it
-  # is kept. Do not test how recent the timestamp is instead: it is when the
-  # capture *started*, and a night still takes minutes to stack.
-  - condition: template
-    value_template: "{{ trigger.from_state is not none
-                        and trigger.from_state.state != 'unavailable'
-                        and trigger.to_state.state not in ('unknown', 'unavailable') }}"
-actions:
-  - action: camera.snapshot
-    target:
-      entity_id: camera.ios2ha_camera_still
-    data:
-      filename: "/media/timelapse/{{ now().strftime('%Y%m%d-%H%M%S') }}.jpg"
-mode: queued
+**Building one.** The quick way is a button: `button.ios2ha_camera_build_timelapse_12h`, `_24h`,
+`_7d` or `_1mo` builds that rolling range and replaces `last_<range>`. Anything more is the
+`build_timelapse` action, whose value is a JSON spec:
+
+| key | default | meaning |
+|---|---|---|
+| `range` | -- | `12h`, `24h`, `7d` or `1mo` (30 days), ending now. Give this or `start`. |
+| `start`, `end` | `end` = now | A span of your own, ISO 8601. A time without a zone is the service's local time (UTC in the container), so give the zone: `2026-09-28T18:00+01:00`. |
+| `name` | `custom_<start>_<end>` | For a span of your own: up to 48 of `a-z 0-9 _ -`, not starting `last_`. |
+| `fps` | 15 | Frames of video per second, 1-60; each still is one frame. |
+| `width` | the stills' | Width in pixels, even, 160-3840. |
+| `every` | 1 | Use every Nth still, 1-1000. More than 20 000 stills is refused with the `every` that fits. |
+| `quality` | 23 | x264 CRF, 15-40: lower is sharper and bigger. |
+
+Every interface sends the same thing to the same place:
+
+```sh
+# the API (or the control page's timelapse tab, which builds this form from /objects)
+curl -X POST http://192.168.1.4:8099/api/v1/control/build_timelapse \
+     -H 'Content-Type: application/json' -d '{"value": {"range": "7d", "fps": 24}}'
+# MQTT
+mosquitto_pub -t ios2ha_camera/set/build_timelapse -m '{"start": "2026-09-28T18:00+01:00", "end": "2026-09-29T07:00+01:00", "name": "storm"}'
 ```
 
-Do not trigger on the MQTT topic `ios2ha_camera/event` for this. It still carries one event per
-still, but only while MQTT is on: with `EXPOSE_MQTT=false`, as on the native component, nothing is
-published there and an automation waiting on it never fires. That is how a timelapse built on it
-stopped on 2026-09-18, the day this installation moved to the component, without a single error.
+From Home Assistant with the native component, the same action is `ios2ha_camera.build_timelapse`.
+The API refuses a spec it cannot build with the reason; MQTT has no reply, so there the refusal is
+`sensor.ios2ha_camera_timelapse` reading `rejected_invalid` and an event carrying the reason.
+
+**What happens.** Builds run one at a time at the lowest CPU priority on two threads, so stacking
+keeps the host; up to four wait behind. `sensor.ios2ha_camera_timelapse` says what the last request
+came to -- `queued`, `building`, `built`, `deleted`, or `rejected_invalid`, `rejected_busy` (four
+already waiting), `rejected_duplicate` (that name is already waiting or building),
+`rejected_unknown` (deleting a name that does not exist), `failed_no_stills` (nothing archived in the
+span) or `failed_encoder` (ffmpeg's message is in the event). `sensor.ios2ha_camera_timelapse_progress`
+is the build's progress in per cent. A damaged still is left out rather than failing the build.
+
+**Watching one.** `sensor.ios2ha_camera_timelapses` counts them; its attributes are the catalogue:
+each by name with its span, frames, frame rate, length, size and `url`. The videos are served at
+`/api/v1/timelapse/<name>.mp4` (H.264, with Range so players can seek), on the media port like the
+still, so they are there with `EXPOSE_API` off. The control page has a timelapse tab; the native
+component lists them in Home Assistant's Media panel and its card plays them. Delete one with the
+`delete_timelapse` action, `{"name": "storm"}`. Range builds are replaced on each rebuild; your own
+spans are kept until you delete them. They live in `TIMELAPSE_DIR` as `<name>.mp4` and a `<name>.json`
+sidecar.
+
+**Collecting stills in Home Assistant instead.** If you still want an automation per still, trigger
+on `sensor.ios2ha_camera_last_still`, which changes once per still and at no other time, with the
+condition `{{ trigger.from_state is not none and trigger.from_state.state != 'unavailable' and
+trigger.to_state.state not in ('unknown', 'unavailable') }}`: a change from `unavailable` is the
+component replaying the old value as it reloads, and a change from `unknown` is the first still after
+a restart. Do not test how recent the timestamp is -- it is when the capture *started*, and a night
+still takes minutes to stack -- and do not trigger on the MQTT topic `ios2ha_camera/event`: with
+`EXPOSE_MQTT=false` nothing is published there, which is how a timelapse built on it stopped on
+2026-09-18 without a single error.
 
 ## What the phone will and will not do
 
