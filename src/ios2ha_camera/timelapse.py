@@ -11,6 +11,7 @@ ffmpeg encodes them (`encode`) at low priority so stacking keeps the host; and a
 builder (`TimelapseBuilder`) runs one build at a time and keeps the catalogue.
 """
 
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -109,3 +110,50 @@ def parse_spec(value, now):
             raise SpecError(f"name may not start with {RESERVED!r}: those are the range builds")
     return Spec(name=name, kind=kind, range=rng, start=start, end=end, fps=ints["fps"],
                 width=ints["width"], every=ints["every"], quality=ints["quality"])
+
+
+# -- choosing the stills ------------------------------------------------------------
+
+# A year of stills at one every ten minutes is about 52 000: more than this and the
+# request is refused with the `every` that would fit, rather than encoding for hours.
+MAX_FRAMES = 20_000
+_STILL = re.compile(r"(\d{4})/(\d{2})/(\d{2})/(\d{6})\.jpg$")
+
+
+def still_time(path):
+    """When an archived still was taken, from its path; None for anything else.
+    Local time, as `Archive.write_still` names them."""
+    m = _STILL.search(path.replace("\\", "/"))
+    if m is None:
+        return None
+    y, mo, d, hms = m.groups()
+    try:
+        return time.mktime(time.strptime(f"{y}{mo}{d}{hms}", "%Y%m%d%H%M%S"))
+    except ValueError:
+        return None
+
+
+def select_stills(root, start, end, every):
+    """The archive's stills from `start` to `end` inclusive, oldest first, every
+    `every`th from the first. Only the day folders the span touches are read."""
+    found = []
+    day = time.mktime(time.localtime(start)[:3] + (0, 0, 0, 0, 0, -1))
+    while day <= end:
+        folder = os.path.join(root, time.strftime("%Y/%m/%d", time.localtime(day)))
+        try:
+            names = os.listdir(folder)
+        except FileNotFoundError:
+            names = []
+        for n in names:
+            t = still_time(os.path.join(folder, n))
+            if t is not None and start <= t <= end:
+                found.append((t, os.path.join(folder, n)))
+        # The next local midnight, whatever the clocks did in between.
+        nxt = time.localtime(day + 26 * 3600)
+        day = time.mktime(nxt[:3] + (0, 0, 0, 0, 0, -1))
+    picked = [p for _, p in sorted(found)][::every]
+    if len(picked) > MAX_FRAMES:
+        fits = -(-len(found) // MAX_FRAMES)
+        raise SpecError(f"{len(picked)} stills is more than {MAX_FRAMES}; "
+                        f"use every {fits} or a shorter span")
+    return picked
