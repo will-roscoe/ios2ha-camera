@@ -87,7 +87,10 @@ def test_every_entity_has_a_publisher_and_every_published_value_has_an_entity():
     with no entity is a value nobody can see.
     """
     published = _published_keys()
-    declared = {e.state_key for e in ENTITIES if e.state_key}
+    # An attributes key is declared too: it is published like any state key and
+    # carried as an entity's attributes.
+    declared = ({e.state_key for e in ENTITIES if e.state_key}
+                | {e.attributes_key for e in ENTITIES if e.attributes_key})
     assert declared - published == set(), "declared but never published"
     assert published - declared == set(), "published but not declared"
 
@@ -196,6 +199,11 @@ def test_every_declared_button_has_a_dispatch_branch():
     sup._submit = lambda name, fn: submitted.append(name)
     sup._apply_setting = lambda name, value: fell_through.append(name)
 
+    class Builder:          # the timelapse buttons hand their range to the builder
+        def request(self, spec):
+            submitted.append(f"build_timelapse_{spec.range}")
+    sup.timelapse = Builder()
+
     for e in ENTITIES:
         if e.domain != "button":
             continue
@@ -229,15 +237,16 @@ def test_media_sources_are_distinct_and_say_what_they_cost():
     """`holds_phone` is the field the whole descriptor exists for: a snapshot is
     answered from memory, while a stream holds the phone's connection open for as
     long as a viewer stays attached, which is what on-demand upstream turns on."""
-    assert len(MEDIA) == 4
+    assert len(MEDIA) == 5
     assert len({m.id for m in MEDIA}) == len(MEDIA)
     assert len({m.path for m in MEDIA}) == len(MEDIA)
     for m in MEDIA:
-        assert m.kind in ("stream", "snapshot")
+        assert m.kind in ("stream", "snapshot", "video")
         assert m.path.startswith("/api/v1/")
         assert m.formats
     assert {m.id for m in MEDIA if m.holds_phone} == {"live", "stacked"}
     assert {m.id for m in MEDIA if m.kind == "snapshot"} == {"still", "screenshot"}
+    assert {m.id for m in MEDIA if m.kind == "video"} == {"timelapse"}
 
 
 def test_every_entity_says_what_it_does():

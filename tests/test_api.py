@@ -63,7 +63,7 @@ ENTITIES_BY_KEY = {(e.domain, e.object_id): e for e in ENTITIES}
 
 def test_objects_describes_every_entity():
     _, doc = _get(_api(), "/api/v1/objects")
-    assert len(doc["objects"]) == len(ENTITIES) == 113
+    assert len(doc["objects"]) == len(ENTITIES) == 120
     assert [o["object_id"] for o in doc["objects"]] == [e.object_id for e in ENTITIES]
 
     by_key = {(o["domain"], o["object_id"]): o for o in doc["objects"]}
@@ -74,6 +74,7 @@ def test_objects_describes_every_entity():
         "category": "config", "icon": "mdi:timer-outline", "writable": True,
         "precision": None,
         "description": ENTITIES_BY_KEY[("number", "interval_s")].description,
+        "attributes_key": None,
     }
     assert by_key[("number", "interval_s")]["description"].startswith("How often a still is made")
     assert by_key[("select", "white_balance")]["options"] == [
@@ -100,7 +101,7 @@ def test_an_object_is_identified_by_domain_and_object_id_together():
     ids = [o["object_id"] for o in doc["objects"]]
     pairs = [(o["domain"], o["object_id"]) for o in doc["objects"]]
     assert len(set(ids)) < len(ids)
-    assert len(set(pairs)) == len(pairs) == 113
+    assert len(set(pairs)) == len(pairs) == 120
 
 
 def test_media_declares_whether_it_holds_the_phone():
@@ -109,13 +110,16 @@ def test_media_declares_whether_it_holds_the_phone():
     _, doc = _get(_api(), "/api/v1/media")
     assert doc["media"] == [
         {"id": "live", "kind": "stream", "formats": ["mjpeg"],
-         "url": "/api/v1/stream/live", "holds_phone": True, "params": {}},
+         "url": "/api/v1/stream/live", "holds_phone": True, "params": {}, "catalogue": None},
         {"id": "stacked", "kind": "stream", "formats": ["mjpeg"],
-         "url": "/api/v1/stream/stacked", "holds_phone": True, "params": {}},
+         "url": "/api/v1/stream/stacked", "holds_phone": True, "params": {}, "catalogue": None},
         {"id": "still", "kind": "snapshot", "formats": ["jpeg"],
-         "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}},
+         "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}, "catalogue": None},
         {"id": "screenshot", "kind": "snapshot", "formats": ["jpeg"],
-         "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}},
+         "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}, "catalogue": None},
+        {"id": "timelapse", "kind": "video", "formats": ["mp4"],
+         "url": "/api/v1/timelapse/{name}.mp4", "holds_phone": False, "params": {},
+         "catalogue": "timelapse_catalogue"},
     ]
     assert len(doc["media"]) == len(MEDIA)
 
@@ -248,7 +252,7 @@ def test_every_writable_entity_is_reachable_through_the_one_verb():
     Assistant offers and this service ignores."""
     _, doc = _get(_api(), "/api/v1/objects")
     writable = [o for o in doc["objects"] if o["writable"]]
-    assert len(writable) == 48
+    assert len(writable) == 52
 
     for o in writable:
         app, seen = _recording_api()

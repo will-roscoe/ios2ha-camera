@@ -46,6 +46,9 @@ MEDIA_PATHS = {
     "/live", "/live/stacked", "/still.jpg",
     "/api/v1/stream/live", "/api/v1/stream/stacked", "/api/v1/snapshot/still",
     "/api/v1/snapshot/screenshot",
+    # Routed even with timelapses off (every name is then a 404), so every media
+    # path the API advertises is served by this one application.
+    "/api/v1/timelapse/{name}.mp4",
 }
 
 

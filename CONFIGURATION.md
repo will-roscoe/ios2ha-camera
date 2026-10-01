@@ -30,10 +30,11 @@ not the flag.
 | `PHONE_BUNDLE_ID` | `com.guardianeye.webcam.ios` | Used by the relaunch button |
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
 | `COLOUR_REFERENCE_FILE` | `/data/colour_reference.npz` | Where the colour reference is kept once recorded with **Set colour reference** (see [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour)). Empty turns the feature off, and the button with it |
+| `TIMELAPSE_DIR` | `/data/timelapse` | Where built timelapses and their sidecars are kept. Empty switches timelapses off: the build buttons and actions are then refused, and the video route answers 404. See [OPERATIONS.md](OPERATIONS.md#timelapses) |
 | `FLAT_FIELD_FILE` | `/data/flat_field.npy` | Where the sensor's fixed grain is kept once recorded with **Record flat field** (see [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain)). Empty turns the feature off, and the button with it |
 | `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
-| `LIVE_PORT` | `8099` | The one HTTP port. Always serves all six media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) and the control page at `/ui/` (`/` redirects there) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
+| `LIVE_PORT` | `8099` | The one HTTP port. Always serves the media paths — `/live`, `/live/stacked`, `/still.jpg` and their `/api/v1/stream/live`, `/api/v1/stream/stacked`, `/api/v1/snapshot/still` equivalents, the screenshot, and built timelapses at `/api/v1/timelapse/{name}.mp4` — regardless of either flag. Also serves the JSON routes (`/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`, `/events`) and the control page at `/ui/` (`/` redirects there) once `EXPOSE_API` is on; the API shares this port rather than opening its own |
 | `BUFFER_BYTES` | `1073741824` | Ring buffer budget. Compressed frames, so 1 GB is several minutes |
 | `LOG_LEVEL` | `INFO` | |
 | `EXPOSE_MQTT` | `true` | Turns MQTT discovery and state publishing on or off. Turning it **off** also *removes* the entities it created: at startup the supervisor makes one bounded attempt to reach the broker and clears every retained discovery topic and the retained availability message, which deletes the MQTT entities from Home Assistant and frees their entity ids. With no broker reachable this is one warning in the log and nothing else. Switching it back on recreates them. Accepts the same spellings as any other boolean here (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`); an unrecognised value is logged as a warning naming the variable and the value, and keeps the default (on) rather than guessing — a typo can never silently disable an interface |
@@ -65,7 +66,10 @@ these need to be set.
 
 Matters only while `EXPOSE_API` is true (the default), and only for the JSON
 routes: `/api/v1/info`, `/objects`, `/state`, `/control/{name}`, `/media`
-(the descriptor list) and `/events` (the Server-Sent Events stream). The media paths under `/api/v1/stream/...` and
+(the descriptor list) and `/events` (the Server-Sent Events stream). `/objects` also lists the
+**actions** -- writes whose value is a JSON object, such as `build_timelapse` -- with the fields a
+client needs for a form; they are written through `/control/{name}` like any control, and over
+MQTT on `set/{name}`. The media paths under `/api/v1/stream/...` and
 `/api/v1/snapshot/...` are not part of this — they are in the Core table above,
 served unconditionally alongside `/live`, `/live/stacked` and `/still.jpg` —
 so turning this flag off does not close them. The API has no configuration of
@@ -194,6 +198,7 @@ cast. `brightest-patch` is the closest alternative to as-shot for object colour.
 | Entity | What it does |
 |---|---|
 | `button.ios2ha_camera_capture_now` | Requests a capture without shifting the schedule |
+| `button.ios2ha_camera_build_timelapse_12h` / `_24h` / `_7d` / `_1mo` | Builds a timelapse of that rolling range from the archive, replacing `last_<range>`. Anything else (a span of your own, a frame rate, a size) is the `build_timelapse` action. See [OPERATIONS.md](OPERATIONS.md#timelapses) |
 | `button.ios2ha_camera_screenshot` | Phone screenshot → `camera.ios2ha_camera_screenshot` |
 | `button.ios2ha_camera_relaunch_app` | Relaunches the camera app over USB. **Leaves streaming off** — someone must tap Start streaming — so this is for a dead app only |
 | `button.ios2ha_camera_set_colour_reference` | Remembers the colour region's colour from the last still; `reference` white balance then holds night stills to it. Refused in daylight. See [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour) |

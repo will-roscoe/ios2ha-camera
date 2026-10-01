@@ -4,8 +4,11 @@ FROM python:3.12-slim
 # need libGL, which is the whole point of the headless wheel. pymobiledevice3
 # speaks the usbmux protocol in Python, so no libimobiledevice is needed either
 # -- only the host's /var/run/usbmuxd socket, which compose bind-mounts.
+# ffmpeg builds the timelapses (timelapse.py): OpenCV's bundled FFmpeg has no
+# H.264 encoder, and H.264 is the codec every browser plays.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
