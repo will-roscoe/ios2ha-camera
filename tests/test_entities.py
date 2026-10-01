@@ -87,7 +87,10 @@ def test_every_entity_has_a_publisher_and_every_published_value_has_an_entity():
     with no entity is a value nobody can see.
     """
     published = _published_keys()
-    declared = {e.state_key for e in ENTITIES if e.state_key}
+    # An attributes key is declared too: it is published like any state key and
+    # carried as an entity's attributes.
+    declared = ({e.state_key for e in ENTITIES if e.state_key}
+                | {e.attributes_key for e in ENTITIES if e.attributes_key})
     assert declared - published == set(), "declared but never published"
     assert published - declared == set(), "published but not declared"
 
@@ -195,6 +198,11 @@ def test_every_declared_button_has_a_dispatch_branch():
     # the actions themselves want a real phone, keyboard and ONVIF camera.
     sup._submit = lambda name, fn: submitted.append(name)
     sup._apply_setting = lambda name, value: fell_through.append(name)
+
+    class Builder:          # the timelapse buttons hand their range to the builder
+        def request(self, spec):
+            submitted.append(f"build_timelapse_{spec.range}")
+    sup.timelapse = Builder()
 
     for e in ENTITIES:
         if e.domain != "button":

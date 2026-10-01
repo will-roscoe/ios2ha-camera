@@ -47,6 +47,7 @@ _ENV_MAP = {
     "CONTROLS_FILE": "controls_file",
     "REBOOTS_FILE": "reboots_file",
     "FLAT_FIELD_FILE": "flat_field_file",
+    "TIMELAPSE_DIR": "timelapse_dir",
     "COLOUR_REFERENCE_FILE": "colour_reference_file",
 }
 
@@ -121,6 +122,8 @@ class Settings:
     # The sensor's fixed grain, recorded from a flat field; see flat.py. Empty
     # turns the feature off, and the Record flat field button with it.
     flat_field_file: str = "/data/flat_field.npy"
+    # Where built timelapses and their sidecars are kept; empty switches them off.
+    timelapse_dir: str = "/data/timelapse"
     # The colour a picked region is held to at night; see colour_ref.py. Empty
     # turns the feature off, and the Set colour reference button with it.
     colour_reference_file: str = "/data/colour_reference.npz"

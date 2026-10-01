@@ -203,6 +203,70 @@
     "state_topic": "ios2ha_camera/state/reachable_over_wifi",
     "unique_id": "ios2ha_binary_sensor_reachable_over_wifi"
   },
+  "homeassistant/button/ios2ha/build_timelapse_12h/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/build_timelapse_12h",
+    "default_entity_id": "button.ios2ha_camera_build_timelapse_12h",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "icon": "mdi:movie-open-plus",
+    "name": "Build 12h timelapse",
+    "unique_id": "ios2ha_button_build_timelapse_12h"
+  },
+  "homeassistant/button/ios2ha/build_timelapse_1mo/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/build_timelapse_1mo",
+    "default_entity_id": "button.ios2ha_camera_build_timelapse_1mo",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "icon": "mdi:movie-open-plus",
+    "name": "Build 1mo timelapse",
+    "unique_id": "ios2ha_button_build_timelapse_1mo"
+  },
+  "homeassistant/button/ios2ha/build_timelapse_24h/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/build_timelapse_24h",
+    "default_entity_id": "button.ios2ha_camera_build_timelapse_24h",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "icon": "mdi:movie-open-plus",
+    "name": "Build 24h timelapse",
+    "unique_id": "ios2ha_button_build_timelapse_24h"
+  },
+  "homeassistant/button/ios2ha/build_timelapse_7d/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/build_timelapse_7d",
+    "default_entity_id": "button.ios2ha_camera_build_timelapse_7d",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "icon": "mdi:movie-open-plus",
+    "name": "Build 7d timelapse",
+    "unique_id": "ios2ha_button_build_timelapse_7d"
+  },
   "homeassistant/button/ios2ha/capture_now/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/capture_now",
@@ -2054,6 +2118,75 @@
     "suggested_display_precision": 1,
     "unique_id": "ios2ha_sensor_tick_age",
     "unit_of_measurement": "s"
+  },
+  "homeassistant/sensor/ios2ha/timelapse/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_timelapse",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "device_class": "enum",
+    "entity_category": "diagnostic",
+    "icon": "mdi:movie-open-cog",
+    "name": "Timelapse",
+    "options": [
+      "idle",
+      "queued",
+      "building",
+      "built",
+      "deleted",
+      "rejected_invalid",
+      "rejected_busy",
+      "rejected_duplicate",
+      "rejected_unknown",
+      "failed_no_stills",
+      "failed_encoder"
+    ],
+    "state_topic": "ios2ha_camera/state/timelapse",
+    "unique_id": "ios2ha_sensor_timelapse"
+  },
+  "homeassistant/sensor/ios2ha/timelapse_progress/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_timelapse_progress",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "diagnostic",
+    "icon": "mdi:progress-clock",
+    "name": "Timelapse progress",
+    "state_class": "measurement",
+    "state_topic": "ios2ha_camera/state/timelapse_progress",
+    "unique_id": "ios2ha_sensor_timelapse_progress",
+    "unit_of_measurement": "%"
+  },
+  "homeassistant/sensor/ios2ha/timelapses/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "default_entity_id": "sensor.ios2ha_camera_timelapses",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "icon": "mdi:filmstrip-box-multiple",
+    "json_attributes_topic": "ios2ha_camera/state/timelapse_catalogue",
+    "name": "Timelapses",
+    "state_class": "measurement",
+    "state_topic": "ios2ha_camera/state/timelapses",
+    "unique_id": "ios2ha_sensor_timelapses",
+    "unit_of_measurement": "timelapses"
   },
   "homeassistant/sensor/ios2ha/wb_gain_b/config": {
     "availability_topic": "ios2ha_camera/available",

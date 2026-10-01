@@ -36,7 +36,14 @@ from .horizon import HORIZON_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
-from .timelapse import DELETE_FIELDS, SPEC_FIELDS, parse_delete, parse_spec
+from .timelapse import (
+    DELETE_FIELDS,
+    RANGES,
+    SPEC_FIELDS,
+    TIMELAPSE_STATES,
+    parse_delete,
+    parse_spec,
+)
 
 
 def device_info():
@@ -284,6 +291,10 @@ _BUTTONS = [
             category="config"),
     _button("level_horizon", "Level horizon", icon="mdi:image-filter-hdr",
             category="config"),
+    # One per rolling range: each is build_timelapse {"range": ...} and nothing
+    # more. Anything else -- a span, fps, width -- is the action's.
+    *(_button(f"build_timelapse_{r}", f"Build {r} timelapse", icon="mdi:movie-open-plus")
+      for r in RANGES),
 ]
 
 # Sensor metadata. Without a unit, a device class and a state class, Home
@@ -404,6 +415,13 @@ _SENSORS = [
     _sensor("horizon", "Horizon", device_class="enum",
             options=tuple(HORIZON_STATES), category="diagnostic",
             icon="mdi:image-filter-hdr"),
+    _sensor("timelapse", "Timelapse", device_class="enum",
+            options=tuple(TIMELAPSE_STATES), category="diagnostic", icon="mdi:movie-open-cog"),
+    _sensor("timelapse_progress", "Timelapse progress", unit="%", state_class="measurement",
+            category="diagnostic", icon="mdi:progress-clock"),
+    # How many are built; the catalogue itself is its attributes.
+    _sensor("timelapses", "Timelapses", unit="timelapses", state_class="measurement",
+            attributes_key="timelapse_catalogue", icon="mdi:filmstrip-box-multiple"),
     _sensor("flat_field", "Flat field", device_class="enum",
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
@@ -574,6 +592,19 @@ _DESCRIPTIONS = {
         "edges, window frames -- and add it to Rotation, then take a still to show it. "
         "Needs a daylight still: at night reflections in the glass mislead it. Record the "
         "colour reference again afterwards.",
+    **{("button", f"build_timelapse_{r}"):
+       f"Build a timelapse of the last {r} from the archive, replacing last_{r}. For a span "
+       "of your own, or another frame rate or size, use the build_timelapse action."
+       for r in RANGES},
+    ("sensor", "timelapse"):
+        "What the last timelapse request came to: queued, building, built, deleted, or why "
+        "it was refused or failed -- an invalid spec, a full queue, a duplicate, no stills "
+        "in the span, or an encoder error. Each outcome is also an event with the reason.",
+    ("sensor", "timelapse_progress"):
+        "How far the timelapse being built has got, in per cent of its frames.",
+    ("sensor", "timelapses"):
+        "How many timelapses are built. Its attributes are the catalogue: each by name, "
+        "with its span, frames, frame rate, length, size and the url it is served at.",
     ("sensor", "horizon"):
         "What Level horizon last did: levelled, or why it was refused -- no still yet, a "
         "night still, or no clear verticals to go by.",

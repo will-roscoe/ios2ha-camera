@@ -424,6 +424,11 @@ class TimelapseBuilder:
 
     # -- requests --
 
+    def refuse(self, name, reason, control="build_timelapse"):
+        """Say a request was refused before it reached the builder -- a spec MQTT
+        delivered that does not parse -- the way the builder says everything else."""
+        return self._outcome(name, "rejected_invalid", reason, control=control)
+
     def request(self, spec):
         """Queue a build. Returns the state it left: queued, or why it was refused."""
         with self._lock:

@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 import cv2
 import numpy as np
 
-from . import focus, horizon, measure, render, stack
+from . import focus, horizon, measure, render, stack, timelapse
 from .backgrounding import BackgroundingPolicy
 from .phone import PhoneUnavailable
 from .reboot import WEDGE_FOR_S
@@ -75,6 +75,12 @@ DUSK_TRIES = 3
 # daytime stills measured only just above the default target level, so an overcast
 # noon has a little night weight and must not be refused as night.
 LEVEL_MAX_WEIGHT = 0.5
+
+# The range buttons, each a build_timelapse with its range and nothing else.
+_TIMELAPSE_BUTTONS = {f"build_timelapse_{r}": r for r in timelapse.RANGES}
+# What the timelapse sensors read with TIMELAPSE_DIR empty.
+_TIMELAPSE_OFF = {"timelapse": "idle", "timelapse_progress": 0, "timelapses": 0,
+                  "timelapse_catalogue": {}}
 
 # How long the app stays in the background when restarting its capture session.
 WB_RESET_PAUSE_S = 5.0
@@ -195,7 +201,8 @@ class Supervisor:
                  upstream=None, probe_n=15, fresh_s=30.0, min_free_bytes=2 * 2**30,
                  device_executor=None, request_restart=None, clock=None,
                  starter=None, keyboard=None, opener=None, rebooter=None,
-                 emergency=None, store=None, sleep=time.sleep, flat=None, colour=None):
+                 emergency=None, store=None, sleep=time.sleep, flat=None, colour=None,
+                 timelapse=None):
         # Injected so tests can drive time and record the restart instead of
         # signalling the test runner's own process.
         self._clock = clock or time.monotonic
@@ -225,6 +232,9 @@ class Supervisor:
         self._flat_requested = False
         # The colour a picked region is held to at night, or None when off.
         self.colour = colour
+        # The timelapse builder (timelapse.py), or None when TIMELAPSE_DIR is empty.
+        # Built after the supervisor, since it publishes through it.
+        self.timelapse = timelapse
         self._colour_state = "ready" if getattr(colour, "ready", False) else "none"
         # The last still as it was rendered: (linear stack, black level, night
         # weight, white-balance gains), set together once it is made, so Set colour
@@ -640,6 +650,10 @@ class Supervisor:
                     raise RuntimeError("the colour reference is switched off "
                                        "(COLOUR_REFERENCE_FILE is empty)")
                 self._submit(name, self._set_colour_reference)
+            elif name == "build_timelapse" or name in _TIMELAPSE_BUTTONS:
+                self._build_timelapse(name, value)
+            elif name == "delete_timelapse":
+                self._delete_timelapse(value)
             elif name == "level_horizon":
                 self._submit(name, self._level_horizon)
             elif name == "focus_now":
@@ -1038,6 +1052,7 @@ class Supervisor:
         d["focus_run"] = self._focus_state
         d["colour_reference"] = self._colour_state
         d["horizon"] = self._horizon_state
+        d.update(self.timelapse.state() if self.timelapse is not None else _TIMELAPSE_OFF)
         d["emergency_background"] = (self.emergency.state
                                      if self.emergency is not None else "idle")
         d["backgrounded_by_keyboard"] = self.backgrounding.backgrounded_by_keyboard
@@ -1285,6 +1300,35 @@ class Supervisor:
             self._colour_state = state
         self.publish_state({"colour_reference": state})
         return state
+
+    # -- timelapses -----------------------------------------------------------
+
+    def _timelapses_on(self):
+        if self.timelapse is None:
+            raise RuntimeError("timelapses are switched off (TIMELAPSE_DIR is empty)")
+        return self.timelapse
+
+    def _build_timelapse(self, name, value):
+        """A build request from any interface. MQTT delivers whatever was sent, so
+        the spec is judged here as the API route judged it, and a refusal is
+        published rather than lost on paho's thread."""
+        builder = self._timelapses_on()
+        if name != "build_timelapse":
+            value = {"range": _TIMELAPSE_BUTTONS[name]}
+        try:
+            spec = timelapse.parse_spec(value, time.time())
+        except timelapse.SpecError as e:
+            label = value.get("name") if isinstance(value, dict) else None
+            return builder.refuse(str(label or "build_timelapse"), str(e))
+        return builder.request(spec)
+
+    def _delete_timelapse(self, value):
+        builder = self._timelapses_on()
+        try:
+            name = timelapse.parse_delete(value)
+        except timelapse.SpecError as e:
+            return builder.refuse("delete_timelapse", str(e), control="delete_timelapse")
+        return builder.delete(name)
 
     # -- levelling the view --------------------------------------------------
 
