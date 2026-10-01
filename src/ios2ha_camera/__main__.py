@@ -27,6 +27,7 @@ from .ring_buffer import RingBuffer
 from .settings import Settings, both_interfaces_off_message
 from .stream_start import StreamStarter
 from .supervisor import Supervisor
+from .timelapse import TimelapseBuilder
 from .upstream import ProbeStalled, ProbeStreamingOff, Upstream, http_probe
 
 log = logging.getLogger(__name__)
@@ -198,6 +199,14 @@ def main():
                              if s.colour_reference_file else None))
     stacker = LiveStacker(buf, s)
     sup.live_fps = stacker.fps
+    # Built after the supervisor because it publishes through it: its state and
+    # events reach MQTT, the API and the page the way everything else does.
+    if s.timelapse_dir:
+        sup.timelapse = TimelapseBuilder(s.timelapse_dir, s.archive_dir,
+                                         publish=sup.publish_state, event=sup._event)
+        # Once now, into the cache every interface reads and an MQTT reconnect
+        # replays; after this the builder publishes each change itself.
+        sup.publish_state(sup.timelapse.state())
 
     threads = [
         threading.Thread(target=sup.run_capture, args=(stop,), name="capture", daemon=True),
@@ -209,7 +218,8 @@ def main():
     # one port serves the media routes and the interfaces alike.
     app = make_live_app(buf, latest_still=lambda: sup.last_still_jpeg,
                         upstream=up, stacker=stacker,
-                        latest_screenshot=lambda: sup.last_screenshot_jpeg)
+                        latest_screenshot=lambda: sup.last_screenshot_jpeg,
+                        timelapse_dir=s.timelapse_dir or None)
 
     # Version first, and on its own line: "what is actually running" is the
     # first question asked when an unattended service misbehaves.
@@ -219,7 +229,12 @@ def main():
     log.info("controls: %s", (f"restored {len(restored)} from {s.controls_file}" if restored
                               else f"defaults, kept in {s.controls_file}" if store is not None
                               else "defaults, not kept across restarts (CONTROLS_FILE is empty)"))
+    log.info("timelapses: %s", (f"{sup.timelapse.state()['timelapses']} built, kept in "
+                                f"{s.timelapse_dir}" if sup.timelapse is not None
+                                else "off (TIMELAPSE_DIR is empty)"))
     _start_interfaces(s, sup, app, mqtt)
+    if sup.timelapse is not None:
+        sup.timelapse.start()
     for t in threads:
         t.start()
     # Started last, after the log lines above: its first tick can fire a probe
@@ -263,6 +278,10 @@ def main():
         # unregisters the advertisement instead of leaving BlueZ to notice, and
         # ends its own poll rather than leaving asyncio to complain about it.
         keyboard.stop(timeout=3.0)
+        # A build still running is left to the container's end: its ffmpeg dies
+        # with it, and the half-written file is removed at the next start.
+        if sup.timelapse is not None:
+            sup.timelapse.stop(timeout=1.0)
         sup.close()
         for t in threads:
             t.join(timeout=3)

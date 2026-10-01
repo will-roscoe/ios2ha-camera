@@ -41,4 +41,15 @@ button { font: inherit; }
 #reference-state { color: var(--muted); font-size: .85rem; }
 #region-error { flex-basis: 100%; color: var(--bad); font-size: .8rem; }
 #region-error:empty { display: none; }
+#clip { display: block; width: 100%; height: auto; background: #000; }
+#timelapse-tools { padding: .6rem .8rem; border-top: 1px solid var(--line); display: grid; gap: .6rem; }
+#timelapse-tools[hidden] { display: none; }
+.tl-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; }
+#tl-status { color: var(--muted); font-size: .85rem; }
+#tl-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .5rem .8rem; }
+#tl-fields label { display: grid; gap: .15rem; font-size: .8rem; color: var(--muted); }
+#tl-fields input, #tl-fields select { font: inherit; }
+#timelapse-tools button { padding: .3rem .8rem; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+#tl-error { color: var(--bad); font-size: .8rem; }
+#tl-error:empty { display: none; }
 #fatal { color: var(--bad); }

@@ -99,6 +99,8 @@ def _sensor_cfg(p, e):
                           (e.icon, "icon")):
         if value is not None:
             cfg[ha_key] = value
+    if e.attributes_key is not None:
+        cfg["json_attributes_topic"] = f"{p}/state/{e.attributes_key}"
     return cfg
 
 

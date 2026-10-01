@@ -22,6 +22,8 @@ The two cameras carry `topic` instead of a state key: their payloads are the JPE
 PNG published to their own topics, not a value under `state/`.
 """
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from . import version
@@ -34,6 +36,14 @@ from .horizon import HORIZON_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
+from .timelapse import (
+    DELETE_FIELDS,
+    RANGES,
+    SPEC_FIELDS,
+    TIMELAPSE_STATES,
+    parse_delete,
+    parse_spec,
+)
 
 
 def device_info():
@@ -83,11 +93,32 @@ class Entity:
     # The payload topic of a camera entity, relative to the MQTT prefix. Only the
     # cameras use it; everything else derives its topics from `object_id`.
     topic: str | None = None
+    # A state key whose value, a JSON object, is this entity's attributes: MQTT
+    # discovery points json_attributes_topic at it and the component serves it as
+    # extra_state_attributes. For readings too big or too structured for a state,
+    # like the timelapse catalogue.
+    attributes_key: str | None = None
     # What the entity shows or controls, in plain words, for the generated entity
     # reference in the docs. Filled from _DESCRIPTIONS below rather than passed
     # to each helper, so the declarations above stay readable; a test holds every
     # entity to having one. Not served by MQTT or the API: it is documentation.
     description: str = ""
+
+
+@dataclass(frozen=True)
+class Action:
+    """A write whose value is a JSON object, declared once like an entity.
+
+    It travels the same path as every other write -- POST /api/v1/control/{name}
+    and MQTT set/{name} both end in Supervisor.handle_control -- and `fields` is
+    served in /objects, so the control page, the HA component and an MQTT user can
+    all build the same form. `parse` is the one judge of a value: the API refuses
+    with its message, and the supervisor asks it again for what MQTT delivers.
+    """
+    name: str
+    description: str
+    fields: dict
+    parse: Callable = field(compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -98,6 +129,10 @@ class MediaSource:
     path: str
     holds_phone: bool
     params: dict = field(default_factory=dict)
+    # For a source with many items (`{name}` in its path): the state key listing
+    # them, each with its own url. A client reads the list there rather than
+    # knowing which state key goes with which media.
+    catalogue: str | None = None
 
 
 def _camera(object_id, name, topic, icon=None, category=None):
@@ -260,6 +295,10 @@ _BUTTONS = [
             category="config"),
     _button("level_horizon", "Level horizon", icon="mdi:image-filter-hdr",
             category="config"),
+    # One per rolling range: each is build_timelapse {"range": ...} and nothing
+    # more. Anything else -- a span, fps, width -- is the action's.
+    *(_button(f"build_timelapse_{r}", f"Build {r} timelapse", icon="mdi:movie-open-plus")
+      for r in RANGES),
 ]
 
 # Sensor metadata. Without a unit, a device class and a state class, Home
@@ -380,6 +419,16 @@ _SENSORS = [
     _sensor("horizon", "Horizon", device_class="enum",
             options=tuple(HORIZON_STATES), category="diagnostic",
             icon="mdi:image-filter-hdr"),
+    # Its attributes are the last outcome with its reason: with MQTT off there is
+    # no event channel, and every interface reads state.
+    _sensor("timelapse", "Timelapse", device_class="enum",
+            options=tuple(TIMELAPSE_STATES), category="diagnostic", icon="mdi:movie-open-cog",
+            attributes_key="timelapse_last"),
+    _sensor("timelapse_progress", "Timelapse progress", unit="%", state_class="measurement",
+            category="diagnostic", icon="mdi:progress-clock"),
+    # How many are built; the catalogue itself is its attributes.
+    _sensor("timelapses", "Timelapses", unit="timelapses", state_class="measurement",
+            attributes_key="timelapse_catalogue", icon="mdi:filmstrip-box-multiple"),
     _sensor("flat_field", "Flat field", device_class="enum",
             options=tuple(FLAT_FIELD_STATES), category="diagnostic", icon="mdi:grid"),
     _sensor("flat_field_scale", "Flat field scale", state_class="measurement", precision=2,
@@ -550,6 +599,20 @@ _DESCRIPTIONS = {
         "edges, window frames -- and add it to Rotation, then take a still to show it. "
         "Needs a daylight still: at night reflections in the glass mislead it. Record the "
         "colour reference again afterwards.",
+    **{("button", f"build_timelapse_{r}"):
+       f"Build a timelapse of the last {r} from the archive, replacing last_{r}. For a span "
+       "of your own, or another frame rate or size, use the build_timelapse action."
+       for r in RANGES},
+    ("sensor", "timelapse"):
+        "What the last timelapse request came to: queued, building, built, deleted, or why "
+        "it was refused or failed -- an invalid spec, a full queue, a duplicate, no stills "
+        "in the span, or an encoder error -- and off when TIMELAPSE_DIR is empty. Its "
+        "attributes say which request and why, in words.",
+    ("sensor", "timelapse_progress"):
+        "How far the timelapse being built has got, in per cent of its frames.",
+    ("sensor", "timelapses"):
+        "How many timelapses are built. Its attribute `items` is the catalogue: each by "
+        "name, with its span, frames, frame rate, length, size and the url it is served at.",
     ("sensor", "horizon"):
         "What Level horizon last did: levelled, or why it was refused -- no still yet, a "
         "night still, or no clear verticals to go by.",
@@ -798,4 +861,20 @@ MEDIA = (
     # answer to a different question.
     MediaSource(id="screenshot", kind="snapshot", formats=("jpeg",),
                 path="/api/v1/snapshot/screenshot", holds_phone=False),
+    # Built timelapses: `{name}` is a name in the timelapse_catalogue state, whose
+    # entries also carry their own url. A path, not a query parameter, so `params`
+    # stays empty. Served from disk with Range, so a player can seek.
+    MediaSource(id="timelapse", kind="video", formats=("mp4",),
+                path="/api/v1/timelapse/{name}.mp4", holds_phone=False,
+                catalogue="timelapse_catalogue"),
+)
+
+ACTIONS = (
+    Action("build_timelapse",
+           "Build a timelapse from the archive: a rolling range (12h, 24h, 7d, 1mo) or a "
+           "span of your own, with how to render it. Built one at a time; the timelapse "
+           "sensor says what happened.",
+           SPEC_FIELDS, lambda value: parse_spec(value, time.time())),
+    Action("delete_timelapse", "Delete a built timelapse by name.", DELETE_FIELDS,
+           parse_delete),
 )

@@ -11,6 +11,7 @@ const CATEGORY_TITLES = [[null, "Camera"], ["config", "Configuration"], ["diagno
 const DOMAIN_ORDER = ["button", "switch", "select", "number", "sensor", "binary_sensor"];
 
 let objects = [];
+let actions = [];
 let objectsVersion = null;
 let media = [];
 let deviceName = "Camera";
@@ -212,9 +213,17 @@ function selectMedia(m) {
   const start = document.getElementById("start-stream");
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.id === m.id);
   img.removeAttribute("src");
+  const video = m.kind === "video";
+  img.hidden = video;
+  document.getElementById("timelapse-tools").hidden = !video;
+  if (!video) stopClip();
+  if (objects.length) refreshPicker();
   if (m.kind === "snapshot") {
     start.hidden = true;
     showSnapshot(m, img);
+  } else if (video) {
+    start.hidden = true;
+    refreshTimelapse(true);
   } else {
     showStart(m, "Start");
   }
@@ -224,7 +233,7 @@ function selectMedia(m) {
 function renderMedia() {
   const tabs = document.getElementById("tabs");
   tabs.replaceChildren();
-  const order = ["still", "stacked", "live", "screenshot"];
+  const order = ["still", "stacked", "live", "screenshot", "timelapse"];
   const list = [...media].sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   for (const m of list) {
     tabs.append($("button", { class: "tab", "data-id": m.id, text: m.id, onclick: () => selectMedia(m) }));
@@ -233,6 +242,135 @@ function renderMedia() {
 }
 
 document.addEventListener("visibilitychange", () => { if (document.hidden) stopStream(); });
+
+// -- timelapses --------------------------------------------------------------------
+// Built by the service from its archive. The catalogue is a state value (the
+// timelapses sensor's attributes), the build and delete are the service's actions,
+// and the form is generated from the build action's fields: nothing here knows a
+// rule the service does not publish.
+
+let clipBuilt = null;
+let pickSignature = null;
+
+function sensorKey(id) {
+  return entity("sensor", id)?.state_key;
+}
+
+function catalogue() {
+  const key = entity("sensor", "timelapses")?.attributes_key;
+  return (key && values[key]?.items) || {};
+}
+
+function lastOutcome() {
+  const key = entity("sensor", "timelapse")?.attributes_key;
+  return (key && values[key]) || {};
+}
+
+function stopClip() {
+  const clip = document.getElementById("clip");
+  clip.pause();
+  clip.removeAttribute("src");
+  clip.hidden = true;
+  clipBuilt = null;
+}
+
+function showClip(force) {
+  const clip = document.getElementById("clip");
+  const entry = catalogue()[document.getElementById("tl-pick").value];
+  if (!entry) { stopClip(); return; }
+  clip.hidden = false;
+  // The same url after a rebuild would not reload by itself; the route sends
+  // no-cache, so a load() fetches the new file.
+  if (force || clipBuilt !== `${entry.url}@${entry.built}`) {
+    clipBuilt = `${entry.url}@${entry.built}`;
+    clip.src = entry.url;
+    clip.load();
+  }
+}
+
+function describe(name, e) {
+  return `${name}: ${e.frames} frames, ${e.duration_s} s` +
+         (e.built ? `, built ${relative(e.built)}` : "");
+}
+
+function refreshTimelapse(force = false) {
+  const tools = document.getElementById("timelapse-tools");
+  if (tools.hidden && !force) return;
+  const pick = document.getElementById("tl-pick");
+  const cat = catalogue();
+  const names = Object.keys(cat);
+  // Rebuilt only when the catalogue itself changes: progress arrives many times a
+  // build, and replacing the options each time would close a list being chosen from.
+  const signature = JSON.stringify(names.map((n) => [n, cat[n].built]));
+  if (force || signature !== pickSignature) {
+    pickSignature = signature;
+    const keep = names.includes(pick.value) ? pick.value : names[0];
+    pick.replaceChildren(...names.map((n) => $("option", { value: n, text: describe(n, cat[n]) })));
+    if (!names.length) pick.append($("option", { value: "", text: "No timelapses built yet" }));
+    pick.value = keep ?? "";
+  }
+  document.getElementById("tl-delete").disabled = !names.length;
+  const state = values[sensorKey("timelapse")], pct = values[sensorKey("timelapse_progress")];
+  const last = lastOutcome();
+  const why = last.reason && last.result === state ? `: ${last.reason}` : "";
+  document.getElementById("tl-status").textContent = state == null ? "" :
+    state === "building" ? `Building ${last.name ?? ""}\u2026 ${pct ?? 0}%`
+                         : `${String(state).replaceAll("_", " ")}${why}`;
+  if (activeMedia?.kind === "video") showClip(force);
+}
+
+function fieldInput(name, f) {
+  const help = f.description || name;
+  if (f.type === "select") {
+    return $("select", { name, title: help },
+      $("option", { value: "", text: "(none)" }), ...f.options.map((o) => $("option", { value: o, text: o })));
+  }
+  const attrs = { name, title: help };
+  if (f.type === "int") Object.assign(attrs, { type: "number", min: f.min, max: f.max, step: 1,
+                                               placeholder: f.default ?? "" });
+  else if (f.type === "datetime") attrs.type = "datetime-local";
+  else attrs.type = "text";
+  return $("input", attrs);
+}
+
+function renderBuildForm() {
+  const host = document.getElementById("tl-fields");
+  const build = actions.find((a) => a.name === "build_timelapse");
+  host.replaceChildren(...Object.entries(build?.fields ?? {}).map(([name, f]) =>
+    $("label", {}, name, fieldInput(name, f))));
+}
+
+// A datetime-local box holds the browser's local time; the service reads a time
+// without a zone as its own local time, which need not be the same. So times are
+// sent as UTC, which means one thing everywhere.
+function formValue(form, build) {
+  const value = {};
+  for (const [name, f] of Object.entries(build.fields)) {
+    const raw = form.elements[name]?.value;
+    if (raw == null || raw === "") continue;
+    if (f.type === "int") value[name] = Number(raw);
+    else if (f.type === "datetime") value[name] = new Date(raw).toISOString();
+    else value[name] = raw;
+  }
+  return value;
+}
+
+function bindTimelapse() {
+  const tools = document.getElementById("timelapse-tools");
+  tools.error = document.getElementById("tl-error");
+  document.getElementById("tl-pick").onchange = () => showClip(true);
+  document.getElementById("tl-delete").onclick = () => {
+    const name = document.getElementById("tl-pick").value;
+    if (name && confirm(`Delete the timelapse ${name}?`)) {
+      write({ object_id: "delete_timelapse", state_key: null }, { name }, tools);
+    }
+  };
+  document.getElementById("tl-build").onsubmit = (ev) => {
+    ev.preventDefault();
+    const build = actions.find((a) => a.name === "build_timelapse");
+    if (build) write({ object_id: build.name, state_key: null }, formValue(ev.target, build), tools);
+  };
+}
 
 // -- the colour region picker -------------------------------------------------------
 // Draws the colour reference region over the still and lets it be redrawn by dragging.
@@ -282,7 +420,8 @@ function showReferenceState() {
 
 // After every reload of /objects: the entities may have come or gone.
 function refreshPicker() {
-  document.getElementById("region-tools").hidden = !hasRegion();
+  // The region is drawn on the still; with a video showing it means nothing.
+  document.getElementById("region-tools").hidden = !hasRegion() || activeMedia?.kind === "video";
   if (!hasRegion()) setPicking(false);
   drawRegion();
   showReferenceState();
@@ -381,14 +520,17 @@ function apply(delta) {
   }
   drawRegion();
   showReferenceState();
+  refreshTimelapse();
 }
 
 async function loadObjects() {
   const doc = await getJSON(routes.objects);
   objects = doc.objects;
+  actions = doc.actions ?? [];
   objectsVersion = doc.objects_version;
   renderEntities();
   refreshPicker();
+  renderBuildForm();
 }
 
 function setConnected(on) {
@@ -427,6 +569,7 @@ function connect() {
     }
     for (const [k, r] of rows) r.update(values[k]);
     refreshPicker();
+    refreshTimelapse();
     if (activeMedia && activeMedia.id === "still") showSnapshot(activeMedia, document.getElementById("picture"));
   });
   es.addEventListener("state", (ev) => apply(JSON.parse(ev.data).state));
@@ -442,6 +585,7 @@ async function main() {
     document.getElementById("version").textContent = info.version ?? "";
     media = (await getJSON(routes.media)).media;
     bindPicker();
+    bindTimelapse();
     renderMedia();
     await loadObjects();
     connect();

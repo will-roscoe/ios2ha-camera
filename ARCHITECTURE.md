@@ -335,7 +335,21 @@ class, options, range and the state key it reads. `mqtt_io` renders these into H
 discovery payloads, and a Home Assistant custom component in its own repository will read the same
 declaration, so the two cannot drift apart as they would have done with a hand-kept copy each. It
 also carries `MEDIA`, the video and image the HTTP server offers, where `holds_phone` records which
-of them keep the phone's connection open while a viewer is attached.
+of them keep the phone's connection open while a viewer is attached. `ACTIONS` declares the writes
+whose value is a JSON object (`build_timelapse`, `delete_timelapse`): each with the `fields` a client
+builds a form from and the `parse` that judges a value. They travel the control path like every
+other write, so MQTT, the API, the page and the component reach the same thing. An entity's
+`attributes_key` names a state key carried as its attributes (the timelapse catalogue).
+
+### `timelapse.py`
+Timelapses from the archive, on request. `parse_spec` judges a build request (a rolling range or a
+span, fps, width, every, quality, name; unknown keys refused); `select_stills` picks the archive's
+stills for the span by the times in their paths, refusing more than 20 000; `encode` runs ffmpeg
+(libx264, nice 19, two threads, one frame size for the whole video) into `<name>.mp4` with a JSON
+sidecar, counting the frames ffmpeg really encoded; `TimelapseBuilder` runs one build at a time with
+up to four waiting, publishes `timelapse`, `timelapse_progress`, `timelapses` and the catalogue
+`timelapse_catalogue`, and rebuilds the catalogue from the sidecars at start. The archive is never
+pruned.
 
 ### `mqtt_io.py`
 The MQTT client, and the renderer that turns `entities.ENTITIES` into Home Assistant discovery
