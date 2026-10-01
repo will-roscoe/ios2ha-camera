@@ -37,7 +37,7 @@ from pathlib import Path
 from aiohttp import web
 
 from . import version
-from .entities import ENTITIES, MEDIA, device_info
+from .entities import ACTIONS, ENTITIES, MEDIA, device_info
 from .events import EventHub
 
 log = logging.getLogger(__name__)
@@ -75,6 +75,7 @@ _NO_STORE = {"Cache-Control": "no-store"}
 # unambiguous here even though it is not across the whole registry -- `screenshot`
 # is both a camera and a button, and only the button is writable.
 _WRITABLE = {e.object_id: e for e in ENTITIES if e.writable}
+_ACTIONS = {a.name: a for a in ACTIONS}
 
 
 def _object(e):
@@ -95,7 +96,13 @@ def _object(e):
             "options": list(e.options) if e.options is not None else None,
             "lo": e.lo, "hi": e.hi, "step": e.step, "category": e.category,
             "icon": e.icon, "writable": e.writable, "precision": e.precision,
-            "description": e.description}
+            "description": e.description, "attributes_key": e.attributes_key}
+
+
+def _action(a):
+    """One action as a client sees it: enough to build a form, and nothing of how
+    it is judged -- that stays in the service, which refuses with its reason."""
+    return {"name": a.name, "description": a.description, "fields": a.fields}
 
 
 def _media(m):
@@ -109,7 +116,8 @@ def _media(m):
 def descriptors():
     """Everything a component needs to build its entities, in declaration order."""
     return {"objects": [_object(e) for e in ENTITIES],
-            "media": [_media(m) for m in MEDIA]}
+            "media": [_media(m) for m in MEDIA],
+            "actions": [_action(a) for a in ACTIONS]}
 
 
 def _fingerprint(doc):
@@ -271,6 +279,19 @@ def add_api_routes(app, state, settings, *, events, on_control=lambda n, v: None
         `/state` or the event stream rather than this response.
         """
         name = request.match_info["name"]
+        action = _ACTIONS.get(name)
+        if action is not None:
+            # A JSON object judged by the action's own parser; the same parser
+            # judges it again in the supervisor for what MQTT delivers.
+            try:
+                value = await _posted_value(request)
+                action.parse(value)
+            except ValueError as err:
+                log.warning("refused action %s: %s", name, err)
+                return _refused(400, str(err), name=name)
+            on_control(name, value)
+            return web.json_response({"ok": True, "name": name, "value": value},
+                                     headers=_NO_STORE)
         e = _WRITABLE.get(name)
         if e is None:
             # Named separately because they are different mistakes: a typo, and
@@ -278,7 +299,7 @@ def add_api_routes(app, state, settings, *, events, on_control=lambda n, v: None
             declared = any(x.object_id == name for x in ENTITIES)
             return _refused(404, f"{name} is read-only" if declared
                            else f"there is no control named {name}",
-                           name=name, accepted=sorted(_WRITABLE))
+                           name=name, accepted=sorted([*_WRITABLE, *_ACTIONS]))
         try:
             value = await _posted_value(request)
         except ValueError as err:

@@ -47,6 +47,35 @@ class SpecError(ValueError):
     """A build request that cannot be built, with what to change."""
 
 
+def _int_field(key, description):
+    lo, hi, default = _INTS[key]
+    field = {"type": "int", "min": lo, "max": hi, "description": description}
+    if default is not None:
+        field["default"] = default
+    return field
+
+
+# What a client needs to build a form for each action: served in /objects with the
+# action, so the page, the HA component and anyone on MQTT read the same rules the
+# parser enforces.
+SPEC_FIELDS = {
+    "range": {"type": "select", "options": ["12h", "24h", "7d", "1mo"],
+              "description": "A rolling range ending now, rebuilt as last_<range>. "
+                             "Give this or start."},
+    "start": {"type": "datetime",
+              "description": "Start of a span of your own, ISO 8601; without a zone it is "
+                             "the service's local time."},
+    "end": {"type": "datetime", "description": "End of that span; now if left out."},
+    "name": {"type": "str",
+             "description": "Name for a span of your own: up to 48 of a-z, 0-9, _ and -."},
+    "fps": _int_field("fps", "Frames of video per second; each still is one frame."),
+    "width": _int_field("width", "Width in pixels, even; the stills' own if left out."),
+    "every": _int_field("every", "Use every Nth still: 2 halves the length."),
+    "quality": _int_field("quality", "x264 CRF: lower is sharper and bigger."),
+}
+DELETE_FIELDS = {"name": {"type": "str", "description": "The timelapse to delete."}}
+
+
 @dataclass(frozen=True)
 class Spec:
     name: str
@@ -122,6 +151,16 @@ def parse_spec(value, now):
             raise SpecError(f"name may not start with {RESERVED!r}: those are the range builds")
     return Spec(name=name, kind=kind, range=rng, start=start, end=end, fps=ints["fps"],
                 width=ints["width"], every=ints["every"], quality=ints["quality"])
+
+
+def parse_delete(value):
+    """A delete request's name, or SpecError."""
+    if not isinstance(value, dict) or set(value) != {"name"}:
+        raise SpecError(f'a delete is a JSON object {{"name": ...}}, not {value!r}')
+    name = value["name"]
+    if not isinstance(name, str) or not NAME.match(name):
+        raise SpecError(f"name must be 1-48 of a-z, 0-9, _ and -, not {name!r}")
+    return name
 
 
 # -- choosing the stills ------------------------------------------------------------
@@ -335,8 +374,8 @@ def _entry(meta):
 class TimelapseBuilder:
     """Builds timelapses one at a time on a thread of its own.
 
-    `publish(d)` receives state keys -- `timelapse`, `timelapse_progress`,
-    `timelapse_count` and the catalogue `timelapses` -- and `event(d)` one event per
+    `publish(d)` receives state keys -- `timelapse`, `timelapse_progress`, the
+    count `timelapses` and the catalogue `timelapse_catalogue` -- and `event(d)` one event per
     outcome, `{ts, control, name, result, reason}`: the supervisor hands both on to
     MQTT, the API and the page alike.
     """
@@ -360,8 +399,9 @@ class TimelapseBuilder:
 
     def _state_locked(self):
         return {"timelapse": self._state, "timelapse_progress": self._progress,
-                "timelapse_count": len(self._catalogue),
-                "timelapses": {n: _entry(m) for n, m in sorted(self._catalogue.items())}}
+                "timelapses": len(self._catalogue),
+                "timelapse_catalogue": {n: _entry(m)
+                                        for n, m in sorted(self._catalogue.items())}}
 
     def _outcome(self, name, state, reason=None, control="build_timelapse"):
         with self._lock:

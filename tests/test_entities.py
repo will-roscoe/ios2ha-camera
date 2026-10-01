@@ -229,15 +229,16 @@ def test_media_sources_are_distinct_and_say_what_they_cost():
     """`holds_phone` is the field the whole descriptor exists for: a snapshot is
     answered from memory, while a stream holds the phone's connection open for as
     long as a viewer stays attached, which is what on-demand upstream turns on."""
-    assert len(MEDIA) == 4
+    assert len(MEDIA) == 5
     assert len({m.id for m in MEDIA}) == len(MEDIA)
     assert len({m.path for m in MEDIA}) == len(MEDIA)
     for m in MEDIA:
-        assert m.kind in ("stream", "snapshot")
+        assert m.kind in ("stream", "snapshot", "video")
         assert m.path.startswith("/api/v1/")
         assert m.formats
     assert {m.id for m in MEDIA if m.holds_phone} == {"live", "stacked"}
     assert {m.id for m in MEDIA if m.kind == "snapshot"} == {"still", "screenshot"}
+    assert {m.id for m in MEDIA if m.kind == "video"} == {"timelapse"}
 
 
 def test_every_entity_says_what_it_does():

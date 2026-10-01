@@ -22,6 +22,8 @@ The two cameras carry `topic` instead of a state key: their payloads are the JPE
 PNG published to their own topics, not a value under `state/`.
 """
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from . import version
@@ -34,6 +36,7 @@ from .horizon import HORIZON_STATES
 from .reboot import REBOOT_STATES
 from .states import STREAM_STATES
 from .stream_start import STREAM_START_STATES
+from .timelapse import DELETE_FIELDS, SPEC_FIELDS, parse_delete, parse_spec
 
 
 def device_info():
@@ -83,11 +86,32 @@ class Entity:
     # The payload topic of a camera entity, relative to the MQTT prefix. Only the
     # cameras use it; everything else derives its topics from `object_id`.
     topic: str | None = None
+    # A state key whose value, a JSON object, is this entity's attributes: MQTT
+    # discovery points json_attributes_topic at it and the component serves it as
+    # extra_state_attributes. For readings too big or too structured for a state,
+    # like the timelapse catalogue.
+    attributes_key: str | None = None
     # What the entity shows or controls, in plain words, for the generated entity
     # reference in the docs. Filled from _DESCRIPTIONS below rather than passed
     # to each helper, so the declarations above stay readable; a test holds every
     # entity to having one. Not served by MQTT or the API: it is documentation.
     description: str = ""
+
+
+@dataclass(frozen=True)
+class Action:
+    """A write whose value is a JSON object, declared once like an entity.
+
+    It travels the same path as every other write -- POST /api/v1/control/{name}
+    and MQTT set/{name} both end in Supervisor.handle_control -- and `fields` is
+    served in /objects, so the control page, the HA component and an MQTT user can
+    all build the same form. `parse` is the one judge of a value: the API refuses
+    with its message, and the supervisor asks it again for what MQTT delivers.
+    """
+    name: str
+    description: str
+    fields: dict
+    parse: Callable = field(compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -798,4 +822,19 @@ MEDIA = (
     # answer to a different question.
     MediaSource(id="screenshot", kind="snapshot", formats=("jpeg",),
                 path="/api/v1/snapshot/screenshot", holds_phone=False),
+    # Built timelapses: `{name}` is a name in the timelapse_catalogue state, whose
+    # entries also carry their own url. A path, not a query parameter, so `params`
+    # stays empty. Served from disk with Range, so a player can seek.
+    MediaSource(id="timelapse", kind="video", formats=("mp4",),
+                path="/api/v1/timelapse/{name}.mp4", holds_phone=False),
+)
+
+ACTIONS = (
+    Action("build_timelapse",
+           "Build a timelapse from the archive: a rolling range (12h, 24h, 7d, 1mo) or a "
+           "span of your own, with how to render it. Built one at a time; the timelapse "
+           "sensor says what happened.",
+           SPEC_FIELDS, lambda value: parse_spec(value, time.time())),
+    Action("delete_timelapse", "Delete a built timelapse by name.", DELETE_FIELDS,
+           parse_delete),
 )

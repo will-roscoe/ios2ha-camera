@@ -77,11 +77,11 @@ def test_a_request_is_queued_then_built(tmp_path, fake):
     assert b.run_once() == "built"
     s = b.state()
     assert s["timelapse"] == "built" and s["timelapse_progress"] == 100
-    assert s["timelapse_count"] == 1
-    entry = s["timelapses"]["last_12h"]
+    assert s["timelapses"] == 1
+    entry = s["timelapse_catalogue"]["last_12h"]
     assert entry["url"] == "/api/v1/timelapse/last_12h.mp4" and entry["frames"] == 12
     assert "spec" not in entry
-    assert r.state["timelapses"] == s["timelapses"]
+    assert r.state["timelapse_catalogue"] == s["timelapse_catalogue"]
     assert r.events[-1]["result"] == "built" and r.events[-1]["name"] == "last_12h"
 
 
@@ -103,7 +103,7 @@ def test_no_stills_in_the_span(tmp_path, fake):
     b, r = _builder(tmp_path)
     b.request(parse_spec({"start": "2026-01-01T00:00:00", "end": "2026-01-02T00:00:00"}, NOW))
     assert b.run_once() == "failed_no_stills"
-    assert b.state()["timelapse_count"] == 0
+    assert b.state()["timelapses"] == 0
 
 
 def test_an_encoder_failure_leaves_the_builder_working(tmp_path, monkeypatch):
@@ -134,7 +134,7 @@ def test_delete(tmp_path, fake):
     b.request(parse_spec({"range": "12h"}, NOW))
     b.run_once()
     assert b.delete("last_12h") == "deleted"
-    assert b.state()["timelapses"] == {}
+    assert b.state()["timelapse_catalogue"] == {}
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
@@ -150,5 +150,5 @@ def test_the_worker_builds_for_real_and_the_catalogue_survives(tmp_path):
         b.stop()
     assert r.state["timelapse"] == "built"
     again, _ = _builder(tmp_path)
-    assert again.state()["timelapses"]["last_12h"]["frames"] == 12
+    assert again.state()["timelapse_catalogue"]["last_12h"]["frames"] == 12
     assert not any(t.name == "timelapse" for t in threading.enumerate())

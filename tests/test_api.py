@@ -74,6 +74,7 @@ def test_objects_describes_every_entity():
         "category": "config", "icon": "mdi:timer-outline", "writable": True,
         "precision": None,
         "description": ENTITIES_BY_KEY[("number", "interval_s")].description,
+        "attributes_key": None,
     }
     assert by_key[("number", "interval_s")]["description"].startswith("How often a still is made")
     assert by_key[("select", "white_balance")]["options"] == [
@@ -116,6 +117,8 @@ def test_media_declares_whether_it_holds_the_phone():
          "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}},
         {"id": "screenshot", "kind": "snapshot", "formats": ["jpeg"],
          "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}},
+        {"id": "timelapse", "kind": "video", "formats": ["mp4"],
+         "url": "/api/v1/timelapse/{name}.mp4", "holds_phone": False, "params": {}},
     ]
     assert len(doc["media"]) == len(MEDIA)
 

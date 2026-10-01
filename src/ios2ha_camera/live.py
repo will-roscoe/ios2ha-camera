@@ -32,11 +32,13 @@ that would freeze every other viewer along with it.
 """
 
 import asyncio
+import os
 from contextlib import nullcontext
 
 from aiohttp import web
 
 from .entities import MEDIA
+from .timelapse import NAME
 
 # Keyed by the same `id`s `make_live_app` builds handlers for ("live",
 # "stacked", "still"), so a new API path always comes from the descriptor
@@ -279,8 +281,28 @@ async def _stop_broadcast(app):
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _timelapse(directory):
+    """Serve `<directory>/<name>.mp4` for a built timelapse's name, with Range.
+
+    Registered whether or not timelapses are switched on, so every media path the
+    API advertises is routed by this application; switched off, every name is a 404.
+    The name is checked against the names the builder allows before it touches the
+    filesystem, so nothing outside the folder can be asked for.
+    """
+    async def handler(request):
+        name = request.match_info["name"]
+        path = (os.path.join(directory, name + ".mp4")
+                if directory is not None and NAME.match(name) else None)
+        if path is None or not os.path.isfile(path):
+            return web.json_response({"ok": False, "error": f"no timelapse named {name!r}"},
+                                     status=404, headers={"Cache-Control": "no-store"})
+        return web.FileResponse(path, headers={"Content-Type": "video/mp4",
+                                               "Cache-Control": "no-cache"})
+    return handler
+
+
 def make_live_app(buffer, latest_still=None, upstream=None, stacker=None,
-                  latest_screenshot=None):
+                  latest_screenshot=None, timelapse_dir=None):
     """`latest_still` is a callable returning the most recent stacked still as
     JPEG bytes, or None before the first one; it backs the /still.jpg route.
 
@@ -338,6 +360,10 @@ def make_live_app(buffer, latest_still=None, upstream=None, stacker=None,
     app.router.add_get(
         _MEDIA_BY_ID["screenshot"].path,
         _reject_undeclared_params(_screenshot, set(_MEDIA_BY_ID["screenshot"].params)))
+    app.router.add_get(
+        _MEDIA_BY_ID["timelapse"].path,
+        _reject_undeclared_params(_timelapse(timelapse_dir),
+                                  set(_MEDIA_BY_ID["timelapse"].params)))
     app.on_startup.append(_start_broadcast)
     app.on_cleanup.append(_stop_broadcast)
     return app
