@@ -110,7 +110,7 @@ def _media(m):
     component reads, and `holds_phone` is the field that justifies describing
     media at all: it is capability plus cost."""
     return {"id": m.id, "kind": m.kind, "formats": list(m.formats), "url": m.path,
-            "holds_phone": m.holds_phone, "params": dict(m.params)}
+            "holds_phone": m.holds_phone, "params": dict(m.params), "catalogue": m.catalogue}
 
 
 def descriptors():

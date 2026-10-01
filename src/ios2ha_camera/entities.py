@@ -129,6 +129,10 @@ class MediaSource:
     path: str
     holds_phone: bool
     params: dict = field(default_factory=dict)
+    # For a source with many items (`{name}` in its path): the state key listing
+    # them, each with its own url. A client reads the list there rather than
+    # knowing which state key goes with which media.
+    catalogue: str | None = None
 
 
 def _camera(object_id, name, topic, icon=None, category=None):
@@ -857,7 +861,8 @@ MEDIA = (
     # entries also carry their own url. A path, not a query parameter, so `params`
     # stays empty. Served from disk with Range, so a player can seek.
     MediaSource(id="timelapse", kind="video", formats=("mp4",),
-                path="/api/v1/timelapse/{name}.mp4", holds_phone=False),
+                path="/api/v1/timelapse/{name}.mp4", holds_phone=False,
+                catalogue="timelapse_catalogue"),
 )
 
 ACTIONS = (

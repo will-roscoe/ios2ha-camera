@@ -110,15 +110,16 @@ def test_media_declares_whether_it_holds_the_phone():
     _, doc = _get(_api(), "/api/v1/media")
     assert doc["media"] == [
         {"id": "live", "kind": "stream", "formats": ["mjpeg"],
-         "url": "/api/v1/stream/live", "holds_phone": True, "params": {}},
+         "url": "/api/v1/stream/live", "holds_phone": True, "params": {}, "catalogue": None},
         {"id": "stacked", "kind": "stream", "formats": ["mjpeg"],
-         "url": "/api/v1/stream/stacked", "holds_phone": True, "params": {}},
+         "url": "/api/v1/stream/stacked", "holds_phone": True, "params": {}, "catalogue": None},
         {"id": "still", "kind": "snapshot", "formats": ["jpeg"],
-         "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}},
+         "url": "/api/v1/snapshot/still", "holds_phone": False, "params": {}, "catalogue": None},
         {"id": "screenshot", "kind": "snapshot", "formats": ["jpeg"],
-         "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}},
+         "url": "/api/v1/snapshot/screenshot", "holds_phone": False, "params": {}, "catalogue": None},
         {"id": "timelapse", "kind": "video", "formats": ["mp4"],
-         "url": "/api/v1/timelapse/{name}.mp4", "holds_phone": False, "params": {}},
+         "url": "/api/v1/timelapse/{name}.mp4", "holds_phone": False, "params": {},
+         "catalogue": "timelapse_catalogue"},
     ]
     assert len(doc["media"]) == len(MEDIA)
 
