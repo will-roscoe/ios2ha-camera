@@ -17,6 +17,7 @@
     <nav id="tabs"></nav>
     <div id="frame">
       <img id="picture" alt="">
+      <video id="clip" controls playsinline preload="metadata" hidden></video>
       <div id="region" hidden></div>
       <button id="start-stream" hidden></button>
     </div>
@@ -26,6 +27,18 @@
       <button id="set-reference">Set colour reference</button>
       <span id="reference-state"></span>
       <div id="region-error" class="error"></div>
+    </div>
+    <div id="timelapse-tools" hidden>
+      <div class="tl-row">
+        <select id="tl-pick"></select>
+        <button id="tl-delete">Delete</button>
+        <span id="tl-status"></span>
+      </div>
+      <form id="tl-build">
+        <div id="tl-fields"></div>
+        <button type="submit">Build timelapse</button>
+      </form>
+      <div id="tl-error" class="error"></div>
     </div>
   </section>
   <section id="entities"></section>
