@@ -11,6 +11,7 @@ ffmpeg encodes them (`encode`) at low priority so stacking keeps the host; and a
 builder (`TimelapseBuilder`) runs one build at a time and keeps the catalogue.
 """
 
+import bisect
 import collections
 import contextlib
 import json
@@ -22,10 +23,12 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 
 from PIL import Image
+
+from .sun import sun_event
 
 log = logging.getLogger(__name__)
 
@@ -33,10 +36,19 @@ log = logging.getLogger(__name__)
 RANGES = {"12h": 43_200, "24h": 86_400, "7d": 604_800, "1mo": 2_592_000}
 
 SPEC_VERSION = 1
-# key: (lowest, highest, default). `width` has no default: the stills' own size.
-_INTS = {"fps": (1, 60, 15), "width": (160, 3840, None), "every": (1, 1000, 1),
+# key: (lowest, highest, default). No default for `width` (the stills' own size), nor
+# for `fps` and `every`, which `fit` chooses to make about ten seconds of video.
+_INTS = {"fps": (1, 60, None), "width": (160, 3840, None), "every": (1, 1000, None),
          "quality": (15, 40, 23), "version": (SPEC_VERSION, SPEC_VERSION, SPEC_VERSION)}
-_KEYS = {"range", "start", "end", "name", *_INTS}
+_PICKS = ("at", "interval", "sun")
+_KEYS = {"range", "duration", "start", "end", "name", "sun_offset", "tolerance", *_PICKS,
+         *_INTS}
+_SPAN = re.compile(r"\A([+-]?)(\d+)(mo|m|h|d|w)\Z")
+_UNITS = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800, "mo": 2_592_000}
+_CLOCK = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
+SUN_EVENTS = ("sunrise", "sunset", "noon")
+# How far from a picked time a still may be: half an interval, at most a quarter hour.
+TOLERANCE = 900
 # \A and \Z, not ^ and $: `$` also matches before a trailing newline, and a file
 # named with one can never be fetched.
 NAME = re.compile(r"\A[a-z0-9_-]{1,48}\Z")
@@ -63,16 +75,34 @@ def _int_field(key, description):
 SPEC_FIELDS = {
     "range": {"type": "select", "options": ["12h", "24h", "7d", "1mo"],
               "description": "A rolling range ending now, rebuilt as last_<range>. "
-                             "Give this or start."},
+                             "Give this, duration or start."},
+    "duration": {"type": "str",
+                 "description": "Any span ending now (or at end): 50h, 90m, 3d, 2w, 1mo (30 "
+                                "days). Rebuilt as last_<duration> unless named."},
     "start": {"type": "datetime",
               "description": "Start of a span of your own, ISO 8601; without a zone it is "
                              "the service's local time."},
     "end": {"type": "datetime", "description": "End of that span; now if left out."},
     "name": {"type": "str",
              "description": "Name for a span of your own: up to 48 of a-z, 0-9, _ and -."},
-    "fps": _int_field("fps", "Frames of video per second; each still is one frame."),
+    "at": {"type": "str",
+           "description": "Only the still nearest these times of day, e.g. 06:00 or "
+                          "06:00, 18:00."},
+    "interval": {"type": "str",
+                 "description": "Only the still nearest each step from the start, e.g. 24h "
+                                "or 1h."},
+    "sun": {"type": "select", "options": list(SUN_EVENTS),
+            "description": "Only the still nearest each day's sunrise, sunset or solar "
+                           "noon; needs the camera's latitude and longitude."},
+    "sun_offset": {"type": "str", "description": "Shift the sun's time, e.g. +30m or -1h."},
+    "tolerance": {"type": "str",
+                  "description": "How far from a picked time a still may be; 15m (or half "
+                               "the interval) if left out."},
+    "fps": _int_field("fps", "Frames of video per second; chosen for about ten seconds "
+                             "if left out."),
     "width": _int_field("width", "Width in pixels, even; the stills' own if left out."),
-    "every": _int_field("every", "Use every Nth still: 2 halves the length."),
+    "every": _int_field("every", "Use every Nth still; chosen for about ten seconds if "
+                                 "left out."),
     "quality": _int_field("quality", "x264 CRF: lower is sharper and bigger."),
 }
 DELETE_FIELDS = {"name": {"type": "str", "description": "The timelapse to delete."}}
@@ -81,14 +111,19 @@ DELETE_FIELDS = {"name": {"type": "str", "description": "The timelapse to delete
 @dataclass(frozen=True)
 class Spec:
     name: str
-    kind: str                # "range" | "custom"
+    kind: str                # "range" (ends now, rebuilt under its name) | "custom"
     range: str | None
     start: float             # epoch seconds
     end: float
-    fps: int
+    fps: float | None        # None: chosen by `fit`
     width: int | None
-    every: int
+    every: int | None        # None: chosen by `fit`
     quality: int
+    at: tuple = ()           # ((hour, minute), ...), in order
+    interval: int | None = None
+    sun: str | None = None
+    sun_offset: int = 0
+    tolerance: int = TOLERANCE
 
 
 def _int(value, key):
@@ -115,6 +150,57 @@ def _stamp(t):
     return time.strftime("%Y%m%d-%H%M", time.localtime(t))
 
 
+def _span(value, key, signed=False):
+    """A span such as 50h, 90m, 3d, 2w or 1mo (thirty days), in seconds."""
+    m = _SPAN.match(value) if isinstance(value, str) else None
+    if m is None or (m.group(1) and not signed):
+        example = "+30m or -1h" if signed else "50h, 90m, 3d, 2w or 1mo"
+        raise SpecError(f"{key} must be a span such as {example}, not {value!r}")
+    seconds = int(m.group(2)) * _UNITS[m.group(3)]
+    if seconds == 0 and not signed:
+        raise SpecError(f"{key} must be longer than nothing, not {value!r}")
+    return -seconds if m.group(1) == "-" else seconds
+
+
+def _clock(value):
+    items = [v.strip() for v in value.split(",")] if isinstance(value, str) else value
+    if not isinstance(items, list) or not items:
+        raise SpecError(f"at must be times of day such as 06:00 or 06:00, 18:00, not {value!r}")
+    times = set()
+    for item in items:
+        m = _CLOCK.match(item) if isinstance(item, str) else None
+        if m is None:
+            raise SpecError(f"at must be times of day such as 06:00, not {item!r}")
+        times.add((int(m.group(1)), int(m.group(2))))
+    return tuple(sorted(times))
+
+
+def _picks(value):
+    """The `at`, `interval` and `sun` keys: at most one of them, and what goes with it."""
+    given = [k for k in _PICKS if k in value]
+    if len(given) > 1:
+        raise SpecError(f"give one of at, interval and sun, not {given[1]} as well")
+    if "sun_offset" in value and "sun" not in value:
+        raise SpecError("sun_offset goes with sun")
+    if "tolerance" in value and not given:
+        raise SpecError("tolerance goes with at, interval or sun")
+    picks = {"at": (), "interval": None, "sun": None, "sun_offset": 0, "tolerance": TOLERANCE}
+    if "at" in value:
+        picks["at"] = _clock(value["at"])
+    if "interval" in value:
+        picks["interval"] = _span(value["interval"], "interval")
+        picks["tolerance"] = min(TOLERANCE, picks["interval"] // 2)
+    if "sun" in value:
+        if value["sun"] not in SUN_EVENTS:
+            raise SpecError(f"sun must be one of {list(SUN_EVENTS)}, not {value['sun']!r}")
+        picks["sun"] = value["sun"]
+        if "sun_offset" in value:
+            picks["sun_offset"] = _span(value["sun_offset"], "sun_offset", signed=True)
+    if "tolerance" in value:
+        picks["tolerance"] = _span(value["tolerance"], "tolerance")
+    return picks
+
+
 def parse_spec(value, now):
     """A build request as a `Spec`, or SpecError saying which key is wrong."""
     if not isinstance(value, dict):
@@ -126,33 +212,43 @@ def parse_spec(value, now):
     ints = {k: _int(value.get(k), k) for k in _INTS}
     if ints["width"] is not None and ints["width"] % 2:
         raise SpecError(f"width must be even, not {ints['width']}")
-    has_range, has_start = "range" in value, "start" in value
-    if has_range == has_start:
-        raise SpecError("give either range (12h, 24h, 7d or 1mo) or start, not "
-                        + ("both" if has_range else "neither"))
+    spans = [k for k in ("range", "duration", "start") if k in value]
+    if len(spans) != 1:
+        raise SpecError("give one of range (12h, 24h, 7d or 1mo), duration or start, not "
+                        + (f"{spans[1]} as well" if spans else "none of them"))
     name = value.get("name")
-    if has_range:
+    rng = None
+    if spans[0] == "range":
         rng = value["range"]
         if rng not in RANGES:
             raise SpecError(f"range must be one of {list(RANGES)}, not {rng!r}")
         if name is not None or "end" in value:
             raise SpecError(f"a range build is always named {RESERVED}{rng} and ends now; "
-                            "give start and end for a span of your own")
+                            "give a duration or a start for a span of your own")
         start, end, kind, name = now - RANGES[rng], now, "range", f"{RESERVED}{rng}"
     else:
-        rng, kind = None, "custom"
-        start = _time(value["start"], "start")
         end = _time(value["end"], "end") if "end" in value else now
+        if spans[0] == "duration":
+            start = end - _span(value["duration"], "duration")
+        else:
+            start = _time(value["start"], "start")
         if start >= end:
             raise SpecError("start must be before end")
-        if name is None:
+        # A duration ending now is rebuilt under its own name, like a range.
+        rolling = spans[0] == "duration" and "end" not in value and name is None
+        kind = "range" if rolling else "custom"
+        if rolling:
+            name = f"{RESERVED}{value['duration']}"
+        elif name is None:
             name = f"custom_{_stamp(start)}_{_stamp(end)}"
         elif not isinstance(name, str) or not NAME.match(name):
             raise SpecError(f"name must be 1-48 of a-z, 0-9, _ and -, not {name!r}")
         elif name.startswith(RESERVED):
-            raise SpecError(f"name may not start with {RESERVED!r}: those are the range builds")
+            raise SpecError(f"name may not start with {RESERVED!r}: those are rebuilt "
+                            "rolling spans")
     return Spec(name=name, kind=kind, range=rng, start=start, end=end, fps=ints["fps"],
-                width=ints["width"], every=ints["every"], quality=ints["quality"])
+                width=ints["width"], every=ints["every"], quality=ints["quality"],
+                **_picks(value))
 
 
 def parse_delete(value):
@@ -186,10 +282,20 @@ def still_time(path):
         return None
 
 
-def select_stills(root, start, end, every):
-    """The archive's stills from `start` to `end` inclusive, oldest first, keeping
-    one in every `every` from the first. Only the day folders the span touches are
-    read."""
+def _days(start, end):
+    """Each local calendar day the span touches, as (year, month, day, midnight)."""
+    day = time.mktime(time.localtime(start)[:3] + (0, 0, 0, 0, 0, -1))
+    while day <= end:
+        lt = time.localtime(day)
+        yield lt.tm_year, lt.tm_mon, lt.tm_mday, day
+        # The next local midnight, whatever the clocks did in between.
+        nxt = time.localtime(day + 26 * 3600)
+        day = time.mktime(nxt[:3] + (0, 0, 0, 0, 0, -1))
+
+
+def _archived(root, start, end):
+    """(time, path) of every archived still from `start` to `end`, oldest first.
+    Only the day folders the span touches are read."""
     found = []
     day = time.mktime(time.localtime(start)[:3] + (0, 0, 0, 0, 0, -1))
     while day <= end:
@@ -205,12 +311,107 @@ def select_stills(root, start, end, every):
         # The next local midnight, whatever the clocks did in between.
         nxt = time.localtime(day + 26 * 3600)
         day = time.mktime(nxt[:3] + (0, 0, 0, 0, 0, -1))
-    picked = [p for _, p in sorted(found)][::every]
+    return sorted(found)
+
+
+def _too_many(picked, total):
     if len(picked) > MAX_FRAMES:
-        fits = -(-len(found) // MAX_FRAMES)
+        fits = -(-total // MAX_FRAMES)
         raise SpecError(f"{len(picked)} stills is more than {MAX_FRAMES}; "
                         f"use every {fits} or a shorter span")
     return picked
+
+
+def select_stills(root, start, end, every):
+    """The archive's stills from `start` to `end` inclusive, oldest first, keeping
+    one in every `every` from the first."""
+    found = _archived(root, start, end)
+    return _too_many([p for _, p in found][::every], len(found))
+
+
+def _targets(spec, location):
+    """The times the picks are nearest to, in order."""
+    if spec.interval:
+        return [spec.start + k * spec.interval
+                for k in range(int((spec.end - spec.start) // spec.interval) + 1)]
+    out = []
+    for y, mo, d, _ in _days(spec.start, spec.end):
+        if spec.at:
+            out += [time.mktime((y, mo, d, h, mi, 0, 0, 0, -1)) for h, mi in spec.at]
+        else:
+            if location is None:
+                raise SpecError("sun picks need the camera's latitude and longitude: set "
+                                "the latitude and longitude controls")
+            t = sun_event(y, mo, d, *location, spec.sun)
+            if t is not None:
+                out.append(t + spec.sun_offset)
+    return [t for t in out if spec.start <= t <= spec.end]
+
+
+def pick_stills(spec, root, location=None):
+    """The stills a timelapse uses, oldest first: every archived still in the span, or
+    the one nearest each of the spec's times (at, interval, sun) within its
+    tolerance, then one in every `every` if the spec gives it. `location` is
+    (latitude, longitude), needed for sun picks."""
+    found = _archived(root, spec.start, spec.end)
+    if spec.at or spec.interval or spec.sun:
+        times = [t for t, _ in found]
+        picked, used = [], set()
+        for target in _targets(spec, location):
+            i = bisect.bisect_left(times, target)
+            near = min((j for j in (i - 1, i) if 0 <= j < len(times)),
+                       key=lambda j: abs(times[j] - target), default=None)
+            close = near is not None and abs(times[near] - target) <= spec.tolerance
+            if close and near not in used:
+                used.add(near)
+                picked.append(found[near][1])
+    else:
+        picked = [p for _, p in found]
+    if spec.every:
+        return _too_many(picked[::spec.every], len(picked))
+    return picked
+
+
+# -- how fast ----------------------------------------------------------------------
+
+# Will (2026-10-02): "the priority should be keeping length around 10s, and then
+# minimum fps of 20fps", up to 30.
+TARGET_S, MIN_FPS, MAX_FPS = 10, 20, 30
+LENGTH = (8, 12)            # what "around ten seconds" allows when frames are whole
+
+
+def fit(n, fps=None, every=None):
+    """(every, fps) for `n` stills: about ten seconds of video first, then at least
+    twenty frames a second where there are stills enough, up to thirty. Fewer than
+    160 stills cannot make ten seconds at twenty, so they play slower, for exactly
+    ten. A given `fps` or `every` is kept and the other fitted to it."""
+    if fps is not None and every is not None:
+        return every, fps
+    if fps is not None:
+        e = 1
+        while -(-n // e) / fps > LENGTH[1]:
+            e += 1
+        return e, fps
+    if every is not None:
+        m = -(-n // every)
+        return every, _fps(m)
+    best = None
+    for e in range(1, max(1, n // (MIN_FPS * LENGTH[0])) + 1):
+        m = -(-n // e)
+        f = min(MAX_FPS, max(MIN_FPS, round(m / TARGET_S)))
+        if LENGTH[0] <= m / f <= LENGTH[1]:
+            score = (abs(m / f - TARGET_S), e)
+            if best is None or score < best[0]:
+                best = (score, (e, f))
+    return best[1] if best else (1, _fps(n))
+
+
+def _fps(m):
+    """Frames a second for `m` frames on their own: whole, 20-30, where ten seconds
+    allows; otherwise to a tenth, for ten seconds exactly."""
+    if m >= MIN_FPS * LENGTH[0]:
+        return min(MAX_FPS, max(MIN_FPS, round(m / TARGET_S)))
+    return max(0.1, round(m / TARGET_S, 1))
 
 
 # -- encoding -----------------------------------------------------------------------
@@ -258,7 +459,10 @@ def _command(ffmpeg, spec, list_path, out, size):
 
 def encode(stills, spec, out_dir, progress=lambda done, total: None, ffmpeg="ffmpeg"):
     """Encode `stills` into `<out_dir>/<spec.name>.mp4` with a sidecar
-    `<spec.name>.json`, both replaced only once complete. Returns the sidecar."""
+    `<spec.name>.json`, both replaced only once complete. Returns the sidecar.
+    `spec.fps` must be decided: TimelapseBuilder fits it before it encodes."""
+    if spec.fps is None:
+        raise ValueError("encode needs a spec whose fps is decided; see fit()")
     os.makedirs(out_dir, exist_ok=True)
     final = os.path.join(out_dir, f"{spec.name}.mp4")
     tmp, list_path = final + ".tmp", os.path.join(out_dir, f"{spec.name}.txt.tmp")
@@ -384,8 +588,12 @@ class TimelapseBuilder:
     MQTT, the API and the page alike.
     """
 
-    def __init__(self, out_dir, archive_root, publish, event, ffmpeg="ffmpeg", clock=time.time):
+    def __init__(self, out_dir, archive_root, publish, event, ffmpeg="ffmpeg", clock=time.time,
+                 location=lambda: None):
         self.out_dir, self.archive_root, self.ffmpeg = out_dir, archive_root, ffmpeg
+        # (latitude, longitude) for sun picks, or None; asked at each build, since
+        # the controls can change.
+        self._location = location
         self._publish, self._event, self._clock = publish, event, clock
         self._lock = threading.Lock()
         self._wake = threading.Condition(self._lock)
@@ -497,12 +705,19 @@ class TimelapseBuilder:
         try:
             self._outcome(spec.name, "building")
             try:
-                stills = select_stills(self.archive_root, spec.start, spec.end, spec.every)
+                stills = pick_stills(spec, self.archive_root, self._location())
             except SpecError as e:
                 return self._outcome(spec.name, "rejected_invalid", str(e))
             if not stills:
                 return self._outcome(spec.name, "failed_no_stills",
-                                     "the archive has no stills in that span")
+                                     "the archive has no stills in that span"
+                                     + (" near those times" if spec.at or spec.interval
+                                        or spec.sun else ""))
+            # About ten seconds, unless the spec says otherwise: `every` was already
+            # applied by pick_stills if given, so only what is left is fitted.
+            step, fps = fit(len(stills), spec.fps, 1 if spec.every else None)
+            stills = stills[::step]
+            spec = replace(spec, fps=fps, every=(spec.every or 1) * step)
             try:
                 meta = encode(stills, spec, self.out_dir, progress=self._on_progress,
                               ffmpeg=self.ffmpeg)

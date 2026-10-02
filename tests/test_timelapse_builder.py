@@ -120,9 +120,11 @@ def test_an_encoder_failure_leaves_the_builder_working(tmp_path, monkeypatch):
 
 
 def test_too_many_stills_is_refused_when_it_is_found(tmp_path, fake, monkeypatch):
+    """Only an `every` someone gave can ask for too many: left to `fit`, a build is
+    thinned to about ten seconds instead."""
     monkeypatch.setattr(timelapse, "MAX_FRAMES", 5)
     b, r = _builder(tmp_path)
-    b.request(parse_spec({"range": "12h"}, NOW))
+    b.request(parse_spec({"range": "12h", "every": 1}, NOW))
     assert b.run_once() == "rejected_invalid"
     assert "every" in r.events[-1]["reason"]
 
@@ -202,3 +204,34 @@ def test_queued_is_never_published_after_building(tmp_path, fake):
     b.request(parse_spec({"range": "12h"}, NOW))
     started[0].join(5)
     assert order == ["queued", "building", "built"]
+
+
+def test_the_speed_is_fitted_and_recorded(tmp_path, monkeypatch):
+    """Twelve stills: ten seconds at 1.2 frames a second, and the catalogue says so."""
+    seen = {}
+
+    def encode(stills, spec, out_dir, progress=lambda d, t: None, ffmpeg="ffmpeg"):
+        seen["spec"], seen["n"] = spec, len(stills)
+        return _fake_encode(stills, spec, out_dir, progress, ffmpeg)
+    monkeypatch.setattr(timelapse, "encode", encode)
+    b, _ = _builder(tmp_path)
+    b.request(parse_spec({"range": "12h"}, NOW))
+    assert b.run_once() == "built"
+    assert (seen["n"], seen["spec"].fps, seen["spec"].every) == (12, 1.2, 1)
+    assert b.state()["timelapse_catalogue"]["items"]["last_12h"]["fps"] == 1.2
+
+
+def test_sun_picks_without_a_place_are_refused_with_why(tmp_path, fake):
+    b, r = _builder(tmp_path)
+    b.request(parse_spec({"duration": "1d", "sun": "sunrise"}, NOW))
+    assert b.run_once() == "rejected_invalid"
+    assert "latitude" in r.events[-1]["reason"]
+
+
+def test_sun_picks_use_the_place_the_builder_is_given(tmp_path, fake):
+    r = Recorder()
+    b = TimelapseBuilder(str(tmp_path / "out"), _archive(tmp_path), r.publish, r.event,
+                         location=lambda: (51.5074, -0.1278))
+    b.request(parse_spec({"duration": "1d", "sun": "noon", "tolerance": "12h"}, NOW))
+    assert b.run_once() in ("built", "failed_no_stills")
+    assert "latitude" not in str(r.events[-1]["reason"])

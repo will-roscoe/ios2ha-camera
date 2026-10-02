@@ -63,7 +63,7 @@ ENTITIES_BY_KEY = {(e.domain, e.object_id): e for e in ENTITIES}
 
 def test_objects_describes_every_entity():
     _, doc = _get(_api(), "/api/v1/objects")
-    assert len(doc["objects"]) == len(ENTITIES) == 120
+    assert len(doc["objects"]) == len(ENTITIES) == 122
     assert [o["object_id"] for o in doc["objects"]] == [e.object_id for e in ENTITIES]
 
     by_key = {(o["domain"], o["object_id"]): o for o in doc["objects"]}
@@ -101,7 +101,7 @@ def test_an_object_is_identified_by_domain_and_object_id_together():
     ids = [o["object_id"] for o in doc["objects"]]
     pairs = [(o["domain"], o["object_id"]) for o in doc["objects"]]
     assert len(set(ids)) < len(ids)
-    assert len(set(pairs)) == len(pairs) == 120
+    assert len(set(pairs)) == len(pairs) == 122
 
 
 def test_media_declares_whether_it_holds_the_phone():
@@ -252,7 +252,7 @@ def test_every_writable_entity_is_reachable_through_the_one_verb():
     Assistant offers and this service ignores."""
     _, doc = _get(_api(), "/api/v1/objects")
     writable = [o for o in doc["objects"] if o["writable"]]
-    assert len(writable) == 52
+    assert len(writable) == 54
 
     for o in writable:
         app, seen = _recording_api()

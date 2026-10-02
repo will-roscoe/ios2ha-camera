@@ -38,8 +38,16 @@ def _stills(tmp_path, n=12, sizes=None):
 
 
 def _spec(**kw):
+    """encode() takes a fitted spec: the builder fits fps before it encodes."""
     return parse_spec({"start": "2026-09-28T12:00:00", "end": "2026-09-28T14:00:00",
-                       "name": "test", **kw}, T0 + 86400)
+                       "name": "test", "fps": 10, **kw}, T0 + 86400)
+
+
+def test_an_unfitted_spec_is_refused():
+    spec = parse_spec({"start": "2026-09-28T12:00:00", "end": "2026-09-28T14:00:00"},
+                      T0 + 86400)
+    with pytest.raises(ValueError, match="fps"):
+        encode(["x.jpg"], spec, "/nonexistent")
 
 
 def _probe(path):

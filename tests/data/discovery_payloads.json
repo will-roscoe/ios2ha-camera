@@ -806,6 +806,29 @@
     "unique_id": "ios2ha_number_interval_s",
     "unit_of_measurement": "s"
   },
+  "homeassistant/number/ios2ha/latitude/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/latitude",
+    "default_entity_id": "number.ios2ha_camera_latitude",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:latitude",
+    "max": 90,
+    "min": -90,
+    "mode": "box",
+    "name": "Latitude",
+    "state_topic": "ios2ha_camera/state/latitude",
+    "step": 0.0001,
+    "unique_id": "ios2ha_number_latitude",
+    "unit_of_measurement": "\u00b0"
+  },
   "homeassistant/number/ios2ha/live_max_window_s/config": {
     "availability_topic": "ios2ha_camera/available",
     "command_topic": "ios2ha_camera/set/live_max_window_s",
@@ -829,6 +852,29 @@
     "step": 0.5,
     "unique_id": "ios2ha_number_live_max_window_s",
     "unit_of_measurement": "s"
+  },
+  "homeassistant/number/ios2ha/longitude/config": {
+    "availability_topic": "ios2ha_camera/available",
+    "command_topic": "ios2ha_camera/set/longitude",
+    "default_entity_id": "number.ios2ha_camera_longitude",
+    "device": {
+      "identifiers": [
+        "ios2ha_camera"
+      ],
+      "manufacturer": "ios2ha-camera",
+      "model": "iPhone supervisor",
+      "name": "iPhone Camera"
+    },
+    "entity_category": "config",
+    "icon": "mdi:longitude",
+    "max": 180,
+    "min": -180,
+    "mode": "box",
+    "name": "Longitude",
+    "state_topic": "ios2ha_camera/state/longitude",
+    "step": 0.0001,
+    "unique_id": "ios2ha_number_longitude",
+    "unit_of_measurement": "\u00b0"
   },
   "homeassistant/number/ios2ha/max_depth/config": {
     "availability_topic": "ios2ha_camera/available",

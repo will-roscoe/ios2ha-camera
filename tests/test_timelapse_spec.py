@@ -18,7 +18,7 @@ def test_a_range_needs_nothing_else():
     s = parse_spec({"range": "7d"}, NOW)
     assert (s.name, s.kind, s.range) == ("last_7d", "range", "7d")
     assert (s.start, s.end) == (NOW - 604_800, NOW)
-    assert (s.fps, s.width, s.every, s.quality) == (15, None, 1, 23)
+    assert (s.fps, s.width, s.every, s.quality) == (None, None, None, 23)   # fitted later
 
 
 def test_the_ranges():
