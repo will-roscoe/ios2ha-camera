@@ -196,3 +196,25 @@ def test_two_targets_on_one_still_use_it_once(tmp_path):
     spec = parse_spec({"start": "2026-09-01T00:00:00", "end": "2026-09-01T23:00:00",
                        "at": ["06:00", "06:10"]}, NOW)
     assert len(pick_stills(spec, root)) == 1
+
+
+@pytest.mark.parametrize("value, name", [
+    ({"duration": "7d", "at": "06:00"}, "last_7d_at_0600"),
+    ({"range": "7d", "at": "06:00"}, "last_7d_at_0600"),
+    ({"duration": "7d", "at": "06:00, 18:00"}, "last_7d_at_0600_1800"),
+    ({"duration": "1mo", "interval": "24h"}, "last_1mo_every_24h"),
+    ({"duration": "1mo", "sun": "sunrise"}, "last_1mo_sunrise"),
+    ({"duration": "1mo", "sun": "sunset", "sun_offset": "+30m"}, "last_1mo_sunset_after_30m"),
+    ({"duration": "1mo", "sun": "sunrise", "sun_offset": "-1h"}, "last_1mo_sunrise_before_1h"),
+    ({"range": "7d"}, "last_7d"),
+])
+def test_a_rolling_build_with_picks_is_named_for_them(value, name):
+    """Live on 2026-10-02, a week at 06:00 took last_7d and replaced the week."""
+    assert parse_spec(value, NOW).name == name
+
+
+def test_a_name_too_long_to_derive_must_be_given():
+    times = ", ".join(f"{h:02d}:00" for h in range(12))
+    with pytest.raises(SpecError, match="name"):
+        parse_spec({"duration": "7d", "at": times}, NOW)
+    assert parse_spec({"duration": "7d", "at": times, "name": "hourly"}, NOW).name == "hourly"
