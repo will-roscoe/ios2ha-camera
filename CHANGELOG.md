@@ -23,6 +23,13 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.17.1 — 2026-10-02
+
+**Fixed:** a rolling build with picks took the plain range's name, so "the last 7 days at 06:00"
+(`{"duration": "7d", "at": "06:00"}`) replaced `last_7d`. Its name now says what it picked:
+`last_7d_at_0600`, `last_1mo_every_24h`, `last_1mo_sunrise`, `last_1mo_sunset_after_30m`. A name
+too long to derive asks for one of your own.
+
 ## 2.17.0 — 2026-10-02
 
 **Timelapses of any span, picked by time or by the sun, about ten seconds long.** The

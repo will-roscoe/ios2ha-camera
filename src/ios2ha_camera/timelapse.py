@@ -175,6 +175,29 @@ def _clock(value):
     return tuple(sorted(times))
 
 
+def _pick_suffix(value, picks):
+    """What a rolling build's name says about its picks: two builds of one span with
+    different picks must not replace each other."""
+    if picks["at"]:
+        return "_at_" + "_".join(f"{h:02d}{m:02d}" for h, m in picks["at"])
+    if picks["interval"]:
+        return f"_every_{value['interval']}"
+    if picks["sun"]:
+        offset = picks["sun_offset"]
+        when = "" if not offset else (
+            f"_{'after' if offset > 0 else 'before'}_{value['sun_offset'].lstrip('+-')}")
+        return f"_{picks['sun']}{when}"
+    return ""
+
+
+def _rolling_name(span, suffix):
+    name = f"{RESERVED}{span}{suffix}"
+    if not NAME.match(name):
+        raise SpecError(f"the name these picks would give, {name!r}, is too long: give a "
+                        "name of your own")
+    return name
+
+
 def _picks(value):
     """The `at`, `interval` and `sun` keys: at most one of them, and what goes with it."""
     given = [k for k in _PICKS if k in value]
@@ -218,14 +241,17 @@ def parse_spec(value, now):
                         + (f"{spans[1]} as well" if spans else "none of them"))
     name = value.get("name")
     rng = None
+    picks = _picks(value)
+    suffix = _pick_suffix(value, picks)
     if spans[0] == "range":
         rng = value["range"]
         if rng not in RANGES:
             raise SpecError(f"range must be one of {list(RANGES)}, not {rng!r}")
         if name is not None or "end" in value:
-            raise SpecError(f"a range build is always named {RESERVED}{rng} and ends now; "
-                            "give a duration or a start for a span of your own")
-        start, end, kind, name = now - RANGES[rng], now, "range", f"{RESERVED}{rng}"
+            raise SpecError(f"a range build ends now and is named for its range and picks "
+                            f"({RESERVED}{rng}...); give a duration or a start for a span of "
+                            "your own")
+        start, end, kind, name = now - RANGES[rng], now, "range", _rolling_name(rng, suffix)
     else:
         end = _time(value["end"], "end") if "end" in value else now
         if spans[0] == "duration":
@@ -238,7 +264,7 @@ def parse_spec(value, now):
         rolling = spans[0] == "duration" and "end" not in value and name is None
         kind = "range" if rolling else "custom"
         if rolling:
-            name = f"{RESERVED}{value['duration']}"
+            name = _rolling_name(value["duration"], suffix)
         elif name is None:
             name = f"custom_{_stamp(start)}_{_stamp(end)}"
         elif not isinstance(name, str) or not NAME.match(name):
@@ -247,8 +273,7 @@ def parse_spec(value, now):
             raise SpecError(f"name may not start with {RESERVED!r}: those are rebuilt "
                             "rolling spans")
     return Spec(name=name, kind=kind, range=rng, start=start, end=end, fps=ints["fps"],
-                width=ints["width"], every=ints["every"], quality=ints["quality"],
-                **_picks(value))
+                width=ints["width"], every=ints["every"], quality=ints["quality"], **picks)
 
 
 def parse_delete(value):
