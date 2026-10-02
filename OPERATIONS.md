@@ -686,7 +686,7 @@ keeps every still under `ARCHIVE_DIR` by date and time and is never pruned.
 | key | default | meaning |
 |---|---|---|
 | `range` | -- | `12h`, `24h`, `7d` or `1mo` (30 days), ending now. Give one of `range`, `duration` and `start`. |
-| `duration` | -- | Any span ending now (or at `end`): `50h`, `90m`, `3d`, `2w`, `1mo`. Ending now, it is rebuilt as `last_<duration>` unless named. |
+| `duration` | -- | Any span ending now (or at `end`): `50h`, `90m`, `3d`, `2w`, `1mo`. Ending now, it is rebuilt as `last_<duration>` unless named; with picks the name says so too: `last_7d_at_0600`, `last_1mo_every_24h`, `last_1mo_sunrise`, `last_1mo_sunset_after_30m`. |
 | `start`, `end` | `end` = now | A span of your own, ISO 8601. A time without a zone is the service's local time (UTC in the container), so give the zone: `2026-09-28T18:00+01:00`. |
 | `name` | `custom_<start>_<end>` | For a span of your own: up to 48 of `a-z 0-9 _ -`, not starting `last_`. |
 | `at` | -- | Only the still nearest each of these times of day: `"06:00"`, `"06:00, 18:00"` or a list. |
