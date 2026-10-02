@@ -23,6 +23,30 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.17.0 — 2026-10-02
+
+**Timelapses of any span, picked by time or by the sun, about ten seconds long.** The
+`build_timelapse` spec gains, all optional:
+
+- `duration`: any span ending now (or at `end`), such as `50h`, `3d`, `2w` or `1mo`. Ending now, it
+  is rebuilt as `last_<duration>` like the four ranges.
+- `at`, `interval` or `sun`: only the still nearest each time of day (`"06:00"`), each step from the
+  start (`"24h"`), or each day's sunrise, sunset or solar noon (with `sun_offset`, such as `+30m`),
+  within a `tolerance` (15 min by default). Nearest, not every Nth, so capture times drifting over
+  the days cannot shift the picks. `{"duration": "1mo", "sun": "sunrise"}` is a month of sunrises.
+- `number.ios2ha_camera_latitude` and `_longitude` (`LATITUDE`, `LONGITUDE`; 0, 0 is not set) say
+  where the camera is, for sun picks.
+
+**About ten seconds by default.** `fps` and `every` are now chosen when left out: about ten
+seconds first, then at least 20 fps, up to 30. A span with enough stills plays 8-12 s at 20-30 fps,
+thinned as needed; fewer than 160 stills play slower for ten seconds exactly. At one still in ten
+minutes, 12h is now 10 s at 7.2 fps (was 4.8 s at 15), 7d 10 s at 25 fps using every 4th still (was
+67 s), 1mo 10 s at 27 fps using every 16th (was nearly 5 minutes). A given `fps` or `every` is kept
+and the other fitted to it.
+
+Two new entities and new spec keys; nothing existing breaks, so both interface versions stay at `1`.
+A spec that left out `fps` now gets about ten seconds rather than 15 fps.
+
 ## 2.16.0 — 2026-10-01
 
 **The service builds timelapses.** Until now Home Assistant did it: an automation copied every
