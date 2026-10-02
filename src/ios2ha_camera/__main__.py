@@ -203,7 +203,8 @@ def main():
     # events reach MQTT, the API and the page the way everything else does.
     if s.timelapse_dir:
         sup.timelapse = TimelapseBuilder(s.timelapse_dir, s.archive_dir,
-                                         publish=sup.publish_state, event=sup._event)
+                                         publish=sup.publish_state, event=sup._event,
+                                         location=s.location)
         # Once now, into the cache every interface reads and an MQTT reconnect
         # replays; after this the builder publishes each change itself.
         sup.publish_state(sup.timelapse.state())

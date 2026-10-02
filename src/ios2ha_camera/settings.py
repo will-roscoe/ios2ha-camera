@@ -19,7 +19,7 @@ CONTROLS = {
     "denoise_strength", "autofocus", "focus_position", "on_demand", "live_max_window_s",
     "flat_field_correction", "focus_at_dusk",
     "colour_region_x0", "colour_region_y0", "colour_region_x1", "colour_region_y1",
-    "rotation",
+    "rotation", "latitude", "longitude",
     "backgrounding", "background_below_pct", "resume_above_pct", "auto_start",
     "auto_reboot", "emergency_keyboard", "emergency_below_pct",
 }
@@ -48,6 +48,8 @@ _ENV_MAP = {
     "REBOOTS_FILE": "reboots_file",
     "FLAT_FIELD_FILE": "flat_field_file",
     "TIMELAPSE_DIR": "timelapse_dir",
+    "LATITUDE": "latitude",
+    "LONGITUDE": "longitude",
     "COLOUR_REFERENCE_FILE": "colour_reference_file",
 }
 
@@ -166,6 +168,10 @@ class Settings:
     # that leans counter-clockwise -- and zoomed so no corner shows. Set by the
     # Level horizon button; stills only, not the live feeds.
     rotation: float = 0.0
+    # Where the camera is, for timelapses picked by the sun. 0, 0 is "not set": the
+    # Gulf of Guinea is not where anyone has put this camera.
+    latitude: float = 0.0
+    longitude: float = 0.0
     render_intent: str = "natural"       # natural | inspection
     night_key: float = 0.09
     stretch_strength: float = 25.0
@@ -253,6 +259,8 @@ class Settings:
             value = _coerce_bool(value)
         if name == "rotation":
             value = _rotation(value)
+        if name in _PLACE:
+            value = _place(name, value)
         if name == "black_level_override" and value is not None:
             try:
                 value = tuple(float(v) for v in value)
@@ -278,6 +286,12 @@ class Settings:
             self._sync_black_level()
         return True
 
+    def location(self):
+        """(latitude, longitude) for sun picks, or None while it is 0, 0 (not set)."""
+        if (self.latitude, self.longitude) == (0.0, 0.0):
+            return None
+        return (self.latitude, self.longitude)
+
     def _sync_black_level(self):
         """Hold the one invariant: the renderer sees the numbers, or nothing.
 
@@ -292,6 +306,20 @@ class Settings:
 # number keeps to it; an MQTT or hand-typed write need not, and a rotation that
 # cannot be applied would fail every still, and be restored on every start.
 MAX_ROTATION = 10.0
+
+
+_PLACE = {"latitude": 90.0, "longitude": 180.0}
+
+
+def _place(name, value):
+    try:
+        degrees = float(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{name} must be a number of degrees, not {value!r}") from e
+    if not math.isfinite(degrees) or abs(degrees) > _PLACE[name]:
+        raise ValueError(f"{name} must be within {_PLACE[name]:g} degrees either way, "
+                         f"not {value!r}")
+    return degrees
 
 
 def _rotation(value):
