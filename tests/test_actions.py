@@ -18,7 +18,8 @@ def test_the_actions_are_served_with_their_fields():
     actions = {a["name"]: a for a in doc["actions"]}
     assert set(actions) == {"build_timelapse", "delete_timelapse"}
     fps = actions["build_timelapse"]["fields"]["fps"]
-    assert (fps["type"], fps["min"], fps["max"], fps["default"]) == ("int", 1, 60, 15)
+    assert (fps["type"], fps["min"], fps["max"]) == ("int", 1, 60)
+    assert "default" not in fps            # chosen for about ten seconds when left out
     assert actions["build_timelapse"]["fields"]["range"]["options"] == ["12h", "24h", "7d", "1mo"]
     assert actions["delete_timelapse"]["fields"]["name"]["type"] == "str"
     assert all(a["description"] for a in doc["actions"])
