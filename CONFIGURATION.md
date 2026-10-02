@@ -31,6 +31,7 @@ not the flag.
 | `ARCHIVE_DIR` | `/data/archive` | Inside the container |
 | `COLOUR_REFERENCE_FILE` | `/data/colour_reference.npz` | Where the colour reference is kept once recorded with **Set colour reference** (see [OPERATIONS.md](OPERATIONS.md#holding-the-night-colour)). Empty turns the feature off, and the button with it |
 | `TIMELAPSE_DIR` | `/data/timelapse` | Where built timelapses and their sidecars are kept. Empty switches timelapses off: the build buttons and actions are then refused, and the video route answers 404. See [OPERATIONS.md](OPERATIONS.md#timelapses) |
+| `LATITUDE` / `LONGITUDE` | `0` / `0` (not set) | Where the camera is, for timelapses picked by the sun; also the controls `number.ios2ha_camera_latitude` and `_longitude`. |
 | `FLAT_FIELD_FILE` | `/data/flat_field.npy` | Where the sensor's fixed grain is kept once recorded with **Record flat field** (see [OPERATIONS.md](OPERATIONS.md#removing-the-sensors-fixed-grain)). Empty turns the feature off, and the button with it |
 | `REBOOTS_FILE` | `/data/reboots.json` | When the phone was last rebooted by the service, so the reboot budget (three a day, twenty minutes apart) holds across the restart every phone reboot causes. Empty keeps it in memory only, where each reboot resets it |
 | `CONTROLS_FILE` | `/data/controls.json` | Where the values Home Assistant writes to the [controls](#controls) are kept, so they survive a restart. Set it empty to keep them in memory only, which is how every release before 2.13.0 behaved. Only control names are read back, each through the same validation a live write gets, so nothing in the file can reach a deployment setting such as the phone's address or password |
@@ -138,6 +139,7 @@ back to the default shown here.
 | `number.ios2ha_camera_colour_region_x1` | Colour region right | 0–1 step 0.001 | | `0.65` |
 | `number.ios2ha_camera_colour_region_y1` | Colour region bottom | 0–1 step 0.001 | | `0.65` |
 | `number.ios2ha_camera_rotation` | Rotation | -10–10 step 0.1 | ° | `0.0`; set by Level horizon |
+| `number.ios2ha_camera_latitude` / `_longitude` | Latitude / Longitude | -90–90 / -180–180 step 0.0001 | ° | `0` / `0`: not set |
 | `switch.ios2ha_camera_black_level_override_on` | Black level override | | | `off` |
 | `number.ios2ha_camera_black_level_0` | Black level override R | 0–32 step 0.1 | | `0.0` |
 | `number.ios2ha_camera_black_level_1` | Black level override G | 0–32 step 0.1 | | `0.0` |

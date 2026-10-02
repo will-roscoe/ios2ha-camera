@@ -239,6 +239,10 @@ _NUMBERS = [
             icon="mdi:selection-drag"),
     _number("rotation", "Rotation", lo=-10, hi=10, step=0.1, unit="°",
             icon="mdi:rotate-left"),
+    _number("latitude", "Latitude", lo=-90, hi=90, step=0.0001, unit="°",
+            icon="mdi:latitude"),
+    _number("longitude", "Longitude", lo=-180, hi=180, step=0.0001, unit="°",
+            icon="mdi:longitude"),
 ]
 
 # The options are the vocabulary Settings.apply_control will accept; a select
@@ -594,6 +598,11 @@ _DESCRIPTIONS = {
         "that leans counter-clockwise -- zoomed just enough that no corner shows: at 2 "
         "degrees about 4% of the view. Stills only; the live feeds are left as the phone "
         "sends them. Set by Level horizon.",
+    ("number", "latitude"):
+        "Where the camera is, north positive, for timelapses picked by the sun (sunrise, "
+        "sunset, solar noon). Latitude and longitude both 0 means not set.",
+    ("number", "longitude"):
+        "Where the camera is, east positive, for timelapses picked by the sun.",
     ("button", "level_horizon"):
         "Measure how far the last still leans from the verticals in the view -- building "
         "edges, window frames -- and add it to Rotation, then take a still to show it. "

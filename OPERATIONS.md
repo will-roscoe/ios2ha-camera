@@ -685,13 +685,33 @@ keeps every still under `ARCHIVE_DIR` by date and time and is never pruned.
 
 | key | default | meaning |
 |---|---|---|
-| `range` | -- | `12h`, `24h`, `7d` or `1mo` (30 days), ending now. Give this or `start`. |
+| `range` | -- | `12h`, `24h`, `7d` or `1mo` (30 days), ending now. Give one of `range`, `duration` and `start`. |
+| `duration` | -- | Any span ending now (or at `end`): `50h`, `90m`, `3d`, `2w`, `1mo`. Ending now, it is rebuilt as `last_<duration>` unless named. |
 | `start`, `end` | `end` = now | A span of your own, ISO 8601. A time without a zone is the service's local time (UTC in the container), so give the zone: `2026-09-28T18:00+01:00`. |
 | `name` | `custom_<start>_<end>` | For a span of your own: up to 48 of `a-z 0-9 _ -`, not starting `last_`. |
-| `fps` | 15 | Frames of video per second, 1-60; each still is one frame. |
+| `at` | -- | Only the still nearest each of these times of day: `"06:00"`, `"06:00, 18:00"` or a list. |
+| `interval` | -- | Only the still nearest each step from the start: `"24h"`, `"1h"`. |
+| `sun` | -- | Only the still nearest each day's `sunrise`, `sunset` or `noon` (solar). Needs `number.ios2ha_camera_latitude` and `_longitude`. |
+| `sun_offset` | 0 | Shift the sun's time: `"+30m"`, `"-1h"`. |
+| `tolerance` | 15m (half the interval if less) | How far from a picked time a still may be; a day with none that close is left out. |
+| `fps` | chosen | Frames a second, 1-60. See below. |
 | `width` | the stills' | Width in pixels, even, 160-3840. |
-| `every` | 1 | Use every Nth still, 1-1000. More than 20 000 stills is refused with the `every` that fits. |
+| `every` | chosen | Use every Nth still (after `at`/`interval`/`sun`), 1-1000. Given, more than 20 000 stills is refused with the `every` that fits. |
 | `quality` | 23 | x264 CRF, 15-40: lower is sharper and bigger. |
+
+Only one of `at`, `interval` and `sun`. They take the still *nearest* each time, so capture times
+drifting over the days cannot shift them the way every Nth still does. `{"duration": "1mo", "sun":
+"sunrise"}` is a month of sunrises; `{"duration": "7d", "at": "06:00"}` a week at 6 am;
+`{"duration": "1mo", "interval": "24h"}` one still a day.
+
+**How fast.** Left out, `fps` and `every` are chosen for **about ten seconds first, then at least
+20 fps**, up to 30: a span with enough stills plays 8-12 s at 20-30 fps, thinned with `every` as
+needed and as close to 10 s as it can; fewer than 160 stills cannot make ten seconds at 20 fps, so
+they play slower for ten seconds exactly. At one still in ten minutes: 12h is 7.2 fps, 24h 14.4 fps,
+7d every 4th at 25 fps, 1mo every 16th at 27 fps, a month of sunrises 3 fps -- each about 10 s. A
+given `fps` or `every` is kept and the other fitted to it. A shorter capture interval gives the
+short ranges more stills, and so more frames a second, at the cost of the phone streaming more
+and the archive growing faster.
 
 Every interface sends the same thing to the same place:
 
