@@ -1,5 +1,3 @@
-# ios2ha-camera
-
 <!-- ghtools:sync status START — generated from the status branch, do not edit here -->
 
 <img src="https://github.com/will-roscoe/ios2ha-camera/raw/ghtools-status/status.svg" alt="will-roscoe/ios2ha-camera status" width="900">
