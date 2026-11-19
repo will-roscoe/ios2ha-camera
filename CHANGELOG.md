@@ -531,7 +531,7 @@ spike this was ported from did the same thing, which is why it worked; the port 
 nobody touching the phone.** Guardian Eye starts streaming from a button in the app and nothing
 else: no URL, no shortcut, and the accessibility service's own press is refused for App Store apps.
 What does work is a real keyboard, because iOS Full Keyboard Access turns key presses into focus
-moves and activations. So arcturus becomes one.
+moves and activations. So the host becomes one.
 
 - **A Bluetooth keyboard, emulated by the host.** HID over GATT through BlueZ, reached only through
   a D-Bus proxy filtered to `org.bluez`, installed by `scripts/install-bluez-proxy.sh`. The host's

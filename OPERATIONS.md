@@ -244,7 +244,7 @@ need anyone to get up.
 {% set s = states('sensor.ios2ha_camera_stream_state') %}
 {% if trigger.to_state.state == 'unavailable' %}
   No word from the supervisor for 5 minutes: the ios2ha-camera container on
-  arcturus is stopped, or MQTT is down.
+  the host is stopped, or MQTT is down.
 {% elif states('sensor.ios2ha_camera_tick_age') | float(0) > 180 %}
   The supervisor is running but its upstream thread has stopped ticking, so
   every reading is stale. Restart the container.
@@ -379,7 +379,7 @@ not be relaunched all night.
    report `failed_keyboard_not_connected`.
 3. **Full Keyboard Access on** (Settings → Accessibility → Keyboards).
 4. **Pair the keyboard once**, from Settings → Bluetooth. It appears under the *host's* Bluetooth
-   name (on this network, `arcturus`), not the advertised name: iOS shows the adapter's own name.
+   name (the host's own name), not the advertised name: iOS shows the adapter's own name.
 
 A replacement phone needs exactly these four steps and nothing else; no address or name is
 configured anywhere.
