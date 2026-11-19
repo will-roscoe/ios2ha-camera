@@ -16,6 +16,8 @@ usable photograph. Stills go to Home Assistant over MQTT and to a dated archive 
 service also re-serves the live stream, drives the camera's autofocus, reads the phone's battery
 over USB, and reports its own health.
 
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/hero.jpg" alt="A daytime still from the camera: rooftops and a tower block under a blue sky with large white clouds." width="800">
+
 ## Why it works this way
 
 The previous arrangement pointed Home Assistant's MJPEG proxy straight at the phone. One stalled
@@ -147,6 +149,8 @@ Once it runs, open the service's address in a browser (`http://<host>:8099/`) fo
 page: every setting and reading Home Assistant has, with what each one does, live, and the picture.
 It is a plain client of the JSON API, so it is there exactly when `EXPOSE_API` is on.
 
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/control-page.jpg" alt="The service's control page: the camera's name and version, tabs for still, stacked, live, screenshot and timelapse, the night still, the colour region tools, and the first settings section." width="640">
+
 ## The documentation
 
 | Document | What is in it |
@@ -169,6 +173,18 @@ Roughly 20–65 MB a day of archive. Alongside that, about sixty Home Assistant 
 scene (luminance percentiles, colour temperature, dynamic range, motion, focus sharpness), the
 capture (depth used and required, effective exposure, capture duration), and the hardware (battery
 level, current, temperature, charger power, cell health, free disk).
+
+At night, one frame from the phone against the still stacked from 538 of them a minute later:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/night-single-vs-stacked.jpg" alt="Two night views side by side: on the left a single frame, almost black with a few lights; on the right the stacked still, where the buildings, windows and street lights are clearly visible." width="900">
+
+The same scene rendered natural and as the inspection stretch:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/natural-vs-inspection.jpg" alt="Two night stills side by side: the natural render on the left, and the inspection render on the right with a brightened, colour-cast sky and the shadows lifted." width="900">
+
+A day in ten seconds, built by the service from its own archive:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/timelapse.webp" alt="A 24-hour timelapse of the rooftop view: daylight fading to night, the stacked night frames, and day returning." width="720">
 
 ## Status
 
