@@ -25,3 +25,15 @@ jobs:
       dry-run: ${{ inputs.dry-run || false }}
     secrets:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  # Publishes the released version's container image to ghcr.io (release.publish includes "ghcr").
+  publish-ghcr:
+    needs: pipeline
+    if: needs.pipeline.outputs.released == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: will-roscoe/.ghtools/.github/workflows/ghcr.yml@v1
+    with:
+      tag: ${{ needs.pipeline.outputs.tag }}
+      version: ${{ needs.pipeline.outputs.version }}
+      platforms: linux/amd64,linux/arm64
