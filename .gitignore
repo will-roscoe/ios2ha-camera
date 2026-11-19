@@ -32,3 +32,6 @@ htmlcov/
 archive/
 *.log
 .claude/deploy/
+
+# deploy.sh's local settings (host and paths); see deploy.env.example
+deploy.env

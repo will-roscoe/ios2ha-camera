@@ -14,12 +14,30 @@
 #   ./deploy.sh verify     ask Home Assistant whether the entities are healthy
 set -euo pipefail
 
-HOST="${IOS2HA_HOST:-arcturus.lan0}"
-SRC="${IOS2HA_SRC:-/home/will/arcturus-stack/src/ios2ha-camera}"
-STACK="${IOS2HA_STACK:-/home/will/arcturus-stack/mediastack}"
 SERVICE=ios2ha-camera
 
 cd "$(dirname "$0")"
+
+# Where to deploy: the environment, else deploy.env beside this script (untracked;
+# copy deploy.env.example). A variable already set in the environment wins.
+#   IOS2HA_HOST   ssh destination of the Docker host
+#   IOS2HA_SRC    directory on the host the working tree is synced to (the build context)
+#   IOS2HA_STACK  directory on the host holding the compose file
+if [ -f deploy.env ]; then
+  # shellcheck source=/dev/null
+  . ./deploy.env
+fi
+missing=()
+for name in IOS2HA_HOST IOS2HA_SRC IOS2HA_STACK; do
+  [ -n "${!name:-}" ] || missing+=("$name")
+done
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "deploy.sh: set ${missing[*]} in the environment or in deploy.env (see deploy.env.example)" >&2
+  exit 1
+fi
+HOST=$IOS2HA_HOST
+SRC=$IOS2HA_SRC
+STACK=$IOS2HA_STACK
 
 # egg-info is a local artefact of the editable install and never syncs.
 tree_hash() {
@@ -72,7 +90,8 @@ deploy)
   echo "deploying $describe (built $built) to $HOST"
 
   rsync -a --delete \
-    --exclude .git --exclude .claude --exclude .superpowers \
+    --exclude .git --exclude .claude --exclude .superpowers --exclude deploy.env \
+    --exclude .venv --exclude .ruff_cache \
     --exclude __pycache__ --exclude '*.egg-info' --exclude .pytest_cache \
     ./ "$HOST:$SRC/"
 

@@ -20,8 +20,11 @@ It exists because the deployment is an rsync of a working tree, so nothing else 
 actually running. The script bakes `git describe --always --dirty --tags` into the image, and warns
 before deploying a modified tree. Deploy by hand and the running version reads `unknown`.
 
-Host and paths default to this installation and can be overridden with `IOS2HA_HOST`,
-`IOS2HA_SRC` and `IOS2HA_STACK`.
+It needs to know where to deploy: `IOS2HA_HOST` (the ssh destination of the Docker host),
+`IOS2HA_SRC` (the build context on the host, which the tree is synced to) and `IOS2HA_STACK` (the
+directory holding the compose file). Set them in the environment, or copy `deploy.env.example` to
+`deploy.env` beside the script (untracked) and fill it in; a variable already in the environment
+wins over the file. Without them the script stops before touching the host and names what is missing.
 
 A source-only rebuild takes about 4 seconds: dependencies are installed from `pyproject.toml`
 against a stub package first, so the ~100-package layer is cached and a code change does not
