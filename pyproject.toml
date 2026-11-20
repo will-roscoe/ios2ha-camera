@@ -4,7 +4,7 @@ name = "ios2ha-camera"
 # so there is no second copy in the source to drift. Semantics are in
 # CHANGELOG.md: the Home Assistant entity and topic surface is the public
 # interface, because that is what breaks other people's automations.
-version = "2.17.1"
+version = "2.17.2"
 description = "Turns an old iPhone running a camera app into a Home Assistant camera"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -32,7 +32,7 @@ dependencies = [
     "paho-mqtt>=2.0,<3",
     "aiohttp>=3.9",
     # Floor raised to the 11.x line the code is written against and verified on
-    # arcturus (11.12.4); the 4.x API differs enough to break phone.py.
+    # the deployment host (11.12.4); the 4.x API differs enough to break phone.py.
     "pymobiledevice3>=11.0,<12",
     # Pure-python asyncio D-Bus. The slim image has no GLib bindings, and the
     # keyboard only ever talks to org.bluez, through the filtered proxy socket.

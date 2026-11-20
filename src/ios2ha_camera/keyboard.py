@@ -1,4 +1,4 @@
-"""arcturus as a Bluetooth LE keyboard, so the supervisor can press a button
+"""The host as a Bluetooth LE keyboard, so the supervisor can press a button
 that exists only on the phone's screen.
 
 Guardian Eye starts streaming from an in-app button and nothing else: no URL
@@ -41,7 +41,7 @@ ADVERT_PATH = "/org/ios2ha/kbd/advertisement"
 AGENT_PATH = "/org/ios2ha/kbd/agent"
 # iOS shows the adapter's own name, not this one, so the phone lists the host's
 # Bluetooth name. Left as is deliberately: renaming the adapter would rename
-# arcturus for every other Bluetooth device.
+# the host for every other Bluetooth device.
 ADVERT_NAME = "ios2ha-kbd"
 KEYBOARD_APPEARANCE = 0x03C1
 POLL_S = 10.0

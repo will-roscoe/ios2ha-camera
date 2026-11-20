@@ -23,6 +23,18 @@ The running version is visible in three places: the first line of the container 
 description as well as the number, so an image built from a modified tree reads as `1.0.0-dirty`
 rather than passing as a clean release.
 
+## 2.17.2 — 2026-11-19
+
+**Packaging:** each release now publishes a ready-made image to GitHub's container registry,
+`ghcr.io/will-roscoe/ios2ha-camera`, for `amd64` and `arm64`, tagged with the version, its
+`major.minor` and `latest`. The README says what you need and gives a compose service using it.
+
+**Deploying:** `deploy.sh` takes its host and paths from the environment or an untracked
+`deploy.env` (see `deploy.env.example`) instead of defaulting to one installation's, and stops
+before reaching the host if any is missing.
+
+No entity, topic or API change.
+
 ## 2.17.1 — 2026-10-02
 
 **Fixed:** a rolling build with picks took the plain range's name, so "the last 7 days at 06:00"
@@ -531,7 +543,7 @@ spike this was ported from did the same thing, which is why it worked; the port 
 nobody touching the phone.** Guardian Eye starts streaming from a button in the app and nothing
 else: no URL, no shortcut, and the accessibility service's own press is refused for App Store apps.
 What does work is a real keyboard, because iOS Full Keyboard Access turns key presses into focus
-moves and activations. So arcturus becomes one.
+moves and activations. So the host becomes one.
 
 - **A Bluetooth keyboard, emulated by the host.** HID over GATT through BlueZ, reached only through
   a D-Bus proxy filtered to `org.bluez`, installed by `scripts/install-bluez-proxy.sh`. The host's

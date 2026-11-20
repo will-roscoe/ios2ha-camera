@@ -1,4 +1,4 @@
-"""The bytes arcturus sends the phone as a keyboard.
+"""The bytes the host sends the phone as a keyboard.
 
 Kept away from D-Bus on purpose: a wrong usage id or a release of the wrong
 length is a silent failure on the device, and these are the cheapest tests that

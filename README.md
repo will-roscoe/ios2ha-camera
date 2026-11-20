@@ -16,6 +16,8 @@ usable photograph. Stills go to Home Assistant over MQTT and to a dated archive 
 service also re-serves the live stream, drives the camera's autofocus, reads the phone's battery
 over USB, and reports its own health.
 
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/hero.jpg" alt="A daytime still from the camera: rooftops and a tower block under a blue sky with large white clouds." width="800">
+
 ## Why it works this way
 
 The previous arrangement pointed Home Assistant's MJPEG proxy straight at the phone. One stalled
@@ -71,7 +73,63 @@ After a phone restart, `./deploy.sh phone` (or the **Prepare phone** button) put
 into a state where it can stream — checking lockdown, Developer Mode and the developer disk image,
 and relaunching the app — short of the one thing that can't be automated: tapping Start streaming.
 
-## Getting started
+## What you need
+
+- An iPhone running the **Guardian Eye** camera app, on your LAN with a fixed address (the app
+  binds to whatever IP it had at launch). An old phone is the point: it never leaves the window.
+- A Linux host running Docker on the same LAN. The published image is built for `amd64` and
+  `arm64`, so a Raspberry Pi 4 works.
+- An MQTT broker Home Assistant uses (the Mosquitto add-on is fine), and Home Assistant itself,
+  which picks the camera up through MQTT discovery.
+- Optional: the phone's Lightning cable in the host, for battery readings and app control over
+  USB (`usbmuxd` on the host), and the host's Bluetooth adapter behind
+  [`scripts/install-bluez-proxy.sh`](scripts/install-bluez-proxy.sh), for the keyboard that can
+  press Start streaming on the phone. Without either, everything else works.
+
+For dashboards, timelapses and every control in one card, add the companion integration,
+[ios2ha-camera-hass](https://github.com/will-roscoe/ios2ha-camera-hass). It talks to this
+service's API and needs nothing on the phone.
+
+## Install
+
+The image is published to GitHub's container registry with each release:
+`ghcr.io/will-roscoe/ios2ha-camera`, tagged with the version (`2.17.2`), its `major.minor`
+(`2.17`) and `latest`. A compose service:
+
+```yaml
+services:
+  ios2ha-camera:
+    image: ghcr.io/will-roscoe/ios2ha-camera:2.17
+    container_name: ios2ha-camera
+    restart: unless-stopped
+    network_mode: host               # reaches the phone, the broker and USB together
+    stop_grace_period: 30s           # see OPERATIONS.md, "The compose service"
+    environment:
+      PHONE_HOST: 192.168.1.11       # the phone's fixed address
+      PHONE_PASSWORD: <camera-app-password>  # the camera app's password
+      MQTT_URL: mqtt://192.168.1.5
+      MQTT_USER: ios2ha
+      MQTT_PASSWORD: <mqtt-password>
+      # Only with the Bluetooth proxy installed on the host:
+      DBUS_SYSTEM_BUS_ADDRESS: unix:path=/run/bluez-proxy/bus
+    volumes:
+      - ./ios2ha-camera:/data                       # archive, timelapses, saved settings
+      - /var/run/usbmuxd:/var/run/usbmuxd           # optional: battery and app control over USB
+      - /var/lib/lockdown:/var/lib/lockdown:ro      # optional: the phone's USB pairing records
+      - /run/bluez-proxy:/run/bluez-proxy           # optional: the Bluetooth keyboard
+```
+
+Every setting, with its default, is in [CONFIGURATION.md](CONFIGURATION.md); setting the phone up,
+the broker account and the alerts are in [OPERATIONS.md](OPERATIONS.md).
+
+## Security
+
+The JSON API and the control page on port 8099 have **no authentication**: anything that can
+reach the port can read every setting and change it. Keep the host on a network you trust and do
+not forward the port. [docs/guarantees.rst](docs/guarantees.rst) says exactly what is exposed;
+`EXPOSE_API=false` turns the API off.
+
+## Developing
 
 ```bash
 python3 -m venv ~/.venvs/ios2ha-camera
@@ -84,12 +142,14 @@ The whole test suite runs against a fake camera that serves real JPEGs over real
 nothing here needs a phone. Those same two commands, plus a `docker build`, are what CI runs on
 every push.
 
-To run it for real, see **[OPERATIONS.md](OPERATIONS.md)**. To change it, see
+To deploy a working tree to your own host, see **[OPERATIONS.md](OPERATIONS.md)**. To change it, see
 **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 Once it runs, open the service's address in a browser (`http://<host>:8099/`) for its control
 page: every setting and reading Home Assistant has, with what each one does, live, and the picture.
 It is a plain client of the JSON API, so it is there exactly when `EXPOSE_API` is on.
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/control-page.jpg" alt="The service's control page: the camera's name and version, tabs for still, stacked, live, screenshot and timelapse, the night still, the colour region tools, and the first settings section." width="640">
 
 ## The documentation
 
@@ -114,6 +174,18 @@ scene (luminance percentiles, colour temperature, dynamic range, motion, focus s
 capture (depth used and required, effective exposure, capture duration), and the hardware (battery
 level, current, temperature, charger power, cell health, free disk).
 
+At night, one frame from the phone against the still stacked from 538 of them a minute later:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/night-single-vs-stacked.jpg" alt="Two night views side by side: on the left a single frame, almost black with a few lights; on the right the stacked still, where the buildings, windows and street lights are clearly visible." width="900">
+
+The same scene rendered natural and as the inspection stretch:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/natural-vs-inspection.jpg" alt="Two night stills side by side: the natural render on the left, and the inspection render on the right with a brightened, colour-cast sky and the shadows lifted." width="900">
+
+A day in ten seconds, built by the service from its own archive:
+
+<img src="https://github.com/will-roscoe/ios2ha-camera/raw/main/docs/images/timelapse.webp" alt="A 24-hour timelapse of the rooftop view: daylight fading to night, the stacked night frames, and day returning." width="720">
+
 ## Status
 
 Built, reviewed, and verified against the real device: stills stacking and archiving, ONVIF
@@ -122,3 +194,7 @@ minutes after the camera app was closed.
 
 Known limits of the phone app itself, all measured rather than assumed, are listed in
 [OPERATIONS.md](OPERATIONS.md#what-the-phone-will-and-will-not-do).
+
+## Licence
+
+Apache License 2.0; see [LICENSE](LICENSE).

@@ -492,7 +492,7 @@ _BINARY_SENSORS = [
     # with a full battery the switch is on and this is off.
     _binary("backgrounding_active", "Backgrounding active"),
     _binary("backgrounded_by_keyboard", "Backgrounded by keyboard"),
-    # Whether a phone is attached to the keyboard arcturus emulates. Without it
+    # Whether a phone is attached to the keyboard the host emulates. Without it
     # the supervisor cannot press Start streaming, and the usual cause is
     # Bluetooth switched off on the phone.
     _binary("keyboard_connected", "Keyboard connected", "connectivity"),

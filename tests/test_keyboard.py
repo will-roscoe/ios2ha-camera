@@ -143,8 +143,8 @@ def test_a_failed_advertisement_is_retried():
     assert m.registered is True
 
 
-def test_arcturus_own_hid_devices_never_count_as_the_host():
-    """arcturus's own keyboard and mouse connect as HID peripherals; a phone
+def test_host_own_hid_devices_never_count_as_the_host():
+    """The host's own keyboard and mouse connect as HID peripherals; a phone
     does not offer the HID service. Never match on address: the phone must be
     replaceable without a config change."""
     m = FakeAdManager()

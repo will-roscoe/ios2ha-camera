@@ -8,7 +8,8 @@ source = "pyproject"                         # static version = "2.12.0" in [pro
 bump = "require"                             # existing release workflow only verifies the version
 
 [release]
-publish = ["github"]                         # GitHub release
+publish = ["github", "ghcr"]                 # GitHub release + image on ghcr.io
+platforms = ["linux/amd64", "linux/arm64"]   # the deployment host is a Raspberry Pi 4B
 
 [ci]
 python = ["3.12", "3.13"]                    # test matrix

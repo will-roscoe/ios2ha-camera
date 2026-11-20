@@ -1,4 +1,4 @@
-"""The keyboard report layout arcturus presents to the phone over Bluetooth.
+"""The keyboard report layout the host presents to the phone over Bluetooth.
 
 Separate from the D-Bus plumbing in `keyboard.py` so the bytes can be tested
 without a bus. Report ID 1, the usual boot-keyboard shape: modifiers, a reserved

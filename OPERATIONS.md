@@ -20,8 +20,11 @@ It exists because the deployment is an rsync of a working tree, so nothing else 
 actually running. The script bakes `git describe --always --dirty --tags` into the image, and warns
 before deploying a modified tree. Deploy by hand and the running version reads `unknown`.
 
-Host and paths default to this installation and can be overridden with `IOS2HA_HOST`,
-`IOS2HA_SRC` and `IOS2HA_STACK`.
+It needs to know where to deploy: `IOS2HA_HOST` (the ssh destination of the Docker host),
+`IOS2HA_SRC` (the build context on the host, which the tree is synced to) and `IOS2HA_STACK` (the
+directory holding the compose file). Set them in the environment, or copy `deploy.env.example` to
+`deploy.env` beside the script (untracked) and fill it in; a variable already in the environment
+wins over the file. Without them the script stops before touching the host and names what is missing.
 
 A source-only rebuild takes about 4 seconds: dependencies are installed from `pyproject.toml`
 against a stub package first, so the ~100-package layer is cached and a code change does not
@@ -244,7 +247,7 @@ need anyone to get up.
 {% set s = states('sensor.ios2ha_camera_stream_state') %}
 {% if trigger.to_state.state == 'unavailable' %}
   No word from the supervisor for 5 minutes: the ios2ha-camera container on
-  arcturus is stopped, or MQTT is down.
+  the host is stopped, or MQTT is down.
 {% elif states('sensor.ios2ha_camera_tick_age') | float(0) > 180 %}
   The supervisor is running but its upstream thread has stopped ticking, so
   every reading is stale. Restart the container.
@@ -379,7 +382,7 @@ not be relaunched all night.
    report `failed_keyboard_not_connected`.
 3. **Full Keyboard Access on** (Settings → Accessibility → Keyboards).
 4. **Pair the keyboard once**, from Settings → Bluetooth. It appears under the *host's* Bluetooth
-   name (on this network, `arcturus`), not the advertised name: iOS shows the adapter's own name.
+   name (the host's own name), not the advertised name: iOS shows the adapter's own name.
 
 A replacement phone needs exactly these four steps and nothing else; no address or name is
 configured anywhere.

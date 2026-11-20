@@ -1,6 +1,6 @@
 """Bring the phone back after it restarts, then wait for the one manual step.
 
-Runs on arcturus, in the service's own image, and works while the container is
+Runs on the host, in the service's own image, and works while the container is
 stopped:
 
     ./deploy.sh phone
