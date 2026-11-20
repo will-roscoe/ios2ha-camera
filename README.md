@@ -106,10 +106,10 @@ services:
     stop_grace_period: 30s           # see OPERATIONS.md, "The compose service"
     environment:
       PHONE_HOST: 192.168.1.11       # the phone's fixed address
-      PHONE_PASSWORD: change-me      # the camera app's password
+      PHONE_PASSWORD: <camera-app-password>  # the camera app's password
       MQTT_URL: mqtt://192.168.1.5
       MQTT_USER: ios2ha
-      MQTT_PASSWORD: change-me
+      MQTT_PASSWORD: <mqtt-password>
       # Only with the Bluetooth proxy installed on the host:
       DBUS_SYSTEM_BUS_ADDRESS: unix:path=/run/bluez-proxy/bus
     volumes:
