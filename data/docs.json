@@ -1,0 +1,11 @@
+{
+  "build": "passing",
+  "coverage": null,
+  "run": {
+    "commit": "7fd16fb7fc3592ffbdfbcfa3e31c45ef5bf68fac",
+    "id": "36421788027",
+    "url": "https://github.com/will-roscoe/ios2ha-camera/actions/runs/36421788027"
+  },
+  "source": "docs",
+  "updated": "2026-09-28T12:29:01Z"
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Turns an old iPhone running a camera app into a Home Assistant camera",
+  "links": {
+    "docs": "",
+    "pypi": "",
+    "repo": "https://github.com/will-roscoe/ios2ha-camera"
+  },
+  "name": "ios2ha-camera",
+  "open_issues": 0,
+  "released": "2026-11-20",
+  "source": "project",
+  "updated": "2026-11-20T17:47:42Z",
+  "version": "2.17.2"
+}
